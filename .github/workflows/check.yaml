@@ -1,0 +1,20 @@
+name: 🧱 Check
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    name: ♻️ Validate
+    steps:
+      - name: ✨ Checkout
+        uses: actions/checkout@v6
+      - name: 🔧 Setup Zig
+        uses: mlugg/setup-zig@v2
+      - name: 🧪 Check project
+        run: zig build test
+
