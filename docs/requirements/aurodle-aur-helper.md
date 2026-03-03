@@ -245,7 +245,7 @@ Aurodle is a minimalist AUR helper written in Zig that builds AUR packages into 
 - Displays summary of packages to upgrade before proceeding
 - *[Should Have]* `--needed` skips up-to-date packages
 - *[Should Have]* `--rebuild` forces rebuild of all specified packages
-- *[Should Have]* `--devel` includes VCS development packages (`-git`, `-svn`, `-hg`, `-bzr` suffixes); these are unconditionally rebuilt since their version strings are only meaningful after a build (makepkg's `pkgver()` updates them)
+- *[Should Have]* `--devel` includes VCS development packages (`-git`, `-svn`, `-hg`, `-bzr` suffixes); runs `makepkg --nobuild` to execute `pkgver()` and determine the current upstream version, then compares against the installed version and only rebuilds if the version has changed
 - *[Nice to Have]* `--noconfirm` / `--noshow` / `--ignore` flags
 - *[Nice to Have]* Shows diff of PKGBUILD changes for updated packages
 
@@ -339,6 +339,7 @@ Aurodle is a minimalist AUR helper written in Zig that builds AUR packages into 
 - **Atomic repository updates**: Repository database is only modified after a successful `repo-add` operation; partial writes must not corrupt the database
 - **Build isolation**: A failed build for one package must not prevent building remaining packages in the queue
 - **Clean failure state**: Failed operations must not leave the repository, cache, or clone directories in an inconsistent state
+- **Signal handling**: On SIGINT (Ctrl+C), aurodle abandons the current operation cleanly; already-completed builds and repo-adds remain intact, but in-progress builds are terminated and their partial output is not added to the repository
 - **Lock file management**: Prevent concurrent aurodle instances from corrupting shared state (repository database, clone directories)
 
 ### NFR-3: Security
@@ -395,6 +396,15 @@ Aurodle is a minimalist AUR helper written in Zig that builds AUR packages into 
 - **Fixed repository location**: `~/.cache/aurodle/aurpkgs/`
 - **Fixed cache directory**: `~/.cache/aurodle/`
 - **Database format**: `aurpkgs.db.tar.xz` (standard repo-add output)
+
+## Out of Scope
+
+- **No AUR account integration**: No voting, flagging, commenting, or package submission. Aurodle is a build tool, not an AUR management client.
+- **No rebuild detection**: No tracking of soname bumps or library changes that would require dependent packages to be rebuilt (e.g., what `rebuild-detector` provides).
+- **No download-only / offline mode**: No ability to download sources without building, or to build from previously cached sources without network access.
+- **No multi-repo support**: Only the single hardcoded `aurpkgs` repository. No support for managing multiple local repositories or routing packages to different repos.
+- **No PKGBUILD modification or local patching**: PKGBUILDs are cloned from AUR and built as-is. The review step (FR-11) is for security inspection only, not for editing. Dependency resolution relies entirely on AUR RPC metadata; local PKGBUILD modifications would create inconsistencies between resolved and actual dependencies.
+- **No persistent VCS version tracking**: VCS package version checking (via `makepkg --nobuild`) is done on-demand at upgrade time, not tracked in a local database. There is no persistent record of previously built VCS commit hashes.
 
 ## Assumptions
 
@@ -459,7 +469,7 @@ Aurodle is a minimalist AUR helper written in Zig that builds AUR packages into 
 
 9. **makepkg invocation**: Minimal flags (`--syncdeps` only), no `--clean` or `--cleanbuild`. Build output is real-time with concurrent log capture. See FR-9.
 
-10. **VCS/devel packages**: Unconditional rebuild when `--devel` is specified, since VCS version strings are only meaningful after makepkg's `pkgver()` runs. See FR-13.
+10. **VCS/devel packages**: When `--devel` is specified, run `makepkg --nobuild` to execute `pkgver()` and compare against the installed version; only rebuild if the version has changed. This avoids unnecessary rebuilds while still using the authoritative version source. See FR-13.
 
 11. **Cache cleanup**: Basic `aurodle clean` command with confirmation prompt. See FR-18.
 
