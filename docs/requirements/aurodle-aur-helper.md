@@ -69,7 +69,7 @@ Aurodle is a minimalist AUR helper written in Zig that builds AUR packages into 
 
 ### FR-4: Libalpm Database Integration
 
-**Description**: Query local and sync databases via direct libalpm C FFI to determine installed packages, repository contents, and version satisfaction.
+**Description**: Query local and sync databases via direct libalpm C FFI to determine installed packages, repository contents, and version satisfaction. Libalpm is used exclusively for **read operations and database refresh**; all package installation is delegated to `pacman` CLI to ensure hooks, scriptlets, and privilege handling execute correctly.
 
 **Acceptance Criteria**:
 - Initialize libalpm handle and register sync databases from pacman.conf
@@ -77,6 +77,8 @@ Aurodle is a minimalist AUR helper written in Zig that builds AUR packages into 
 - Query sync databases for official repository packages
 - Compare package versions using `alpm_pkg_vercmp()`
 - Determine if installed packages satisfy versioned dependency constraints (`>=`, `<=`, `=`, `>`, `<`)
+- Selectively refresh the `aurpkgs` database via `alpm_db_update()` without touching official repo databases (avoids partial system updates)
+- Never use libalpm for package installation or removal (pacman hooks and install scriptlets are handled by `pacman`, not by libalpm directly)
 - *[Should Have]* Query provider information (packages that `provide` virtual dependencies)
 - *[Should Have]* Query conflict information between packages
 
@@ -104,9 +106,23 @@ Aurodle is a minimalist AUR helper written in Zig that builds AUR packages into 
 
 ---
 
-### FR-6: Build Order Generation
+### FR-6: Dependency Provider Resolution
 
-**Description**: Compute and display the topological build order for a set of packages.
+**Description**: Resolve dependency strings to packages that satisfy them.
+
+**Acceptance Criteria**:
+- `aurodle resolve <packages...>` displays which packages provide each dependency
+- Shows whether provider is in AUR or official repos
+- Handles versioned dependency strings
+- *[Should Have]* Resolves virtual dependencies via `provides` field
+
+**Priority**: Must Have (basic), Should Have (virtual providers)
+
+---
+
+### FR-7: Build Order Generation
+
+**Description**: Compute and display the topological build order for a set of packages. Builds on FR-6 (provider resolution) to determine what satisfies each dependency before ordering.
 
 **Acceptance Criteria**:
 - `aurodle buildorder <packages...>` displays ordered build sequence
@@ -119,20 +135,6 @@ Aurodle is a minimalist AUR helper written in Zig that builds AUR packages into 
 - *[Nice to Have]* `--resolve-deps <deplist>` controls which dependency types are considered
 
 **Priority**: Must Have (basic ordering), Should Have (quiet), Nice to Have (resolve-deps)
-
----
-
-### FR-7: Dependency Provider Resolution
-
-**Description**: Resolve dependency strings to packages that satisfy them.
-
-**Acceptance Criteria**:
-- `aurodle resolve <packages...>` displays which packages provide each dependency
-- Shows whether provider is in AUR or official repos
-- Handles versioned dependency strings
-- *[Should Have]* Resolves virtual dependencies via `provides` field
-
-**Priority**: Must Have (basic), Should Have (virtual providers)
 
 ---
 
@@ -162,8 +164,8 @@ Aurodle is a minimalist AUR helper written in Zig that builds AUR packages into 
 
 **Acceptance Criteria**:
 - `aurodle build <packages...>` builds each package via `makepkg` in clone directory (pkgbase directory)
-- Passes `--syncdeps` (`-s`) to makepkg by default to auto-install missing dependencies (both repo and AUR deps from local repo)
-- When building multiple packages, builds in topological order (see FR-6); after each successful build and `repo-add`, refreshes pacman database (`pacman -Sy aurpkgs`) so subsequent builds can resolve newly built AUR dependencies
+- Passes `--syncdeps` (`-s`) to makepkg by default to auto-install missing dependencies (both official repo and AUR deps from local repo); `makepkg -s` implicitly marks installed dependencies with `--asdeps`
+- When building multiple packages, builds in topological order (see FR-7); after each successful build and `repo-add`, selectively refreshes only the `aurpkgs` database via libalpm's `alpm_db_update()` (avoids partial system updates from `pacman -Sy`) so subsequent `makepkg -s` calls can resolve newly built AUR dependencies
 - Captures makepkg output to log file (`~/.cache/aurodle/logs/<pkgbase>.log`) while also displaying in real-time
 - Locates built packages by resolving `$PKGDEST` from makepkg.conf (falling back to build directory), copies them to the repository directory (see FR-14), then adds them via `repo-add -R`
 - When a build produces multiple packages (split packages), all are added to the repository
@@ -187,9 +189,8 @@ Aurodle is a minimalist AUR helper written in Zig that builds AUR packages into 
 - Clones all AUR packages in dependency chain
 - Displays build files (PKGBUILD) for user review before building
 - Prompts for single confirmation before beginning build phase
-- Builds packages in dependency order (see FR-9 for build details)
-- Refreshes pacman database after all builds complete (`pacman -Sy aurpkgs`)
-- Installs only user-requested packages via `pacman -S` from local repository (split sub-packages are in the repo but not auto-installed)
+- Builds packages in dependency order (see FR-9 for build details); intermediate AUR dependencies are installed by `makepkg --syncdeps` as dependencies (`--asdeps`) during the build chain
+- Installs only user-requested target packages via `pacman -S` from local repository as explicitly installed (split sub-packages are in the repo but not auto-installed)
 - *[Should Have]* `--asdeps` / `--asexplicit` flags passed to pacman
 - *[Should Have]* `--needed` / `--rebuild` flags for build control
 - *[Nice to Have]* `--noconfirm` skips confirmation (preserves file review)
@@ -375,7 +376,7 @@ Aurodle is a minimalist AUR helper written in Zig that builds AUR packages into 
 
 - **Language**: Zig (leveraging C interop for libalpm)
 - **Platform**: Linux only (Arch Linux and derivatives)
-- **libalpm dependency**: Runtime dependency on `libalpm.so` (provided by pacman package)
+- **libalpm for reads, pacman for writes**: libalpm is used for database queries, version comparison, and selective `aurpkgs` database refresh; all package installation/removal is done via `pacman` CLI to ensure pacman hooks and install scriptlets execute correctly
 - **No network caching in v1**: Initial implementation does not cache AUR API responses across invocations
 - **Sequential execution**: Initial implementation processes operations sequentially; parallelism deferred to future releases
 - **AUR RPC v5**: Target current AUR RPC API version
@@ -454,7 +455,7 @@ Aurodle is a minimalist AUR helper written in Zig that builds AUR packages into 
 
 7. **pkgbase vs pkgname**: Always resolve via AUR RPC. The pkgname-to-pkgbase mapping is obtained from the RPC info response and used throughout (clone URLs, directory names, split package grouping). See FR-1 and FR-8.
 
-8. **Dependency installation before build**: Fully delegated to `makepkg --syncdeps`, which handles both official repo and local `[aurpkgs]` repo dependencies. Aurodle only ensures the pacman database is refreshed between builds. See FR-9.
+8. **Dependency installation before build**: Fully delegated to `makepkg --syncdeps`, which handles both official repo and local `[aurpkgs]` repo dependencies and marks them as `--asdeps`. Between builds, aurodle selectively refreshes only the `aurpkgs` database via libalpm (`alpm_db_update()`) to avoid partial system updates. See FR-9.
 
 9. **makepkg invocation**: Minimal flags (`--syncdeps` only), no `--clean` or `--cleanbuild`. Build output is real-time with concurrent log capture. See FR-9.
 
@@ -471,8 +472,8 @@ Aurodle is a minimalist AUR helper written in Zig that builds AUR packages into 
 | FR-3: Package Search | 3 (Primary Operations - Query) | Core |
 | FR-4: Libalpm Database Integration | 4 (Dependency Resolution) | Core |
 | FR-5: Dependency Resolution | 4 (Dependency Resolution) | Core + Standard |
-| FR-6: Build Order Generation | 3 (Dependency Analysis) | Core + Standard |
-| FR-7: Dependency Provider Resolution | 3 (Dependency Analysis) | Core + Standard |
+| FR-6: Dependency Provider Resolution | 3 (Dependency Analysis) | Core + Standard |
+| FR-7: Build Order Generation | 3 (Dependency Analysis) | Core + Standard |
 | FR-8: Git Clone Management | 3 (Clone and Review) | Core + Standard |
 | FR-9: Package Building | 3 (Build Operations) | Core |
 | FR-10: Package Sync | 3 (Build Operations) | Core + Standard |
