@@ -22,7 +22,8 @@ Aurodle is a minimalist AUR helper written in Zig that builds AUR packages into 
 **Acceptance Criteria**:
 - Fetch package info via the AUR RPC `info` endpoint (single and multi-info)
 - Search packages via the AUR RPC `search` endpoint by name-desc
-- Parse JSON responses into internal package metadata structures
+- Parse JSON responses into internal package metadata structures, including the `PackageBase` field for pkgbase resolution
+- Resolve pkgname to pkgbase via RPC info response (pkgbase is required for git clone URLs and split package handling)
 - Handle API errors (timeouts, malformed responses, rate limits) with clear error messages
 - Use Zig `std.http` client for all HTTP transport
 
@@ -142,7 +143,9 @@ Aurodle is a minimalist AUR helper written in Zig that builds AUR packages into 
 **Acceptance Criteria**:
 - `aurodle clone <packages...>` clones AUR git repos to cache directory
 - Default cache location: `~/.cache/aurodle/`
+- Resolves pkgname to pkgbase via AUR RPC before cloning (git repos are per-pkgbase, not per-pkgname)
 - Clones from `https://aur.archlinux.org/<pkgbase>.git`
+- Clone directory named after pkgbase
 - Skips clone if directory already exists (reports as up-to-date)
 - *[Should Have]* Updates existing clones via `git pull` when already cloned
 - *[Should Have]* `--recurse` recursively clones dependencies
@@ -158,12 +161,16 @@ Aurodle is a minimalist AUR helper written in Zig that builds AUR packages into 
 **Description**: Build packages using makepkg and add built packages to the local repository.
 
 **Acceptance Criteria**:
-- `aurodle build <packages...>` builds each package via `makepkg` in clone directory
+- `aurodle build <packages...>` builds each package via `makepkg` in clone directory (pkgbase directory)
+- Passes `--syncdeps` (`-s`) to makepkg by default to auto-install missing dependencies (both repo and AUR deps from local repo)
+- Builds packages in topological order; after each successful build and `repo-add`, refreshes pacman database (`pacman -Sy aurpkgs`) so subsequent `makepkg -s` calls can resolve newly built AUR dependencies
+- Captures makepkg output to log file (`~/.cache/aurodle/logs/<pkgbase>.log`) while also displaying in real-time
 - Adds successfully built packages to local repository using `repo-add -R`
+- Locates built packages by resolving `$PKGDEST` from makepkg.conf (falling back to build directory)
 - Repository location: `~/.cache/aurodle/aurpkgs/`
 - Repository database: `aurpkgs.db.tar.xz`
 - Creates repository directory and database if they don't exist
-- Reports build failures with makepkg exit code and log location
+- Reports build failures with makepkg exit code and log file path
 - `repo-add -R` automatically removes old package versions
 - *[Should Have]* `--needed` skips packages already at current version in repository
 - *[Should Have]* `--rebuild` forces rebuild even if up-to-date
@@ -240,7 +247,7 @@ Aurodle is a minimalist AUR helper written in Zig that builds AUR packages into 
 - Displays summary of packages to upgrade before proceeding
 - *[Should Have]* `--needed` skips up-to-date packages
 - *[Should Have]* `--rebuild` forces rebuild of all specified packages
-- *[Should Have]* `--devel` includes -git/-svn/-hg development packages
+- *[Should Have]* `--devel` includes VCS development packages (`-git`, `-svn`, `-hg`, `-bzr` suffixes); these are unconditionally rebuilt since their version strings are only meaningful after a build (makepkg's `pkgver()` updates them)
 - *[Nice to Have]* `--noconfirm` / `--noshow` / `--ignore` flags
 - *[Nice to Have]* Shows diff of PKGBUILD changes for updated packages
 
@@ -288,6 +295,19 @@ Aurodle is a minimalist AUR helper written in Zig that builds AUR packages into 
 - *[Should Have]* Support `run0` (systemd) as an alternative to sudo
 - Never run makepkg as root (fail fast if detected)
 - Do not implement sudo timeout prevention loops
+
+**Priority**: Should Have
+
+---
+
+### FR-18: Cache Cleanup
+
+**Description**: Remove stale clone directories, old built packages, and build logs from the cache.
+
+**Acceptance Criteria**:
+- `aurodle clean` removes untracked clone directories (packages no longer installed on the system) and old built package files not referenced by the repository database
+- Removes stale build logs from `~/.cache/aurodle/logs/`
+- Displays what will be removed and prompts for confirmation before deleting
 
 **Priority**: Should Have
 
@@ -434,6 +454,16 @@ Aurodle is a minimalist AUR helper written in Zig that builds AUR packages into 
 
 6. **Repository database signing**: Unsigned. The local repository database is not signed. Users configure `SigLevel = Optional TrustAll` (or equivalent) for the `[aurpkgs]` section in pacman.conf. This matches aurutils' default behavior and avoids GPG key management complexity.
 
+7. **pkgbase vs pkgname**: Always resolve via AUR RPC. When a user specifies a pkgname, aurodle queries AUR RPC info to obtain the `PackageBase` field. The pkgbase is used for git clone URLs (`https://aur.archlinux.org/<pkgbase>.git`) and clone directory names. The pkgname-to-pkgbase mapping is maintained internally throughout the operation.
+
+8. **Dependency installation before build**: Delegated to makepkg. Aurodle passes `--syncdeps` (`-s`) to makepkg, which handles installing missing dependencies from all configured pacman repositories (including the local `[aurpkgs]` repo). Aurodle builds in topological order and runs `pacman -Sy aurpkgs` after each `repo-add` so that subsequent builds can find newly built AUR dependencies.
+
+9. **makepkg invocation**: Minimal defaults with logging. Only `--syncdeps` (`-s`) is passed by default. No `--clean` or `--cleanbuild`. Build output is displayed in real-time and simultaneously captured to `~/.cache/aurodle/logs/<pkgbase>.log` for post-failure debugging.
+
+10. **VCS/devel packages**: Unconditional rebuild. When `--devel` is specified, all VCS packages (`-git`, `-svn`, `-hg`, `-bzr` suffixes) are rebuilt unconditionally regardless of their version string, since VCS package versions are only meaningful after makepkg's `pkgver()` function runs during build.
+
+11. **Cache cleanup**: Basic clean command. `aurodle clean` removes stale clone directories (for packages no longer installed) and old built packages not in the repository database. Prompts for confirmation before deleting.
+
 ## Traceability Matrix
 
 | Requirement | Spec Section | Spec Priority |
@@ -455,3 +485,4 @@ Aurodle is a minimalist AUR helper written in Zig that builds AUR packages into 
 | FR-15: Global CLI Options | 6 (CLI Interface) | Core + Standard |
 | FR-16: Privilege Escalation | 5 (Privilege Escalation) | Standard |
 | FR-17: Pacman Config Integration | 5 (Configuration) | Standard + Advanced |
+| FR-18: Cache Cleanup | — (new) | Standard |
