@@ -382,7 +382,7 @@ Aurodle is a minimalist AUR helper written in Zig that builds AUR packages into 
 
 - User has a working Arch Linux installation with pacman, makepkg, and git available
 - User has internet access to reach `aur.archlinux.org`
-- User has configured `[aurpkgs]` repository section in `/etc/pacman.conf` pointing to `~/.cache/aurodle/aurpkgs/`
+- User has manually configured `[aurpkgs]` repository section in `/etc/pacman.conf` pointing to `~/.cache/aurodle/aurpkgs/` with `SigLevel = Optional TrustAll`
 - User understands the security implications of building AUR packages
 - System libalpm.so version matches the latest stable pacman release
 - Zig compiler and build tools are available for compilation
@@ -420,19 +420,19 @@ Aurodle is a minimalist AUR helper written in Zig that builds AUR packages into 
 - **Test PKGBUILD**: Maintain a minimal valid PKGBUILD for build integration tests
 - **CI integration**: All tests runnable in CI via `zig build test`
 
-## Open Questions
+## Resolved Design Decisions
 
-1. **pacman.conf auto-configuration**: Should aurodle offer to automatically add the `[aurpkgs]` repository section to `/etc/pacman.conf`, or should this always be a manual step documented in setup instructions?
+1. **pacman.conf configuration**: Manual only. Aurodle will never modify `/etc/pacman.conf`. Setup instructions are documented in README and available via `--help`. When the `[aurpkgs]` repository is not configured, relevant commands (sync, build, install) will fail with a clear error message including copy-pasteable configuration instructions.
 
-2. **Makepkg.conf integration depth**: How deeply should aurodle respect makepkg.conf settings like `$PKGDEST`, `$SRCDEST`, `$BUILDDIR`? These could redirect built packages away from the expected repository location.
+2. **Makepkg.conf integration**: Fully respect makepkg.conf. Aurodle honors all makepkg.conf variables including `$PKGDEST`, `$SRCDEST`, and `$BUILDDIR`. After a successful build, aurodle resolves the effective `$PKGDEST` (reading makepkg.conf if set, falling back to the build directory) and copies built packages to the local repository. Build failure to locate packages in the resolved `$PKGDEST` results in a clear error.
 
-3. **Multiple architecture support**: Should aurodle handle `arch=('x86_64' 'aarch64')` or assume the host architecture only?
+3. **Architecture support**: Host architecture only. Aurodle builds exclusively for the host architecture. No cross-compilation support. Architecture validation is delegated to makepkg, which natively checks the PKGBUILD `arch` array against the host.
 
-4. **Split packages**: How should aurodle handle pkgbases that produce multiple packages (split packages)? Should all sub-packages be added to the repository, or only the requested one?
+4. **Split packages**: Add all sub-packages to the local repository, install only requested. When a pkgbase produces multiple `.pkg.tar` files (split packages), all are added to the local repository via `repo-add`. However, only the packages explicitly requested by the user are installed via pacman. This ensures sibling dependencies are available without installing unwanted packages.
 
-5. **AUR RPC rate limiting**: What backoff strategy should be used if the AUR API rate-limits requests? The spec doesn't define retry behavior.
+5. **AUR RPC rate limiting**: Fail fast. If the AUR API returns a rate-limit response, aurodle immediately fails with a clear error message advising the user to wait and retry. No automatic retries or backoff. The multi-info endpoint should be used where possible to minimize request count.
 
-6. **Repository database signing**: Should the local repository database be signed, or is an unsigned database acceptable for a local-only repository?
+6. **Repository database signing**: Unsigned. The local repository database is not signed. Users configure `SigLevel = Optional TrustAll` (or equivalent) for the `[aurpkgs]` section in pacman.conf. This matches aurutils' default behavior and avoids GPG key management complexity.
 
 ## Traceability Matrix
 
