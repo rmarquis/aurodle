@@ -1,6 +1,420 @@
 const std = @import("std");
 const aurodle = @import("aurodle");
+const aur = aurodle.aur;
+const commands = aurodle.commands;
+const Allocator = std.mem.Allocator;
 
-pub fn main() !void {
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
+const ExitCode = commands.ExitCode;
+
+const version_string = "0.0.0";
+
+pub fn main() u8 {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer {
+        const check = gpa.deinit();
+        if (check == .leak) {
+            std.log.err("memory leak detected", .{});
+        }
+    }
+    const allocator = gpa.allocator();
+
+    const result = run(allocator) catch |err| {
+        const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
+        const w = stderr.deprecatedWriter();
+        w.print("error: unexpected failure: {}\n", .{err}) catch {};
+        return 1;
+    };
+
+    return @intFromEnum(result);
+}
+
+fn run(allocator: Allocator) !ExitCode {
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    // Skip argv[0] (the program name)
+    const user_args = if (args.len > 1) args[1..] else args[0..0];
+
+    // Parse arguments
+    var target_buf: [256][]const u8 = undefined;
+    const parsed = parseArgs(user_args, &target_buf) catch |err| switch (err) {
+        error.UnknownCommand => {
+            printUsageError("unknown command");
+            return .usage_error;
+        },
+        error.UnknownFlag => {
+            printUsageError("unknown flag");
+            return .usage_error;
+        },
+        error.MissingArgument => {
+            printUsageError("missing required argument");
+            return .usage_error;
+        },
+        error.HelpRequested => {
+            printHelp();
+            return .success;
+        },
+        error.VersionRequested => {
+            printVersion();
+            return .success;
+        },
+    };
+
+    // Handle command-specific help
+    if (parsed.flags.help) {
+        printHelp();
+        return .success;
+    }
+
+    // Initialize AUR client and commands
+    var aur_client = aur.Client.init(allocator);
+    defer aur_client.deinit();
+
+    var cmds = commands.Commands.init(allocator, &aur_client, parsed.flags);
+
+    return switch (parsed.operation) {
+        .info => try cmds.info(parsed.targets),
+        .search => blk: {
+            if (parsed.targets.len == 0) {
+                printUsageError("search requires a query term");
+                break :blk .usage_error;
+            }
+            break :blk try cmds.search(parsed.targets[0]);
+        },
+        .sync, .build, .show, .outdated, .upgrade, .clean, .resolve, .buildorder => {
+            const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
+            const w = stderr.deprecatedWriter();
+            w.print("error: '{s}' is not yet implemented\n", .{@tagName(parsed.operation)}) catch {};
+            return .general_error;
+        },
+    };
+}
+
+const Operation = enum {
+    sync,
+    build,
+    info,
+    search,
+    show,
+    outdated,
+    upgrade,
+    clean,
+    resolve,
+    buildorder,
+
+    fn fromString(s: []const u8) ?Operation {
+        const map = std.StaticStringMap(Operation).initComptime(.{
+            .{ "sync", .sync },
+            .{ "build", .build },
+            .{ "info", .info },
+            .{ "search", .search },
+            .{ "show", .show },
+            .{ "outdated", .outdated },
+            .{ "upgrade", .upgrade },
+            .{ "clean", .clean },
+            .{ "resolve", .resolve },
+            .{ "buildorder", .buildorder },
+            // Short aliases
+            .{ "S", .sync },
+            .{ "B", .build },
+            .{ "Qi", .info },
+            .{ "Ss", .search },
+            .{ "Qu", .outdated },
+            .{ "U", .upgrade },
+        });
+        return map.get(s);
+    }
+
+    fn isBuildOperation(self: Operation) bool {
+        return switch (self) {
+            .sync, .build, .upgrade => true,
+            else => false,
+        };
+    }
+
+    fn requiresTargets(self: Operation) bool {
+        return switch (self) {
+            .sync, .build, .info, .search, .show, .resolve, .buildorder => true,
+            .outdated, .upgrade, .clean => false,
+        };
+    }
+};
+
+const ParsedCommand = struct {
+    operation: Operation,
+    targets: []const []const u8,
+    flags: commands.Flags,
+};
+
+const ParseError = error{
+    UnknownCommand,
+    UnknownFlag,
+    MissingArgument,
+    HelpRequested,
+    VersionRequested,
+};
+
+/// Parse raw argv into a structured command.
+/// `target_buf` is caller-provided storage for target pointers.
+fn parseArgs(args: []const []const u8, target_buf: [][]const u8) ParseError!ParsedCommand {
+    if (args.len == 0) {
+        return ParseError.HelpRequested;
+    }
+
+    // Check for global flags before command
+    if (std.mem.eql(u8, args[0], "--help") or std.mem.eql(u8, args[0], "-h")) {
+        return ParseError.HelpRequested;
+    }
+    if (std.mem.eql(u8, args[0], "--version") or std.mem.eql(u8, args[0], "-v")) {
+        return ParseError.VersionRequested;
+    }
+
+    // First non-flag argument is the command
+    const operation = Operation.fromString(args[0]) orelse {
+        return ParseError.UnknownCommand;
+    };
+
+    var flags = commands.Flags{};
+    var target_count: usize = 0;
+    var i: usize = 1;
+
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+
+        if (std.mem.startsWith(u8, arg, "--")) {
+            if (std.mem.eql(u8, arg, "--help")) {
+                flags.help = true;
+            } else if (std.mem.eql(u8, arg, "--noconfirm")) {
+                flags.noconfirm = true;
+            } else if (std.mem.eql(u8, arg, "--noshow")) {
+                flags.noshow = true;
+            } else if (std.mem.eql(u8, arg, "--needed")) {
+                flags.needed = true;
+            } else if (std.mem.eql(u8, arg, "--rebuild")) {
+                flags.rebuild = true;
+            } else if (std.mem.eql(u8, arg, "--quiet")) {
+                flags.quiet = true;
+            } else if (std.mem.eql(u8, arg, "--raw")) {
+                flags.raw = true;
+            } else if (std.mem.eql(u8, arg, "--asdeps")) {
+                flags.asdeps = true;
+            } else if (std.mem.eql(u8, arg, "--asexplicit")) {
+                flags.asexplicit = true;
+            } else if (std.mem.eql(u8, arg, "--devel")) {
+                flags.devel = true;
+            } else if (std.mem.eql(u8, arg, "--by")) {
+                i += 1;
+                if (i >= args.len) return ParseError.MissingArgument;
+                flags.by = aur.SearchField.fromString(args[i]) orelse
+                    return ParseError.UnknownFlag;
+            } else if (std.mem.eql(u8, arg, "--sort")) {
+                i += 1;
+                if (i >= args.len) return ParseError.MissingArgument;
+                flags.sort = commands.SortField.fromString(args[i]) orelse
+                    return ParseError.UnknownFlag;
+            } else if (std.mem.eql(u8, arg, "--rsort")) {
+                i += 1;
+                if (i >= args.len) return ParseError.MissingArgument;
+                flags.rsort = commands.SortField.fromString(args[i]) orelse
+                    return ParseError.UnknownFlag;
+            } else if (std.mem.eql(u8, arg, "--format")) {
+                i += 1;
+                if (i >= args.len) return ParseError.MissingArgument;
+                flags.format_str = args[i];
+            } else {
+                return ParseError.UnknownFlag;
+            }
+        } else if (arg.len > 1 and arg[0] == '-') {
+            // Short flags
+            for (arg[1..]) |ch| {
+                switch (ch) {
+                    'h' => flags.help = true,
+                    'q' => flags.quiet = true,
+                    else => return ParseError.UnknownFlag,
+                }
+            }
+        } else {
+            // Positional argument = target
+            if (target_count >= target_buf.len) return ParseError.MissingArgument;
+            target_buf[target_count] = arg;
+            target_count += 1;
+        }
+    }
+
+    // Validate: commands that require targets
+    if (operation.requiresTargets() and target_count == 0) {
+        return ParseError.MissingArgument;
+    }
+
+    return ParsedCommand{
+        .operation = operation,
+        .targets = target_buf[0..target_count],
+        .flags = flags,
+    };
+}
+
+fn printHelp() void {
+    const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
+    stdout.writeAll(
+        \\aurodle — AUR package manager for Arch Linux
+        \\
+        \\Usage: aurodle <command> [options] [targets...]
+        \\
+        \\Commands:
+        \\  sync <packages...>     Install AUR packages (resolve, clone, build, install)
+        \\  build <packages...>    Build packages into local repository
+        \\  info <packages...>     Display AUR package information
+        \\  search <term>          Search AUR packages
+        \\  show <package>         Display package build files
+        \\  resolve <packages...>  Show dependency tree
+        \\  buildorder <pkgs...>   Show build order (machine-readable)
+        \\  outdated [packages...] List outdated AUR packages
+        \\  upgrade [packages...]  Upgrade outdated AUR packages
+        \\  clean                  Remove stale cache files
+        \\
+        \\Global options:
+        \\  -h, --help             Show this help
+        \\  -v, --version          Show version
+        \\  -q, --quiet            Reduce output verbosity
+        \\
+        \\Build options:
+        \\  --noconfirm            Skip confirmation prompts
+        \\  --noshow               Skip build file review
+        \\  --needed               Skip up-to-date packages
+        \\  --rebuild              Force rebuild
+        \\  --asdeps               Install as dependency
+        \\  --asexplicit           Install as explicitly installed
+        \\
+        \\Search options:
+        \\  --by <field>           Search by: name, name-desc, maintainer
+        \\  --sort <field>         Sort by: name, votes, popularity
+        \\  --rsort <field>        Reverse sort
+        \\  --raw                  Output raw JSON
+        \\
+    ) catch {};
+}
+
+fn printVersion() void {
+    const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
+    stdout.writeAll("aurodle " ++ version_string ++ "\n") catch {};
+}
+
+fn printUsageError(message: []const u8) void {
+    const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
+    const w = stderr.deprecatedWriter();
+    w.print("error: {s}\n", .{message}) catch {};
+    stderr.writeAll("Try 'aurodle --help' for usage information.\n") catch {};
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────
+
+fn testParse(args: []const []const u8) ParseError!ParsedCommand {
+    var buf: [256][]const u8 = undefined;
+    return parseArgs(args, &buf);
+}
+
+test "parseArgs: basic info command" {
+    var buf: [256][]const u8 = undefined;
+    const parsed = try parseArgs(&.{ "info", "foo", "bar" }, &buf);
+    try std.testing.expectEqual(Operation.info, parsed.operation);
+    try std.testing.expectEqual(@as(usize, 2), parsed.targets.len);
+    try std.testing.expectEqualStrings("foo", parsed.targets[0]);
+    try std.testing.expectEqualStrings("bar", parsed.targets[1]);
+}
+
+test "parseArgs: flags mixed with targets" {
+    var buf: [256][]const u8 = undefined;
+    const parsed = try parseArgs(&.{ "sync", "--needed", "foo", "--noconfirm" }, &buf);
+    try std.testing.expectEqual(Operation.sync, parsed.operation);
+    try std.testing.expectEqual(@as(usize, 1), parsed.targets.len);
+    try std.testing.expectEqualStrings("foo", parsed.targets[0]);
+    try std.testing.expect(parsed.flags.needed);
+    try std.testing.expect(parsed.flags.noconfirm);
+}
+
+test "parseArgs: search with --by flag" {
+    var buf: [256][]const u8 = undefined;
+    const parsed = try parseArgs(&.{ "search", "--by", "maintainer", "foo" }, &buf);
+    try std.testing.expectEqual(Operation.search, parsed.operation);
+    try std.testing.expect(parsed.flags.by != null);
+    try std.testing.expectEqual(aur.SearchField.maintainer, parsed.flags.by.?);
+}
+
+test "parseArgs: empty args shows help" {
+    try std.testing.expectError(ParseError.HelpRequested, testParse(&.{}));
+}
+
+test "parseArgs: --help before command" {
+    try std.testing.expectError(ParseError.HelpRequested, testParse(&.{"--help"}));
+}
+
+test "parseArgs: --version flag" {
+    try std.testing.expectError(ParseError.VersionRequested, testParse(&.{"--version"}));
+}
+
+test "parseArgs: unknown command" {
+    try std.testing.expectError(ParseError.UnknownCommand, testParse(&.{"frobnicate"}));
+}
+
+test "parseArgs: unknown flag" {
+    try std.testing.expectError(ParseError.UnknownFlag, testParse(&.{ "sync", "--turbo" }));
+}
+
+test "parseArgs: missing target for sync" {
+    try std.testing.expectError(ParseError.MissingArgument, testParse(&.{"sync"}));
+}
+
+test "parseArgs: outdated with no targets is valid" {
+    var buf: [256][]const u8 = undefined;
+    const parsed = try parseArgs(&.{"outdated"}, &buf);
+    try std.testing.expectEqual(Operation.outdated, parsed.operation);
+    try std.testing.expectEqual(@as(usize, 0), parsed.targets.len);
+}
+
+test "parseArgs: short aliases" {
+    var buf1: [256][]const u8 = undefined;
+    const parsed = try parseArgs(&.{ "S", "foo" }, &buf1);
+    try std.testing.expectEqual(Operation.sync, parsed.operation);
+
+    var buf2: [256][]const u8 = undefined;
+    const parsed2 = try parseArgs(&.{ "Qi", "foo" }, &buf2);
+    try std.testing.expectEqual(Operation.info, parsed2.operation);
+
+    var buf3: [256][]const u8 = undefined;
+    const parsed3 = try parseArgs(&.{ "Ss", "foo" }, &buf3);
+    try std.testing.expectEqual(Operation.search, parsed3.operation);
+}
+
+test "parseArgs: combined short flags" {
+    var buf: [256][]const u8 = undefined;
+    const parsed = try parseArgs(&.{ "search", "-q", "foo" }, &buf);
+    try std.testing.expect(parsed.flags.quiet);
+}
+
+test "parseArgs: sort and rsort flags" {
+    var buf1: [256][]const u8 = undefined;
+    const parsed = try parseArgs(&.{ "search", "--sort", "votes", "foo" }, &buf1);
+    try std.testing.expectEqual(commands.SortField.votes, parsed.flags.sort.?);
+
+    var buf2: [256][]const u8 = undefined;
+    const parsed2 = try parseArgs(&.{ "search", "--rsort", "name", "foo" }, &buf2);
+    try std.testing.expectEqual(commands.SortField.name, parsed2.flags.rsort.?);
+}
+
+test "Operation.isBuildOperation" {
+    try std.testing.expect(Operation.sync.isBuildOperation());
+    try std.testing.expect(Operation.build.isBuildOperation());
+    try std.testing.expect(Operation.upgrade.isBuildOperation());
+    try std.testing.expect(!Operation.info.isBuildOperation());
+    try std.testing.expect(!Operation.search.isBuildOperation());
+    try std.testing.expect(!Operation.clean.isBuildOperation());
+}
+
+test "Operation.requiresTargets" {
+    try std.testing.expect(Operation.sync.requiresTargets());
+    try std.testing.expect(Operation.info.requiresTargets());
+    try std.testing.expect(Operation.search.requiresTargets());
+    try std.testing.expect(!Operation.outdated.requiresTargets());
+    try std.testing.expect(!Operation.upgrade.requiresTargets());
+    try std.testing.expect(!Operation.clean.requiresTargets());
 }
