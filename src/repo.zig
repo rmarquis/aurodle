@@ -7,6 +7,7 @@ const utils = @import("utils.zig");
 pub const REPO_NAME = "aurpkgs";
 pub const DB_FILENAME = "aurpkgs.db.tar.xz";
 pub const DEFAULT_PKGEXT = ".pkg.tar.zst";
+pub const DEFAULT_REPO_DIR = "/var/lib/aurodle/aurpkgs";
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -46,28 +47,36 @@ pub const Repository = struct {
     makepkg_conf: MakepkgConfig,
     skip_repo_add: bool,
 
-    /// Create a Repository using the default cache root (~/.cache/aurodle).
+    /// Create a Repository using default paths:
+    /// - repo_dir: /var/lib/aurodle/aurpkgs (shared, readable by root for pacman)
+    /// - cache_dir: ~/.cache/aurodle (user-owned clones and logs)
     /// Parses makepkg.conf for PKGDEST/PKGEXT/BUILDDIR.
     pub fn init(allocator: Allocator) !Repository {
         const home = std.posix.getenv("HOME") orelse return error.NoHomeDirectory;
         const cache_dir = try std.fs.path.join(allocator, &.{ home, ".cache/aurodle" });
         errdefer allocator.free(cache_dir);
 
+        const repo_dir = try allocator.dupe(u8, DEFAULT_REPO_DIR);
+        errdefer allocator.free(repo_dir);
+
         const conf = parseMakepkgConf(allocator) catch MakepkgConfig{};
 
-        return initFromParts(allocator, cache_dir, conf);
+        return initFromParts(allocator, cache_dir, repo_dir, conf);
     }
 
     /// Create a Repository with an explicit cache root (for testing).
+    /// Both repo_dir and cache_dir are under cache_root.
     /// Does NOT parse system makepkg.conf.
     pub fn initWithRoot(allocator: Allocator, cache_root: []const u8) !Repository {
         const cache_dir = try allocator.dupe(u8, cache_root);
-        return initFromParts(allocator, cache_dir, .{});
+        errdefer allocator.free(cache_dir);
+
+        const repo_dir = try std.fs.path.join(allocator, &.{ cache_root, REPO_NAME });
+
+        return initFromParts(allocator, cache_dir, repo_dir, .{});
     }
 
-    fn initFromParts(allocator: Allocator, cache_dir: []const u8, conf: MakepkgConfig) !Repository {
-        const repo_dir = try std.fs.path.join(allocator, &.{ cache_dir, REPO_NAME });
-        errdefer allocator.free(repo_dir);
+    fn initFromParts(allocator: Allocator, cache_dir: []const u8, repo_dir: []const u8, conf: MakepkgConfig) !Repository {
         const db_path = try std.fs.path.join(allocator, &.{ repo_dir, DB_FILENAME });
         errdefer allocator.free(db_path);
         const log_dir = try std.fs.path.join(allocator, &.{ cache_dir, "logs" });
@@ -249,9 +258,11 @@ pub const Repository = struct {
             \\
             \\[aurpkgs]
             \\SigLevel = Optional TrustAll
-            \\Server = file:///home/$USER/.cache/aurodle/aurpkgs
+            \\Server = file:///var/lib/aurodle/aurpkgs
             \\
-            \\Then run: sudo pacman -Sy
+            \\Then run:
+            \\  sudo install -d -o $USER /var/lib/aurodle/aurpkgs
+            \\  sudo pacman -Sy
         ;
     }
 
