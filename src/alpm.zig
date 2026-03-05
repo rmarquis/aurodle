@@ -159,6 +159,14 @@ pub const Database = struct {
     pub fn getPkgcache(self: Database) PackageIterator {
         return .{ .current = c.alpm_db_get_pkgcache(self.raw) };
     }
+
+    /// Add a mirror server URL to this database.
+    /// Required before dbUpdate() can download database files.
+    pub fn addServer(self: Database, url: []const u8) AlpmError!void {
+        const c_url = toCString(url);
+        const ret = c.alpm_db_add_server(self.raw, c_url.ptr());
+        if (ret != 0) return error.InvalidArgument;
+    }
 };
 
 // ── Package ──────────────────────────────────────────────────────────────
