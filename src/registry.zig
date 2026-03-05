@@ -57,7 +57,7 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
         }
 
         /// Resolve a single dependency string through the cascade:
-        /// cache → installed → sync DBs → AUR → provider → unknown
+        /// cache → installed → sync → pacman provider → AUR → AUR provider → unknown
         pub fn resolve(self: *Self, dep_string: []const u8) !Resolution {
             const spec = parseDep(dep_string);
 
@@ -92,14 +92,20 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
                 return res;
             }
 
-            // Tier 3: In AUR?
+            // Tier 3: Provided by installed/sync package?
+            if (self.resolveProvider(spec.name)) |res| {
+                try self.cacheResult(spec.name, res);
+                return res;
+            }
+
+            // Tier 4: In AUR by exact name?
             if (try self.resolveAur(spec.name)) |res| {
                 try self.cacheResult(spec.name, res);
                 return res;
             }
 
-            // Tier 4: Provider resolution
-            if (self.resolveProvider(spec.name)) |res| {
+            // Tier 5: Provided by an AUR package?
+            if (try self.resolveAurProvider(spec.name)) |res| {
                 try self.cacheResult(spec.name, res);
                 return res;
             }
@@ -221,6 +227,23 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
                 .source = source,
                 .version = provider.provider_version,
                 .provider = provider.provider_name,
+            };
+        }
+
+        fn resolveAurProvider(self: *Self, name: []const u8) !?Resolution {
+            const results = self.aur_client.search(name, .provides) catch return null;
+            defer self.allocator.free(results);
+
+            if (results.len == 0) return null;
+
+            // Use the first provider found
+            const provider_pkg = results[0];
+            return .{
+                .name = provider_pkg.name,
+                .source = .aur,
+                .version = provider_pkg.version,
+                .aur_pkg = provider_pkg,
+                .provider = provider_pkg.name,
             };
         }
 
@@ -357,16 +380,21 @@ const MockPacman = struct {
 
 const MockAurClient = struct {
     packages: std.StringHashMapUnmanaged(*aur.Package),
+    /// Maps a "provides" name to the provider package name.
+    aur_providers: std.StringHashMapUnmanaged([]const u8),
     multi_info_call_count: usize,
     info_call_count: usize,
+    search_call_count: usize,
     should_error: bool,
     arena: std.heap.ArenaAllocator,
 
     fn initEmpty() MockAurClient {
         return .{
             .packages = .empty,
+            .aur_providers = .empty,
             .multi_info_call_count = 0,
             .info_call_count = 0,
+            .search_call_count = 0,
             .should_error = false,
             .arena = std.heap.ArenaAllocator.init(testing.allocator),
         };
@@ -374,10 +402,15 @@ const MockAurClient = struct {
 
     fn deinitMock(self: *MockAurClient) void {
         self.packages.deinit(testing.allocator);
+        self.aur_providers.deinit(testing.allocator);
         self.arena.deinit();
     }
 
     fn addPackage(self: *MockAurClient, name: []const u8, version: []const u8) void {
+        self.addPackageWithProvides(name, version, &.{});
+    }
+
+    fn addPackageWithProvides(self: *MockAurClient, name: []const u8, version: []const u8, provides: []const []const u8) void {
         const alloc = self.arena.allocator();
         const pkg = alloc.create(aur.Package) catch unreachable;
         pkg.* = .{
@@ -400,7 +433,7 @@ const MockAurClient = struct {
             .makedepends = &.{},
             .checkdepends = &.{},
             .optdepends = &.{},
-            .provides = &.{},
+            .provides = provides,
             .conflicts = &.{},
             .replaces = &.{},
             .groups = &.{},
@@ -409,6 +442,11 @@ const MockAurClient = struct {
             .comaintainers = &.{},
         };
         self.packages.put(testing.allocator, name, pkg) catch unreachable;
+
+        // Register provider mappings
+        for (provides) |prov| {
+            self.aur_providers.put(testing.allocator, prov, name) catch unreachable;
+        }
     }
 
     pub fn info(self: *MockAurClient, name: []const u8) !?*aur.Package {
@@ -426,6 +464,23 @@ const MockAurClient = struct {
 
         for (names) |name| {
             if (self.packages.get(name)) |pkg| {
+                try results.append(testing.allocator, pkg);
+            }
+        }
+
+        return try results.toOwnedSlice(testing.allocator);
+    }
+
+    pub fn search(self: *MockAurClient, query: []const u8, by: aur.SearchField) ![]const *aur.Package {
+        self.search_call_count += 1;
+        if (self.should_error) return error.NetworkError;
+
+        _ = by; // Mock only supports provides lookup
+        var results: std.ArrayList(*aur.Package) = .empty;
+        defer results.deinit(testing.allocator);
+
+        if (self.aur_providers.get(query)) |provider_name| {
+            if (self.packages.get(provider_name)) |pkg| {
                 try results.append(testing.allocator, pkg);
             }
         }
@@ -770,7 +825,7 @@ test "resolve does not error on package not found" {
 
 // ── Provider Resolution Tests ───────────────────────────────────────────
 
-test "resolve falls through to provider when direct lookups fail" {
+test "resolve falls through to pacman provider when direct lookups fail" {
     var pm = MockPacman.initEmpty();
     defer pm.deinitMock();
     pm.addInstalled("jre-openjdk", "21.0.1");
@@ -790,4 +845,65 @@ test "resolve falls through to provider when direct lookups fail" {
     try testing.expectEqual(Source.satisfied, res.source);
     try testing.expectEqualStrings("java-runtime", res.name);
     try testing.expectEqualStrings("jre-openjdk", res.provider.?);
+}
+
+test "resolve finds AUR provider when package not found by name" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+    // "auracle-git" provides "auracle"
+    ac.addPackageWithProvides("auracle-git", "r427-1", &.{"auracle"});
+
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+
+    const res = try reg.resolve("auracle");
+    try testing.expectEqual(Source.aur, res.source);
+    try testing.expectEqualStrings("auracle-git", res.name);
+    try testing.expectEqualStrings("r427-1", res.version.?);
+    try testing.expect(res.aur_pkg != null);
+    try testing.expectEqualStrings("auracle-git", res.provider.?);
+}
+
+test "resolve prefers pacman provider over AUR provider" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+    pm.addInstalled("auracle-local", "1.0");
+    pm.addProvider("auracle", .{
+        .provider_name = "auracle-local",
+        .provider_version = "1.0",
+        .db_name = "extra",
+    });
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+    ac.addPackageWithProvides("auracle-git", "r427-1", &.{"auracle"});
+
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+
+    // Pacman provider (Tier 3) should win over AUR provider (Tier 5)
+    const res = try reg.resolve("auracle");
+    try testing.expectEqual(Source.satisfied, res.source);
+    try testing.expectEqualStrings("auracle-local", res.provider.?);
+    // AUR search should not have been called
+    try testing.expectEqual(@as(usize, 0), ac.search_call_count);
+}
+
+test "resolve returns unknown when no provider exists anywhere" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+
+    const res = try reg.resolve("totally-missing");
+    try testing.expectEqual(Source.unknown, res.source);
+    // Should have tried AUR search as last resort
+    try testing.expectEqual(@as(usize, 1), ac.search_call_count);
 }
