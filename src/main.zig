@@ -401,6 +401,93 @@ test "parseArgs: sort and rsort flags" {
     try std.testing.expectEqual(commands.SortField.name, parsed2.flags.rsort.?);
 }
 
+test "parseArgs: --noconfirm flag" {
+    var buf: [256][]const u8 = undefined;
+    const parsed = try parseArgs(&.{ "sync", "--noconfirm", "foo" }, &buf);
+    try std.testing.expect(parsed.flags.noconfirm);
+}
+
+test "parseArgs: --needed flag" {
+    var buf: [256][]const u8 = undefined;
+    const parsed = try parseArgs(&.{ "build", "--needed", "foo" }, &buf);
+    try std.testing.expect(parsed.flags.needed);
+}
+
+test "parseArgs: --rebuild flag" {
+    var buf: [256][]const u8 = undefined;
+    const parsed = try parseArgs(&.{ "build", "--rebuild", "foo" }, &buf);
+    try std.testing.expect(parsed.flags.rebuild);
+}
+
+test "parseArgs: --raw flag" {
+    var buf: [256][]const u8 = undefined;
+    const parsed = try parseArgs(&.{ "info", "--raw", "foo" }, &buf);
+    try std.testing.expect(parsed.flags.raw);
+}
+
+test "parseArgs: --noshow flag" {
+    var buf: [256][]const u8 = undefined;
+    const parsed = try parseArgs(&.{ "sync", "--noshow", "foo" }, &buf);
+    try std.testing.expect(parsed.flags.noshow);
+}
+
+test "parseArgs: --asdeps and --asexplicit flags" {
+    var buf1: [256][]const u8 = undefined;
+    const parsed = try parseArgs(&.{ "sync", "--asdeps", "foo" }, &buf1);
+    try std.testing.expect(parsed.flags.asdeps);
+
+    var buf2: [256][]const u8 = undefined;
+    const parsed2 = try parseArgs(&.{ "sync", "--asexplicit", "foo" }, &buf2);
+    try std.testing.expect(parsed2.flags.asexplicit);
+}
+
+test "parseArgs: --devel flag" {
+    var buf: [256][]const u8 = undefined;
+    const parsed = try parseArgs(&.{ "sync", "--devel", "foo" }, &buf);
+    try std.testing.expect(parsed.flags.devel);
+}
+
+test "parseArgs: --format flag with value" {
+    var buf: [256][]const u8 = undefined;
+    const parsed = try parseArgs(&.{ "info", "--format", "{name} {version}", "foo" }, &buf);
+    try std.testing.expect(parsed.flags.format_str != null);
+    try std.testing.expectEqualStrings("{name} {version}", parsed.flags.format_str.?);
+}
+
+test "parseArgs: --by with missing value returns MissingArgument" {
+    try std.testing.expectError(ParseError.MissingArgument, testParse(&.{ "search", "--by" }));
+}
+
+test "parseArgs: --sort with invalid value returns UnknownFlag" {
+    try std.testing.expectError(ParseError.UnknownFlag, testParse(&.{ "search", "--sort", "invalid", "foo" }));
+}
+
+test "parseArgs: recognizes all command names" {
+    const cmds = [_]struct { name: []const u8, op: Operation }{
+        .{ .name = "sync", .op = .sync },
+        .{ .name = "build", .op = .build },
+        .{ .name = "info", .op = .info },
+        .{ .name = "search", .op = .search },
+        .{ .name = "show", .op = .show },
+        .{ .name = "resolve", .op = .resolve },
+        .{ .name = "buildorder", .op = .buildorder },
+    };
+    for (cmds) |cmd| {
+        var buf: [256][]const u8 = undefined;
+        const parsed = try parseArgs(&.{ cmd.name, "arg" }, &buf);
+        try std.testing.expectEqual(cmd.op, parsed.operation);
+    }
+}
+
+test "parseArgs: commands without required targets" {
+    const cmds = [_][]const u8{ "outdated", "upgrade", "clean" };
+    for (cmds) |cmd| {
+        var buf: [256][]const u8 = undefined;
+        const parsed = try parseArgs(&.{cmd}, &buf);
+        try std.testing.expectEqual(@as(usize, 0), parsed.targets.len);
+    }
+}
+
 test "Operation.isBuildOperation" {
     try std.testing.expect(Operation.sync.isBuildOperation());
     try std.testing.expect(Operation.build.isBuildOperation());

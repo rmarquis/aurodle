@@ -241,6 +241,118 @@ pub const Commands = struct {
     }
 };
 
+// ── Tests ────────────────────────────────────────────────────────────────
+
+fn makeTestPackage(name: []const u8, votes: u32, popularity: f64) aur.Package {
+    return .{
+        .id = 0,
+        .name = name,
+        .pkgbase = name,
+        .pkgbase_id = 0,
+        .version = "1.0-1",
+        .description = null,
+        .url = null,
+        .url_path = null,
+        .maintainer = null,
+        .submitter = null,
+        .votes = votes,
+        .popularity = popularity,
+        .first_submitted = 0,
+        .last_modified = 0,
+        .out_of_date = null,
+        .depends = &.{},
+        .makedepends = &.{},
+        .checkdepends = &.{},
+        .optdepends = &.{},
+        .provides = &.{},
+        .conflicts = &.{},
+        .replaces = &.{},
+        .groups = &.{},
+        .keywords = &.{},
+        .licenses = &.{},
+        .comaintainers = &.{},
+    };
+}
+
+test "sortPackages: default sort is popularity descending" {
+    var pkg_a = makeTestPackage("alpha", 10, 1.0);
+    var pkg_b = makeTestPackage("beta", 20, 5.0);
+    var pkg_c = makeTestPackage("gamma", 15, 3.0);
+
+    var packages = [_]*aur.Package{ &pkg_a, &pkg_b, &pkg_c };
+    var cmds = Commands.init(std.testing.allocator, undefined, .{});
+    const sorted = try cmds.sortPackages(&packages);
+    defer std.testing.allocator.free(sorted);
+
+    // Default: popularity descending (5.0 > 3.0 > 1.0)
+    try std.testing.expectEqualStrings("beta", sorted[0].name);
+    try std.testing.expectEqualStrings("gamma", sorted[1].name);
+    try std.testing.expectEqualStrings("alpha", sorted[2].name);
+}
+
+test "sortPackages: --sort name ascending" {
+    var pkg_a = makeTestPackage("cherry", 10, 1.0);
+    var pkg_b = makeTestPackage("apple", 20, 5.0);
+    var pkg_c = makeTestPackage("banana", 15, 3.0);
+
+    var packages = [_]*aur.Package{ &pkg_a, &pkg_b, &pkg_c };
+    var cmds = Commands.init(std.testing.allocator, undefined, .{ .sort = .name });
+    const sorted = try cmds.sortPackages(&packages);
+    defer std.testing.allocator.free(sorted);
+
+    try std.testing.expectEqualStrings("apple", sorted[0].name);
+    try std.testing.expectEqualStrings("banana", sorted[1].name);
+    try std.testing.expectEqualStrings("cherry", sorted[2].name);
+}
+
+test "sortPackages: --sort votes ascending" {
+    var pkg_a = makeTestPackage("a", 30, 1.0);
+    var pkg_b = makeTestPackage("b", 10, 5.0);
+    var pkg_c = makeTestPackage("c", 20, 3.0);
+
+    var packages = [_]*aur.Package{ &pkg_a, &pkg_b, &pkg_c };
+    var cmds = Commands.init(std.testing.allocator, undefined, .{ .sort = .votes });
+    const sorted = try cmds.sortPackages(&packages);
+    defer std.testing.allocator.free(sorted);
+
+    try std.testing.expectEqual(@as(u32, 10), sorted[0].votes);
+    try std.testing.expectEqual(@as(u32, 20), sorted[1].votes);
+    try std.testing.expectEqual(@as(u32, 30), sorted[2].votes);
+}
+
+test "sortPackages: --rsort popularity descending" {
+    var pkg_a = makeTestPackage("a", 10, 1.0);
+    var pkg_b = makeTestPackage("b", 20, 5.0);
+    var pkg_c = makeTestPackage("c", 15, 3.0);
+
+    var packages = [_]*aur.Package{ &pkg_a, &pkg_b, &pkg_c };
+    var cmds = Commands.init(std.testing.allocator, undefined, .{ .rsort = .popularity });
+    const sorted = try cmds.sortPackages(&packages);
+    defer std.testing.allocator.free(sorted);
+
+    try std.testing.expect(sorted[0].popularity > sorted[1].popularity);
+    try std.testing.expect(sorted[1].popularity > sorted[2].popularity);
+}
+
+test "sortPackages: empty input returns empty slice" {
+    const packages: []const *aur.Package = &.{};
+    var cmds = Commands.init(std.testing.allocator, undefined, .{});
+    const sorted = try cmds.sortPackages(packages);
+    defer std.testing.allocator.free(sorted);
+
+    try std.testing.expectEqual(@as(usize, 0), sorted.len);
+}
+
+test "SortField.fromString valid fields" {
+    try std.testing.expectEqual(SortField.name, SortField.fromString("name").?);
+    try std.testing.expectEqual(SortField.votes, SortField.fromString("votes").?);
+    try std.testing.expectEqual(SortField.popularity, SortField.fromString("popularity").?);
+}
+
+test "SortField.fromString returns null for unknown" {
+    try std.testing.expect(SortField.fromString("invalid") == null);
+}
+
 fn printError(err: anytype) !void {
     const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
     const w = stderr.deprecatedWriter();

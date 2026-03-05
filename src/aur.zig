@@ -512,6 +512,88 @@ test "url encoding" {
     try std.testing.expectEqualStrings("a%2Bb%26c%3Dd", buf.items);
 }
 
+test "mapPackage sets non-empty name and version from fixture" {
+    var client = Client.init(std.testing.allocator);
+    defer client.deinit();
+
+    const fixture =
+        \\{"version":5,"type":"multiinfo","resultcount":1,"results":[{"ID":1000,"Name":"test-pkg","PackageBase":"test-pkg","PackageBaseID":1000,"Version":"1.0-1","Description":"A test package","NumVotes":42,"Popularity":3.14,"FirstSubmitted":1600000000,"LastModified":1700000000,"OutOfDate":null}]}
+    ;
+
+    const response = try client.parseResponse(fixture);
+    const pkg = try client.mapPackage(response.results[0]);
+    try std.testing.expect(pkg.name.len > 0);
+    try std.testing.expect(pkg.version.len > 0);
+    try std.testing.expect(pkg.pkgbase.len > 0);
+}
+
+test "cache stores and retrieves packages by name" {
+    var client = Client.init(std.testing.allocator);
+    defer client.deinit();
+
+    const rpc = RpcPackage{
+        .ID = 1,
+        .Name = "cached-pkg",
+        .PackageBase = "cached-pkg",
+        .PackageBaseID = 1,
+        .Version = "1.0",
+    };
+
+    const pkg = try client.mapPackage(rpc);
+    try client.cache.put(client.allocator, pkg.name, pkg);
+
+    // Cache hit should return the same pointer
+    const cached = client.cache.get("cached-pkg");
+    try std.testing.expect(cached != null);
+    try std.testing.expectEqual(pkg, cached.?);
+}
+
+test "cache returns null for uncached packages" {
+    var client = Client.init(std.testing.allocator);
+    defer client.deinit();
+
+    try std.testing.expect(client.cache.get("nonexistent") == null);
+}
+
+test "SearchField covers all documented variants" {
+    // Verify all search field variants can round-trip through fromString/toQueryParam
+    const fields = [_]struct { str: []const u8, val: SearchField }{
+        .{ .str = "name", .val = .name },
+        .{ .str = "name-desc", .val = .name_desc },
+        .{ .str = "depends", .val = .depends },
+        .{ .str = "makedepends", .val = .makedepends },
+        .{ .str = "checkdepends", .val = .checkdepends },
+        .{ .str = "optdepends", .val = .optdepends },
+        .{ .str = "maintainer", .val = .maintainer },
+        .{ .str = "submitter", .val = .submitter },
+        .{ .str = "provides", .val = .provides },
+        .{ .str = "conflicts", .val = .conflicts },
+        .{ .str = "replaces", .val = .replaces },
+        .{ .str = "keywords", .val = .keywords },
+        .{ .str = "groups", .val = .groups },
+        .{ .str = "comaintainers", .val = .comaintainers },
+    };
+    for (fields) |f| {
+        const parsed = SearchField.fromString(f.str).?;
+        try std.testing.expectEqual(f.val, parsed);
+        try std.testing.expectEqualStrings(f.str, parsed.toQueryParam());
+    }
+}
+
+test "url encoding handles special characters" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+
+    // Unreserved chars pass through
+    try appendUrlEncoded(&buf, std.testing.allocator, "abc-_.~");
+    try std.testing.expectEqualStrings("abc-_.~", buf.items);
+
+    // Empty string
+    buf.clearRetainingCapacity();
+    try appendUrlEncoded(&buf, std.testing.allocator, "");
+    try std.testing.expectEqualStrings("", buf.items);
+}
+
 test "checkError passes for successful response" {
     var client = Client.init(std.testing.allocator);
     defer client.deinit();
