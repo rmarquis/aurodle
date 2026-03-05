@@ -8,6 +8,7 @@ pub const repo = @import("repo.zig");
 pub const alpm = @import("alpm.zig");
 pub const pacman = @import("pacman.zig");
 pub const registry = @import("registry.zig");
+pub const solver = @import("solver.zig");
 
 test {
     std.testing.refAllDecls(@This());
