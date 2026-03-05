@@ -639,9 +639,10 @@ pub const Commands = struct {
             // Multi-option prompt
             stdout.writeAll("[p]roceed / [s]kip remaining reviews / [a]bort? ") catch {};
             const stdin_file: std.fs.File = .{ .handle = std.posix.STDIN_FILENO };
-            const byte = stdin_file.reader().readByte() catch return .proceed;
+            const stdin_reader = stdin_file.deprecatedReader();
+            const byte = stdin_reader.readByte() catch return .proceed;
             // Consume rest of line
-            stdin_file.reader().skipUntilDelimiterOrEof('\n') catch {};
+            stdin_reader.skipUntilDelimiterOrEof('\n') catch {};
 
             switch (byte) {
                 'a', 'A' => return .abort,

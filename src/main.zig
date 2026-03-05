@@ -2,6 +2,10 @@ const std = @import("std");
 const aurodle = @import("aurodle");
 const aur = aurodle.aur;
 const commands = aurodle.commands;
+const git = aurodle.git;
+const pacman_mod = aurodle.pacman;
+const registry_mod = aurodle.registry;
+const repo_mod = aurodle.repo;
 const Allocator = std.mem.Allocator;
 
 const ExitCode = commands.ExitCode;
@@ -66,10 +70,16 @@ fn run(allocator: Allocator) !ExitCode {
         return .success;
     }
 
-    // Initialize AUR client and commands
+    // Initialize AUR client (needed by all commands)
     var aur_client = aur.Client.init(allocator);
     defer aur_client.deinit();
 
+    // Commands that need the full module stack (pacman + registry + repo)
+    if (parsed.operation.needsFullStack()) {
+        return runWithFullStack(allocator, &aur_client, parsed);
+    }
+
+    // Simple commands that only need the AUR client
     var cmds = commands.Commands.init(allocator, &aur_client, parsed.flags);
 
     return switch (parsed.operation) {
@@ -82,12 +92,15 @@ fn run(allocator: Allocator) !ExitCode {
             break :blk try cmds.search(parsed.targets[0]);
         },
         .clone => try cmds.clonePackages(parsed.targets),
-        .sync, .build, .show, .outdated, .upgrade, .clean, .resolve, .buildorder => {
+        .show => try cmds.show(parsed.targets[0]),
+        .outdated, .upgrade, .clean => {
             const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
             const w = stderr.deprecatedWriter();
             w.print("error: '{s}' is not yet implemented\n", .{@tagName(parsed.operation)}) catch {};
             return .general_error;
         },
+        // Full-stack commands handled above
+        .sync, .build, .resolve, .buildorder => unreachable,
     };
 }
 
@@ -132,6 +145,13 @@ const Operation = enum {
     fn isBuildOperation(self: Operation) bool {
         return switch (self) {
             .sync, .build, .upgrade => true,
+            else => false,
+        };
+    }
+
+    fn needsFullStack(self: Operation) bool {
+        return switch (self) {
+            .sync, .build, .resolve, .buildorder => true,
             else => false,
         };
     }
@@ -254,6 +274,61 @@ fn parseArgs(args: []const []const u8, target_buf: [][]const u8) ParseError!Pars
         .operation = operation,
         .targets = target_buf[0..target_count],
         .flags = flags,
+    };
+}
+
+/// Initialize the full module stack and run commands that need it.
+/// Separated from run() to keep the initialization/cleanup lifecycle clear.
+fn runWithFullStack(
+    allocator: Allocator,
+    aur_client: *aur.Client,
+    parsed: ParsedCommand,
+) !ExitCode {
+    // Initialize pacman (libalpm)
+    var pm = pacman_mod.Pacman.init(allocator) catch |err| {
+        const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
+        const w = stderr.deprecatedWriter();
+        w.print("error: failed to initialize pacman: {}\n", .{err}) catch {};
+        return .general_error;
+    };
+    defer pm.deinit();
+
+    // Initialize registry (cascade lookup: installed -> sync -> AUR -> provider)
+    var reg = registry_mod.PackageRegistry.init(allocator, &pm, aur_client);
+    defer reg.deinit();
+
+    // Initialize local repository
+    var repository = repo_mod.Repository.init(allocator) catch |err| {
+        const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
+        const w = stderr.deprecatedWriter();
+        w.print("error: failed to initialize repository: {}\n", .{err}) catch {};
+        return .general_error;
+    };
+    defer repository.deinit();
+
+    // Get cache root for git operations
+    const cache_root = git.defaultCacheRoot(allocator) catch {
+        const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
+        stderr.writeAll("error: could not determine cache directory (HOME not set)\n") catch {};
+        return .general_error;
+    };
+    defer allocator.free(cache_root);
+
+    var cmds = commands.Commands.initFull(
+        allocator,
+        aur_client,
+        &reg,
+        &repository,
+        cache_root,
+        parsed.flags,
+    );
+
+    return switch (parsed.operation) {
+        .sync => try cmds.sync(parsed.targets),
+        .build => try cmds.build(parsed.targets),
+        .resolve => try cmds.resolve(parsed.targets),
+        .buildorder => try cmds.buildorder(parsed.targets),
+        else => unreachable,
     };
 }
 
