@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const aur = @import("aur.zig");
+const git = @import("git.zig");
 
 pub const ExitCode = enum(u8) {
     success = 0,
@@ -106,6 +107,73 @@ pub const Commands = struct {
         self.displaySearchResults(sorted);
 
         return .success;
+    }
+
+    /// Clone AUR packages to the cache directory (FR-8).
+    /// Resolves pkgname→pkgbase via AUR RPC, then clones each.
+    pub fn clonePackages(self: *Commands, targets: []const []const u8) !ExitCode {
+        const stderr_file: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
+        const stderr = stderr_file.deprecatedWriter();
+        const stdout_file: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
+        const stdout = stdout_file.deprecatedWriter();
+
+        // Resolve pkgname→pkgbase via AUR RPC
+        const packages = self.aur_client.multiInfo(targets) catch |err| {
+            try printError(err);
+            return .general_error;
+        };
+        defer self.allocator.free(packages);
+
+        // Build a pkgname→pkgbase mapping
+        var pkgbase_map: std.StringHashMapUnmanaged([]const u8) = .empty;
+        defer pkgbase_map.deinit(self.allocator);
+        for (packages) |pkg| {
+            try pkgbase_map.put(self.allocator, pkg.name, pkg.pkgbase);
+        }
+
+        // Check for missing packages
+        var any_error = false;
+        for (targets) |target| {
+            if (!pkgbase_map.contains(target)) {
+                stderr.print("error: package '{s}' was not found\n", .{target}) catch {};
+                any_error = true;
+            }
+        }
+
+        // Get cache root
+        const cache_root = git.defaultCacheRoot(self.allocator) catch {
+            stderr.writeAll("error: could not determine cache directory (HOME not set)\n") catch {};
+            return .general_error;
+        };
+        defer self.allocator.free(cache_root);
+
+        // Clone each resolved package
+        var cloned_set: std.StringHashMapUnmanaged(void) = .empty;
+        defer cloned_set.deinit(self.allocator);
+
+        for (targets) |target| {
+            const pkgbase = pkgbase_map.get(target) orelse continue;
+
+            // Deduplicate: skip if we already cloned this pkgbase
+            // (multiple pkgnames can share a pkgbase, e.g. split packages)
+            if (cloned_set.contains(pkgbase)) continue;
+            try cloned_set.put(self.allocator, pkgbase, {});
+
+            const result = git.clone(self.allocator, cache_root, pkgbase) catch {
+                stderr.print("error: failed to clone '{s}'\n", .{pkgbase}) catch {};
+                any_error = true;
+                continue;
+            };
+
+            if (!self.flags.quiet) {
+                switch (result) {
+                    .cloned => stdout.print("cloned '{s}'\n", .{pkgbase}) catch {},
+                    .already_exists => stdout.print("'{s}' already cloned\n", .{pkgbase}) catch {},
+                }
+            }
+        }
+
+        return if (any_error) .general_error else .success;
     }
 
     fn sortPackages(self: *Commands, packages: []const *aur.Package) ![]const *aur.Package {

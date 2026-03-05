@@ -81,6 +81,7 @@ fn run(allocator: Allocator) !ExitCode {
             }
             break :blk try cmds.search(parsed.targets[0]);
         },
+        .clone => try cmds.clonePackages(parsed.targets),
         .sync, .build, .show, .outdated, .upgrade, .clean, .resolve, .buildorder => {
             const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
             const w = stderr.deprecatedWriter();
@@ -93,6 +94,7 @@ fn run(allocator: Allocator) !ExitCode {
 const Operation = enum {
     sync,
     build,
+    clone,
     info,
     search,
     show,
@@ -106,6 +108,7 @@ const Operation = enum {
         const map = std.StaticStringMap(Operation).initComptime(.{
             .{ "sync", .sync },
             .{ "build", .build },
+            .{ "clone", .clone },
             .{ "info", .info },
             .{ "search", .search },
             .{ "show", .show },
@@ -117,6 +120,7 @@ const Operation = enum {
             // Short aliases
             .{ "S", .sync },
             .{ "B", .build },
+            .{ "G", .clone },
             .{ "Qi", .info },
             .{ "Ss", .search },
             .{ "Qu", .outdated },
@@ -134,7 +138,7 @@ const Operation = enum {
 
     fn requiresTargets(self: Operation) bool {
         return switch (self) {
-            .sync, .build, .info, .search, .show, .resolve, .buildorder => true,
+            .sync, .build, .clone, .info, .search, .show, .resolve, .buildorder => true,
             .outdated, .upgrade, .clean => false,
         };
     }
@@ -263,6 +267,7 @@ fn printHelp() void {
         \\Commands:
         \\  sync <packages...>     Install AUR packages (resolve, clone, build, install)
         \\  build <packages...>    Build packages into local repository
+        \\  clone <packages...>    Clone AUR package repositories
         \\  info <packages...>     Display AUR package information
         \\  search <term>          Search AUR packages
         \\  show <package>         Display package build files
@@ -383,6 +388,10 @@ test "parseArgs: short aliases" {
     var buf3: [256][]const u8 = undefined;
     const parsed3 = try parseArgs(&.{ "Ss", "foo" }, &buf3);
     try std.testing.expectEqual(Operation.search, parsed3.operation);
+
+    var buf4: [256][]const u8 = undefined;
+    const parsed4 = try parseArgs(&.{ "G", "foo" }, &buf4);
+    try std.testing.expectEqual(Operation.clone, parsed4.operation);
 }
 
 test "parseArgs: combined short flags" {
@@ -466,6 +475,7 @@ test "parseArgs: recognizes all command names" {
     const cmds = [_]struct { name: []const u8, op: Operation }{
         .{ .name = "sync", .op = .sync },
         .{ .name = "build", .op = .build },
+        .{ .name = "clone", .op = .clone },
         .{ .name = "info", .op = .info },
         .{ .name = "search", .op = .search },
         .{ .name = "show", .op = .show },
@@ -492,6 +502,7 @@ test "Operation.isBuildOperation" {
     try std.testing.expect(Operation.sync.isBuildOperation());
     try std.testing.expect(Operation.build.isBuildOperation());
     try std.testing.expect(Operation.upgrade.isBuildOperation());
+    try std.testing.expect(!Operation.clone.isBuildOperation());
     try std.testing.expect(!Operation.info.isBuildOperation());
     try std.testing.expect(!Operation.search.isBuildOperation());
     try std.testing.expect(!Operation.clean.isBuildOperation());
@@ -499,6 +510,7 @@ test "Operation.isBuildOperation" {
 
 test "Operation.requiresTargets" {
     try std.testing.expect(Operation.sync.requiresTargets());
+    try std.testing.expect(Operation.clone.requiresTargets());
     try std.testing.expect(Operation.info.requiresTargets());
     try std.testing.expect(Operation.search.requiresTargets());
     try std.testing.expect(!Operation.outdated.requiresTargets());
