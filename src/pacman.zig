@@ -142,6 +142,14 @@ pub const Pacman = struct {
         return null;
     }
 
+    /// What version is available in sync databases? Returns first match.
+    pub fn syncVersion(self: Pacman, name: []const u8) ?[]const u8 {
+        for (self.sync_dbs) |db| {
+            if (db.getPackage(name)) |pkg| return pkg.getVersion();
+        }
+        return null;
+    }
+
     // ── Version Satisfaction ─────────────────────────────────────────────
 
     /// Does the installed version of `name` satisfy `constraint`?
@@ -260,7 +268,7 @@ pub const Pacman = struct {
 // ── Internal Helpers ─────────────────────────────────────────────────────
 
 /// Check if `version` satisfies `constraint` using libalpm's vercmp.
-fn checkVersion(version: []const u8, constraint: VersionConstraint) bool {
+pub fn checkVersion(version: []const u8, constraint: VersionConstraint) bool {
     const cmp = alpm.vercmp(version, constraint.version);
     return switch (constraint.op) {
         .eq => cmp == 0,
