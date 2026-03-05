@@ -65,6 +65,11 @@ pub const BuildResult = struct {
     succeeded: []const []const u8,
     failed: []const FailedBuild,
     signal_aborted: bool,
+
+    pub fn deinit(self: BuildResult, allocator: Allocator) void {
+        allocator.free(self.succeeded);
+        allocator.free(self.failed);
+    }
 };
 
 pub const OutdatedEntry = struct {
@@ -396,6 +401,7 @@ pub const Commands = struct {
         // Phase 5: Build
         try repository.ensureExists();
         const build_result = try self.buildLoop(plan, repository, reg, c_root);
+        defer build_result.deinit(self.allocator);
 
         if (build_result.signal_aborted) {
             return .signal_killed;
@@ -472,6 +478,7 @@ pub const Commands = struct {
         // Build
         try repository.ensureExists();
         const result = try self.buildLoop(plan, repository, reg, c_root);
+        defer result.deinit(self.allocator);
 
         if (result.signal_aborted) return .signal_killed;
         if (result.failed.len > 0) {
