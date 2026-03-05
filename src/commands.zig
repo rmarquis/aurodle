@@ -102,6 +102,7 @@ pub const Commands = struct {
 
         // Sort results
         const sorted = try self.sortPackages(packages);
+        defer self.allocator.free(sorted);
         self.displaySearchResults(sorted);
 
         return .success;
