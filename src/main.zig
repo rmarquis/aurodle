@@ -93,14 +93,8 @@ fn run(allocator: Allocator) !ExitCode {
         },
         .clone => try cmds.clonePackages(parsed.targets),
         .show => try cmds.show(parsed.targets[0]),
-        .outdated, .upgrade, .clean => {
-            const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
-            const w = stderr.deprecatedWriter();
-            w.print("error: '{s}' is not yet implemented\n", .{@tagName(parsed.operation)}) catch {};
-            return .general_error;
-        },
         // Full-stack commands handled above
-        .sync, .build, .resolve, .buildorder => unreachable,
+        .sync, .build, .resolve, .buildorder, .outdated, .upgrade, .clean => unreachable,
     };
 }
 
@@ -151,7 +145,7 @@ const Operation = enum {
 
     fn needsFullStack(self: Operation) bool {
         return switch (self) {
-            .sync, .build, .resolve, .buildorder => true,
+            .sync, .build, .resolve, .buildorder, .outdated, .upgrade, .clean => true,
             else => false,
         };
     }
@@ -317,6 +311,7 @@ fn runWithFullStack(
     var cmds = commands.Commands.initFull(
         allocator,
         aur_client,
+        &pm,
         &reg,
         &repository,
         cache_root,
@@ -328,6 +323,9 @@ fn runWithFullStack(
         .build => try cmds.build(parsed.targets),
         .resolve => try cmds.resolve(parsed.targets),
         .buildorder => try cmds.buildorder(parsed.targets),
+        .outdated => try cmds.outdated(parsed.targets),
+        .upgrade => try cmds.upgrade(parsed.targets),
+        .clean => try cmds.clean(),
         else => unreachable,
     };
 }

@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const aur = @import("aur.zig");
+const alpm = @import("alpm.zig");
 const git = @import("git.zig");
 const registry_mod = @import("registry.zig");
 const solver_mod = @import("solver.zig");
@@ -75,6 +76,7 @@ pub const OutdatedEntry = struct {
 pub const Commands = struct {
     allocator: Allocator,
     aur_client: *aur.Client,
+    pacman: ?*pacman_mod.Pacman,
     registry: ?*registry_mod.PackageRegistry,
     repo: ?*repo_mod.Repository,
     cache_root: ?[]const u8,
@@ -84,6 +86,7 @@ pub const Commands = struct {
         return .{
             .allocator = allocator,
             .aur_client = aur_client,
+            .pacman = null,
             .registry = null,
             .repo = null,
             .cache_root = null,
@@ -94,6 +97,7 @@ pub const Commands = struct {
     pub fn initFull(
         allocator: Allocator,
         aur_client: *aur.Client,
+        pm: *pacman_mod.Pacman,
         reg: *registry_mod.PackageRegistry,
         repository: *repo_mod.Repository,
         cache_root: []const u8,
@@ -102,6 +106,7 @@ pub const Commands = struct {
         return .{
             .allocator = allocator,
             .aur_client = aur_client,
+            .pacman = pm,
             .registry = reg,
             .repo = repository,
             .cache_root = cache_root,
@@ -474,6 +479,224 @@ pub const Commands = struct {
             return .build_failed;
         }
 
+        return .success;
+    }
+
+    // ── Query Commands ────────────────────────────────────────────────────
+
+    /// List installed AUR packages with newer versions available.
+    pub fn outdated(self: *Commands, filter: []const []const u8) !ExitCode {
+        const pm = self.pacman orelse {
+            printErr("error: pacman not initialized\n");
+            return .general_error;
+        };
+
+        const foreign = try pm.allForeignPackages();
+        defer self.allocator.free(foreign);
+
+        // Apply name filter if provided
+        const to_check = if (filter.len > 0) blk: {
+            var name_set: std.StringHashMapUnmanaged(void) = .empty;
+            defer name_set.deinit(self.allocator);
+            for (filter) |n| try name_set.put(self.allocator, n, {});
+
+            var filtered: std.ArrayListUnmanaged(pacman_mod.InstalledPackage) = .empty;
+            for (foreign) |pkg| {
+                if (name_set.contains(pkg.name)) try filtered.append(self.allocator, pkg);
+            }
+            break :blk try filtered.toOwnedSlice(self.allocator);
+        } else foreign;
+        defer if (filter.len > 0) self.allocator.free(to_check);
+
+        if (to_check.len == 0) return .success;
+
+        // Batch query AUR for all foreign package names
+        var names: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer names.deinit(self.allocator);
+        for (to_check) |pkg| try names.append(self.allocator, pkg.name);
+
+        const aur_pkgs = self.aur_client.multiInfo(names.items) catch |err| {
+            try printError(err);
+            return .general_error;
+        };
+        defer self.allocator.free(aur_pkgs);
+
+        // Build lookup map
+        var aur_map: std.StringHashMapUnmanaged([]const u8) = .empty;
+        defer aur_map.deinit(self.allocator);
+        for (aur_pkgs) |pkg| try aur_map.put(self.allocator, pkg.name, pkg.version);
+
+        // Compare versions
+        var outdated_list: std.ArrayListUnmanaged(OutdatedEntry) = .empty;
+        defer outdated_list.deinit(self.allocator);
+        for (to_check) |pkg| {
+            if (aur_map.get(pkg.name)) |aur_ver| {
+                if (alpm.vercmp(pkg.version, aur_ver) < 0) {
+                    try outdated_list.append(self.allocator, .{
+                        .name = pkg.name,
+                        .installed_version = pkg.version,
+                        .aur_version = aur_ver,
+                    });
+                }
+            }
+            // Packages not in AUR are silently skipped (might be custom local packages)
+        }
+
+        if (outdated_list.items.len == 0) {
+            if (!self.flags.quiet) {
+                getStdout().writeAll(" all AUR packages are up to date\n") catch {};
+            }
+            return .success;
+        }
+
+        formatOutdated(outdated_list.items);
+        return .success;
+    }
+
+    /// Upgrade outdated AUR packages via the full sync workflow.
+    /// With no arguments: upgrade all outdated AUR packages.
+    /// With arguments: upgrade only the specified packages.
+    pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
+        const pm = self.pacman orelse {
+            printErr("error: pacman not initialized\n");
+            return .general_error;
+        };
+
+        const foreign = try pm.allForeignPackages();
+        defer self.allocator.free(foreign);
+
+        // Apply name filter if provided
+        const to_check = if (targets.len > 0) blk: {
+            var name_set: std.StringHashMapUnmanaged(void) = .empty;
+            defer name_set.deinit(self.allocator);
+            for (targets) |n| try name_set.put(self.allocator, n, {});
+
+            var filtered: std.ArrayListUnmanaged(pacman_mod.InstalledPackage) = .empty;
+            for (foreign) |pkg| {
+                if (name_set.contains(pkg.name)) try filtered.append(self.allocator, pkg);
+            }
+            break :blk try filtered.toOwnedSlice(self.allocator);
+        } else foreign;
+        defer if (targets.len > 0) self.allocator.free(to_check);
+
+        // Batch query AUR
+        var names: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer names.deinit(self.allocator);
+        for (to_check) |pkg| try names.append(self.allocator, pkg.name);
+
+        const aur_pkgs = self.aur_client.multiInfo(names.items) catch |err| {
+            try printError(err);
+            return .general_error;
+        };
+        defer self.allocator.free(aur_pkgs);
+
+        var aur_map: std.StringHashMapUnmanaged([]const u8) = .empty;
+        defer aur_map.deinit(self.allocator);
+        for (aur_pkgs) |pkg| try aur_map.put(self.allocator, pkg.name, pkg.version);
+
+        // Find outdated
+        var to_upgrade: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer to_upgrade.deinit(self.allocator);
+        var outdated_display: std.ArrayListUnmanaged(OutdatedEntry) = .empty;
+        defer outdated_display.deinit(self.allocator);
+
+        for (to_check) |pkg| {
+            const dominated_by_aur = if (aur_map.get(pkg.name)) |aur_ver|
+                alpm.vercmp(pkg.version, aur_ver) < 0
+            else
+                false;
+
+            if (dominated_by_aur or self.flags.rebuild) {
+                try to_upgrade.append(self.allocator, pkg.name);
+                if (aur_map.get(pkg.name)) |aur_ver| {
+                    try outdated_display.append(self.allocator, .{
+                        .name = pkg.name,
+                        .installed_version = pkg.version,
+                        .aur_version = aur_ver,
+                    });
+                }
+            }
+        }
+
+        if (to_upgrade.items.len == 0) {
+            getStdout().writeAll(" all AUR packages are up to date\n") catch {};
+            return .success;
+        }
+
+        // Display what will be upgraded
+        const stdout = getStdout();
+        stdout.print(":: {d} package(s) to upgrade:\n", .{outdated_display.items.len}) catch {};
+        formatOutdated(outdated_display.items);
+
+        // Delegate to sync for the actual build+install workflow
+        return self.sync(to_upgrade.items);
+    }
+
+    /// Remove stale cache artifacts after user confirmation.
+    /// Uses repo.zig's two-phase approach: compute plan, display, confirm, execute.
+    pub fn clean(self: *Commands) !ExitCode {
+        const pm = self.pacman orelse {
+            printErr("error: pacman not initialized\n");
+            return .general_error;
+        };
+        const repository = self.repo orelse {
+            printErr("error: repository not initialized\n");
+            return .general_error;
+        };
+
+        // Get installed foreign package names for staleness check
+        const foreign = try pm.allForeignPackages();
+        defer self.allocator.free(foreign);
+
+        var installed_names: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer installed_names.deinit(self.allocator);
+        for (foreign) |pkg| try installed_names.append(self.allocator, pkg.name);
+
+        const plan = try repository.clean(installed_names.items);
+        defer repository.freeCleanResult(plan);
+
+        if (plan.removed_clones.len == 0 and plan.removed_logs.len == 0) {
+            if (!self.flags.quiet) {
+                getStdout().writeAll(" nothing to clean\n") catch {};
+            }
+            return .success;
+        }
+
+        const stdout = getStdout();
+
+        if (plan.removed_clones.len > 0) {
+            stdout.print(":: Stale clone directories ({d}):\n", .{plan.removed_clones.len}) catch {};
+            for (plan.removed_clones) |name| {
+                stdout.print("  {s}/\n", .{name}) catch {};
+            }
+        }
+
+        if (plan.removed_logs.len > 0) {
+            stdout.print(":: Stale build logs ({d}):\n", .{plan.removed_logs.len}) catch {};
+            for (plan.removed_logs) |name| {
+                stdout.print("  {s}\n", .{name}) catch {};
+            }
+        }
+
+        if (plan.bytes_freed >= 1024 * 1024) {
+            stdout.print("\nTotal space to free: {d:.1} MiB\n", .{
+                @as(f64, @floatFromInt(plan.bytes_freed)) / (1024.0 * 1024.0),
+            }) catch {};
+        } else if (plan.bytes_freed >= 1024) {
+            stdout.print("\nTotal space to free: {d:.1} KiB\n", .{
+                @as(f64, @floatFromInt(plan.bytes_freed)) / 1024.0,
+            }) catch {};
+        } else {
+            stdout.print("\nTotal space to free: {d} B\n", .{plan.bytes_freed}) catch {};
+        }
+
+        if (!self.flags.noconfirm) {
+            if (!try utils.promptYesNo("Proceed with cleanup?")) {
+                return .success;
+            }
+        }
+
+        repository.cleanExecute(plan);
         return .success;
     }
 
@@ -876,6 +1099,17 @@ fn displaySearchResults(packages: []const *aur.Package) void {
     }
 }
 
+fn formatOutdated(entries: []const OutdatedEntry) void {
+    const stdout = getStdout();
+    for (entries) |entry| {
+        stdout.print("  {s}  {s} -> {s}\n", .{
+            entry.name,
+            entry.installed_version,
+            entry.aur_version,
+        }) catch {};
+    }
+}
+
 fn handleResolveError(err: anyerror) ExitCode {
     const stderr = getStderr();
     if (err == error.CircularDependency) {
@@ -1080,4 +1314,33 @@ test "hasFailedDep returns true when own pkgbase is failed" {
     defer failed.deinit(testing.allocator);
     try failed.put(testing.allocator, "foo", {});
     try testing.expect(Commands.hasFailedDep(entry, plan, &failed));
+}
+
+test "outdated returns general_error when pacman not initialized" {
+    var cmds = Commands.init(testing.allocator, undefined, .{});
+    const result = try cmds.outdated(&.{});
+    try testing.expectEqual(ExitCode.general_error, result);
+}
+
+test "upgrade returns general_error when pacman not initialized" {
+    var cmds = Commands.init(testing.allocator, undefined, .{});
+    const result = try cmds.upgrade(&.{});
+    try testing.expectEqual(ExitCode.general_error, result);
+}
+
+test "clean returns general_error when pacman not initialized" {
+    var cmds = Commands.init(testing.allocator, undefined, .{});
+    const result = try cmds.clean();
+    try testing.expectEqual(ExitCode.general_error, result);
+}
+
+test "OutdatedEntry struct has required fields" {
+    const entry = OutdatedEntry{
+        .name = "foo",
+        .installed_version = "1.0-1",
+        .aur_version = "2.0-1",
+    };
+    try testing.expectEqualStrings("foo", entry.name);
+    try testing.expectEqualStrings("1.0-1", entry.installed_version);
+    try testing.expectEqualStrings("2.0-1", entry.aur_version);
 }
