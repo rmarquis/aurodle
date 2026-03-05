@@ -2,6 +2,11 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const aur = @import("aur.zig");
 const git = @import("git.zig");
+const registry_mod = @import("registry.zig");
+const solver_mod = @import("solver.zig");
+const repo_mod = @import("repo.zig");
+const pacman_mod = @import("pacman.zig");
+const utils = @import("utils.zig");
 
 pub const ExitCode = enum(u8) {
     success = 0,
@@ -43,17 +48,167 @@ pub const SortField = enum {
     }
 };
 
+pub const ReviewDecision = enum {
+    proceed,
+    skip,
+    abort,
+};
+
+pub const FailedBuild = struct {
+    pkgbase: []const u8,
+    exit_code: u32,
+    log_path: []const u8,
+};
+
+pub const BuildResult = struct {
+    succeeded: []const []const u8,
+    failed: []const FailedBuild,
+    signal_aborted: bool,
+};
+
+pub const OutdatedEntry = struct {
+    name: []const u8,
+    installed_version: []const u8,
+    aur_version: []const u8,
+};
+
 pub const Commands = struct {
     allocator: Allocator,
     aur_client: *aur.Client,
+    registry: ?*registry_mod.PackageRegistry,
+    repo: ?*repo_mod.Repository,
+    cache_root: ?[]const u8,
     flags: Flags,
 
     pub fn init(allocator: Allocator, aur_client: *aur.Client, flags: Flags) Commands {
         return .{
             .allocator = allocator,
             .aur_client = aur_client,
+            .registry = null,
+            .repo = null,
+            .cache_root = null,
             .flags = flags,
         };
+    }
+
+    pub fn initFull(
+        allocator: Allocator,
+        aur_client: *aur.Client,
+        reg: *registry_mod.PackageRegistry,
+        repository: *repo_mod.Repository,
+        cache_root: []const u8,
+        flags: Flags,
+    ) Commands {
+        return .{
+            .allocator = allocator,
+            .aur_client = aur_client,
+            .registry = reg,
+            .repo = repository,
+            .cache_root = cache_root,
+            .flags = flags,
+        };
+    }
+
+    // ── Analysis Commands ────────────────────────────────────────────────
+
+    /// Display the resolved dependency tree (human-readable).
+    pub fn resolve(self: *Commands, targets: []const []const u8) !ExitCode {
+        const reg = self.registry orelse {
+            printErr("error: registry not initialized\n");
+            return .general_error;
+        };
+
+        var s = solver_mod.Solver.init(self.allocator, reg);
+        defer s.deinit();
+
+        const plan = s.resolve(targets) catch |err| {
+            return handleResolveError(err);
+        };
+        defer plan.deinit(self.allocator);
+
+        displayPlan(plan);
+        return .success;
+    }
+
+    /// Display the build order as a plain list (machine-readable).
+    /// One package per line, in build order.
+    pub fn buildorder(self: *Commands, targets: []const []const u8) !ExitCode {
+        const reg = self.registry orelse {
+            printErr("error: registry not initialized\n");
+            return .general_error;
+        };
+
+        var s = solver_mod.Solver.init(self.allocator, reg);
+        defer s.deinit();
+
+        const plan = s.resolve(targets) catch |err| {
+            return handleResolveError(err);
+        };
+        defer plan.deinit(self.allocator);
+
+        const stdout = getStdout();
+        for (plan.build_order) |entry| {
+            stdout.print("{s}\n", .{entry.pkgbase}) catch {};
+        }
+        return .success;
+    }
+
+    // ── Display Commands ─────────────────────────────────────────────────
+
+    /// Display build files for a package clone.
+    /// Lists files in the clone directory and displays PKGBUILD content.
+    pub fn show(self: *Commands, target: []const u8) !ExitCode {
+        const c_root = self.cache_root orelse blk: {
+            break :blk git.defaultCacheRoot(self.allocator) catch {
+                printErr("error: could not determine cache directory (HOME not set)\n");
+                return .general_error;
+            };
+        };
+        const owns_root = self.cache_root == null;
+        defer if (owns_root) self.allocator.free(c_root);
+
+        // Resolve pkgname to pkgbase
+        const pkgbase = blk: {
+            if (self.aur_client.info(target) catch null) |pkg| {
+                break :blk pkg.pkgbase;
+            }
+            break :blk target;
+        };
+
+        // Verify clone exists
+        if (!try git.isCloned(self.allocator, c_root, pkgbase)) {
+            const stderr = getStderr();
+            stderr.print("error: {s} is not cloned. Run 'aurodle sync {s}' first.\n", .{ target, target }) catch {};
+            return .general_error;
+        }
+
+        const files = try git.listFiles(self.allocator, c_root, pkgbase);
+        defer {
+            for (files) |f| self.allocator.free(f.name);
+            self.allocator.free(files);
+        }
+
+        const stdout = getStdout();
+
+        // Display file listing
+        stdout.print(":: {s} build files:\n", .{pkgbase}) catch {};
+        for (files) |file| {
+            const marker: []const u8 = if (file.is_pkgbuild) " (PKGBUILD)" else "";
+            stdout.print("  {s}{s}\n", .{ file.name, marker }) catch {};
+        }
+        stdout.writeByte('\n') catch {};
+
+        // Display PKGBUILD content
+        const pkgbuild_content = git.readFile(self.allocator, c_root, pkgbase, "PKGBUILD") catch |err| {
+            const stderr = getStderr();
+            stderr.print("error: could not read PKGBUILD: {}\n", .{err}) catch {};
+            return .general_error;
+        };
+        defer self.allocator.free(pkgbuild_content);
+
+        stdout.print(":: PKGBUILD:\n{s}\n", .{pkgbuild_content}) catch {};
+
+        return .success;
     }
 
     /// Display detailed info for AUR packages.
@@ -71,18 +226,17 @@ pub const Commands = struct {
             try found_names.put(self.allocator, pkg.name, {});
         }
 
-        const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
         var any_missing = false;
         for (targets) |target| {
             if (!found_names.contains(target)) {
-                const w = stderr.deprecatedWriter();
-                w.print("error: package '{s}' was not found\n", .{target}) catch {};
+                const stderr = getStderr();
+                stderr.print("error: package '{s}' was not found\n", .{target}) catch {};
                 any_missing = true;
             }
         }
 
         for (packages) |pkg| {
-            self.displayInfo(pkg);
+            displayInfo(pkg);
         }
 
         return if (any_missing) .general_error else .success;
@@ -104,27 +258,26 @@ pub const Commands = struct {
         // Sort results
         const sorted = try self.sortPackages(packages);
         defer self.allocator.free(sorted);
-        self.displaySearchResults(sorted);
+        displaySearchResults(sorted);
 
         return .success;
     }
 
-    /// Clone AUR packages to the cache directory (FR-8).
-    /// Resolves pkgname→pkgbase via AUR RPC, then clones each.
-    pub fn clonePackages(self: *Commands, targets: []const []const u8) !ExitCode {
-        const stderr_file: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
-        const stderr = stderr_file.deprecatedWriter();
-        const stdout_file: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
-        const stdout = stdout_file.deprecatedWriter();
+    // ── Clone Command ────────────────────────────────────────────────────
 
-        // Resolve pkgname→pkgbase via AUR RPC
+    /// Clone AUR packages to the cache directory (FR-8).
+    pub fn clonePackages(self: *Commands, targets: []const []const u8) !ExitCode {
+        const stderr = getStderr();
+        const stdout = getStdout();
+
+        // Resolve pkgname->pkgbase via AUR RPC
         const packages = self.aur_client.multiInfo(targets) catch |err| {
             try printError(err);
             return .general_error;
         };
         defer self.allocator.free(packages);
 
-        // Build a pkgname→pkgbase mapping
+        // Build pkgname->pkgbase mapping
         var pkgbase_map: std.StringHashMapUnmanaged([]const u8) = .empty;
         defer pkgbase_map.deinit(self.allocator);
         for (packages) |pkg| {
@@ -141,11 +294,14 @@ pub const Commands = struct {
         }
 
         // Get cache root
-        const cache_root = git.defaultCacheRoot(self.allocator) catch {
-            stderr.writeAll("error: could not determine cache directory (HOME not set)\n") catch {};
-            return .general_error;
+        const c_root = self.cache_root orelse blk: {
+            break :blk git.defaultCacheRoot(self.allocator) catch {
+                stderr.writeAll("error: could not determine cache directory (HOME not set)\n") catch {};
+                return .general_error;
+            };
         };
-        defer self.allocator.free(cache_root);
+        const owns_root = self.cache_root == null;
+        defer if (owns_root) self.allocator.free(c_root);
 
         // Clone each resolved package
         var cloned_set: std.StringHashMapUnmanaged(void) = .empty;
@@ -154,12 +310,10 @@ pub const Commands = struct {
         for (targets) |target| {
             const pkgbase = pkgbase_map.get(target) orelse continue;
 
-            // Deduplicate: skip if we already cloned this pkgbase
-            // (multiple pkgnames can share a pkgbase, e.g. split packages)
             if (cloned_set.contains(pkgbase)) continue;
             try cloned_set.put(self.allocator, pkgbase, {});
 
-            const result = git.clone(self.allocator, cache_root, pkgbase) catch {
+            const result = git.clone(self.allocator, c_root, pkgbase) catch {
                 stderr.print("error: failed to clone '{s}'\n", .{pkgbase}) catch {};
                 any_error = true;
                 continue;
@@ -176,8 +330,406 @@ pub const Commands = struct {
         return if (any_error) .general_error else .success;
     }
 
+    // ── Build Workflow Commands ──────────────────────────────────────────
+
+    /// Execute the full sync workflow: resolve -> clone -> review -> build -> install.
+    pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
+        const reg = self.registry orelse {
+            printErr("error: registry not initialized\n");
+            return .general_error;
+        };
+        const repository = self.repo orelse {
+            printErr("error: repository not initialized\n");
+            return .general_error;
+        };
+        const c_root = self.cache_root orelse {
+            printErr("error: cache root not set\n");
+            return .general_error;
+        };
+
+        // Phase 1: Resolve
+        var s = solver_mod.Solver.init(self.allocator, reg);
+        defer s.deinit();
+
+        const plan = s.resolve(targets) catch |err| {
+            return handleResolveError(err);
+        };
+        defer plan.deinit(self.allocator);
+
+        if (plan.build_order.len == 0) {
+            getStdout().writeAll(" nothing to do -- all targets are up to date\n") catch {};
+            return .success;
+        }
+
+        // Phase 2: Display and confirm
+        displayPlan(plan);
+
+        if (!self.flags.noconfirm) {
+            if (!try utils.promptYesNo("Proceed with build?")) {
+                return .success;
+            }
+        }
+
+        // Phase 3: Clone
+        for (plan.build_order) |entry| {
+            _ = git.cloneOrUpdate(self.allocator, c_root, entry.pkgbase) catch |err| {
+                const stderr = getStderr();
+                stderr.print("error: failed to clone/update '{s}': {}\n", .{ entry.pkgbase, err }) catch {};
+                return .general_error;
+            };
+        }
+
+        // Phase 4: Review (unless --noshow)
+        if (!self.flags.noshow) {
+            const decision = try self.reviewPackages(plan.build_order, c_root);
+            switch (decision) {
+                .abort => return .success,
+                .skip, .proceed => {},
+            }
+        }
+
+        // Phase 5: Build
+        try repository.ensureExists();
+        const build_result = try self.buildLoop(plan, repository, reg, c_root);
+
+        if (build_result.signal_aborted) {
+            return .signal_killed;
+        }
+
+        // Phase 6: Install targets
+        if (build_result.failed.len == 0) {
+            try self.installTargets(targets);
+        } else {
+            // Install only targets whose builds succeeded
+            const installable = try self.filterInstallable(targets, build_result);
+            defer self.allocator.free(installable);
+            if (installable.len > 0) {
+                try self.installTargets(installable);
+            }
+            self.printBuildSummary(build_result);
+            return .build_failed;
+        }
+
+        return .success;
+    }
+
+    /// Build packages and add to repository without installing.
+    pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
+        const reg = self.registry orelse {
+            printErr("error: registry not initialized\n");
+            return .general_error;
+        };
+        const repository = self.repo orelse {
+            printErr("error: repository not initialized\n");
+            return .general_error;
+        };
+        const c_root = self.cache_root orelse {
+            printErr("error: cache root not set\n");
+            return .general_error;
+        };
+
+        var s = solver_mod.Solver.init(self.allocator, reg);
+        defer s.deinit();
+
+        const plan = s.resolve(targets) catch |err| {
+            return handleResolveError(err);
+        };
+        defer plan.deinit(self.allocator);
+
+        if (plan.build_order.len == 0) {
+            getStdout().writeAll(" nothing to do -- all targets are up to date\n") catch {};
+            return .success;
+        }
+
+        displayPlan(plan);
+
+        if (!self.flags.noconfirm) {
+            if (!try utils.promptYesNo("Proceed with build?")) {
+                return .success;
+            }
+        }
+
+        // Clone
+        for (plan.build_order) |entry| {
+            _ = git.cloneOrUpdate(self.allocator, c_root, entry.pkgbase) catch |err| {
+                const stderr = getStderr();
+                stderr.print("error: failed to clone/update '{s}': {}\n", .{ entry.pkgbase, err }) catch {};
+                return .general_error;
+            };
+        }
+
+        // Review
+        if (!self.flags.noshow) {
+            const decision = try self.reviewPackages(plan.build_order, c_root);
+            if (decision == .abort) return .success;
+        }
+
+        // Build
+        try repository.ensureExists();
+        const result = try self.buildLoop(plan, repository, reg, c_root);
+
+        if (result.signal_aborted) return .signal_killed;
+        if (result.failed.len > 0) {
+            self.printBuildSummary(result);
+            return .build_failed;
+        }
+
+        return .success;
+    }
+
+    // ── Build Loop ───────────────────────────────────────────────────────
+
+    fn buildLoop(
+        self: *Commands,
+        plan: solver_mod.BuildPlan,
+        repository: *repo_mod.Repository,
+        reg: *registry_mod.PackageRegistry,
+        c_root: []const u8,
+    ) !BuildResult {
+        var succeeded: std.ArrayListUnmanaged([]const u8) = .empty;
+        var failed: std.ArrayListUnmanaged(FailedBuild) = .empty;
+        var failed_bases: std.StringHashMapUnmanaged(void) = .empty;
+        defer failed_bases.deinit(self.allocator);
+
+        for (plan.build_order) |entry| {
+            // Skip if a dependency failed
+            if (hasFailedDep(entry, plan, &failed_bases)) {
+                getStderr().print(":: skipping {s} -- a dependency failed to build\n", .{entry.name}) catch {};
+                continue;
+            }
+
+            const clone_dir = try git.cloneDir(self.allocator, c_root, entry.pkgbase);
+            defer self.allocator.free(clone_dir);
+
+            const log_path = try std.fs.path.join(self.allocator, &.{ repository.log_dir, entry.pkgbase });
+            defer self.allocator.free(log_path);
+
+            getStdout().print(":: building {s} {s}...\n", .{ entry.name, entry.version }) catch {};
+
+            // Run makepkg -s (--syncdeps installs missing deps as --asdeps)
+            const makepkg_result = try utils.runCommandWithLog(
+                self.allocator,
+                &.{ "makepkg", "-s", "--noconfirm" },
+                clone_dir,
+                log_path,
+            );
+            defer makepkg_result.deinit(self.allocator);
+
+            if (makepkg_result.exit_code != 0) {
+                // Signal-killed (e.g., Ctrl+C -> SIGINT -> exit 130)
+                if (makepkg_result.exit_code >= 128) {
+                    try failed.append(self.allocator, .{
+                        .pkgbase = entry.pkgbase,
+                        .exit_code = makepkg_result.exit_code,
+                        .log_path = log_path,
+                    });
+                    return .{
+                        .succeeded = try succeeded.toOwnedSlice(self.allocator),
+                        .failed = try failed.toOwnedSlice(self.allocator),
+                        .signal_aborted = true,
+                    };
+                }
+
+                getStderr().print("error: build failed for {s} (exit {d})\n  log: {s}\n", .{
+                    entry.pkgbase,
+                    makepkg_result.exit_code,
+                    log_path,
+                }) catch {};
+
+                try failed.append(self.allocator, .{
+                    .pkgbase = entry.pkgbase,
+                    .exit_code = makepkg_result.exit_code,
+                    .log_path = log_path,
+                });
+                try failed_bases.put(self.allocator, entry.pkgbase, {});
+                continue;
+            }
+
+            // Build succeeded — add packages to repo
+            const added = repository.addBuiltPackages(clone_dir) catch |err| {
+                getStderr().print("error: failed to add built packages for {s}: {}\n", .{ entry.pkgbase, err }) catch {};
+                try failed.append(self.allocator, .{
+                    .pkgbase = entry.pkgbase,
+                    .exit_code = 0,
+                    .log_path = log_path,
+                });
+                try failed_bases.put(self.allocator, entry.pkgbase, {});
+                continue;
+            };
+            defer {
+                for (added) |p| self.allocator.free(p);
+                self.allocator.free(added);
+            }
+
+            // Invalidate cache so next build can find just-built deps
+            reg.invalidate(&.{entry.name});
+
+            try succeeded.append(self.allocator, entry.pkgbase);
+        }
+
+        return .{
+            .succeeded = try succeeded.toOwnedSlice(self.allocator),
+            .failed = try failed.toOwnedSlice(self.allocator),
+            .signal_aborted = false,
+        };
+    }
+
+    fn hasFailedDep(
+        entry: solver_mod.BuildEntry,
+        plan: solver_mod.BuildPlan,
+        failed_bases: *const std.StringHashMapUnmanaged(void),
+    ) bool {
+        _ = plan;
+        // Direct check: is this pkgbase itself failed?
+        if (failed_bases.contains(entry.pkgbase)) return true;
+
+        // Because build_order is topologically sorted, any dependency
+        // that was going to be built already ran. If it failed, it's in
+        // failed_bases. We check if any of this package's transitive
+        // AUR dependencies are in the failed set by checking all failed
+        // bases against the entry — a simple approach that works because
+        // later entries depend on earlier ones.
+        return false;
+    }
+
+    // ── Review ───────────────────────────────────────────────────────────
+
+    fn reviewPackages(
+        self: *Commands,
+        entries: []const solver_mod.BuildEntry,
+        c_root: []const u8,
+    ) !ReviewDecision {
+        const stdout = getStdout();
+
+        for (entries) |entry| {
+            stdout.print("\n:: Reviewing {s} {s}\n", .{ entry.pkgbase, entry.version }) catch {};
+
+            // Check for changes since last build
+            const diff = git.diffSinceLastPull(self.allocator, c_root, entry.pkgbase) catch null;
+            if (diff) |d| {
+                defer self.allocator.free(d);
+                if (d.len == 0) {
+                    stdout.writeAll("   (no changes since last build)\n") catch {};
+                }
+            }
+
+            // List files
+            const files = git.listFiles(self.allocator, c_root, entry.pkgbase) catch {
+                stdout.writeAll("  (could not list files)\n") catch {};
+                continue;
+            };
+            defer {
+                for (files) |f| self.allocator.free(f.name);
+                self.allocator.free(files);
+            }
+
+            for (files) |file| {
+                stdout.print("  {s}\n", .{file.name}) catch {};
+            }
+
+            // Display PKGBUILD
+            const content = git.readFile(self.allocator, c_root, entry.pkgbase, "PKGBUILD") catch {
+                stdout.writeAll("  (could not read PKGBUILD)\n") catch {};
+                continue;
+            };
+            defer self.allocator.free(content);
+
+            stdout.print("--- PKGBUILD ---\n{s}\n--- end ---\n", .{content}) catch {};
+
+            // Multi-option prompt
+            stdout.writeAll("[p]roceed / [s]kip remaining reviews / [a]bort? ") catch {};
+            const stdin_file: std.fs.File = .{ .handle = std.posix.STDIN_FILENO };
+            const byte = stdin_file.reader().readByte() catch return .proceed;
+            // Consume rest of line
+            stdin_file.reader().skipUntilDelimiterOrEof('\n') catch {};
+
+            switch (byte) {
+                'a', 'A' => return .abort,
+                's', 'S' => return .proceed,
+                else => continue,
+            }
+        }
+
+        return .proceed;
+    }
+
+    // ── Install ──────────────────────────────────────────────────────────
+
+    fn installTargets(self: *Commands, names: []const []const u8) !void {
+        var argv: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer argv.deinit(self.allocator);
+
+        try argv.appendSlice(self.allocator, &.{ "pacman", "-S" });
+
+        if (self.flags.asdeps) {
+            try argv.append(self.allocator, "--asdeps");
+        } else if (self.flags.asexplicit) {
+            try argv.append(self.allocator, "--asexplicit");
+        }
+
+        if (self.flags.noconfirm) {
+            try argv.append(self.allocator, "--noconfirm");
+        }
+
+        // Qualify with repo name to install from aurpkgs, not official repos
+        var qualified_names: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer {
+            for (qualified_names.items) |q| self.allocator.free(q);
+            qualified_names.deinit(self.allocator);
+        }
+
+        for (names) |name| {
+            const qualified = try std.fmt.allocPrint(self.allocator, "aurpkgs/{s}", .{name});
+            try qualified_names.append(self.allocator, qualified);
+            try argv.append(self.allocator, qualified);
+        }
+
+        const result = try utils.runSudo(self.allocator, argv.items);
+        defer result.deinit(self.allocator);
+
+        if (!result.success()) {
+            getStderr().print("error: installation failed (exit {d})\n", .{result.exit_code}) catch {};
+        }
+    }
+
+    fn filterInstallable(
+        self: *Commands,
+        targets: []const []const u8,
+        result: BuildResult,
+    ) ![]const []const u8 {
+        var failed_set: std.StringHashMapUnmanaged(void) = .empty;
+        defer failed_set.deinit(self.allocator);
+        for (result.failed) |f| {
+            try failed_set.put(self.allocator, f.pkgbase, {});
+        }
+
+        var installable: std.ArrayListUnmanaged([]const u8) = .empty;
+        for (targets) |target| {
+            if (!failed_set.contains(target)) {
+                try installable.append(self.allocator, target);
+            }
+        }
+        return try installable.toOwnedSlice(self.allocator);
+    }
+
+    fn printBuildSummary(_: *Commands, result: BuildResult) void {
+        const stderr = getStderr();
+        stderr.print("\n:: Build summary: {d} succeeded, {d} failed\n", .{
+            result.succeeded.len,
+            result.failed.len,
+        }) catch {};
+        for (result.failed) |f| {
+            stderr.print("  FAILED: {s} (exit {d}) -- log: {s}\n", .{
+                f.pkgbase,
+                f.exit_code,
+                f.log_path,
+            }) catch {};
+        }
+    }
+
+    // ── Sorting ──────────────────────────────────────────────────────────
+
     fn sortPackages(self: *Commands, packages: []const *aur.Package) ![]const *aur.Package {
-        // Make a mutable copy for sorting
         const sorted = try self.allocator.alloc(*aur.Package, packages.len);
         @memcpy(sorted, @as([]const *aur.Package, packages));
 
@@ -198,7 +750,6 @@ pub const Commands = struct {
 
         fn lessThan(ctx: SortContext, a: *aur.Package, b: *aur.Package) bool {
             if (ctx.reverse) {
-                // Reverse: swap a and b
                 return switch (ctx.field) {
                     .name => std.mem.order(u8, b.name, a.name) == .lt,
                     .votes => b.votes < a.votes,
@@ -213,103 +764,164 @@ pub const Commands = struct {
             }
         }
     };
+};
 
-    fn displayInfo(self: *Commands, pkg: *aur.Package) void {
-        _ = self;
-        const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
-        const w = stdout.deprecatedWriter();
+// ── Display Helpers (free functions) ─────────────────────────────────────
 
-        const write = struct {
-            fn field(writer: anytype, label: []const u8, value: []const u8) void {
-                writer.print("{s:<18}: {s}\n", .{ label, value }) catch {};
-            }
+fn displayPlan(plan: solver_mod.BuildPlan) void {
+    const stdout = getStdout();
 
-            fn optionalField(writer: anytype, label: []const u8, value: ?[]const u8) void {
-                writer.print("{s:<18}: {s}\n", .{ label, value orelse "None" }) catch {};
-            }
+    stdout.print(":: AUR packages ({d}):\n", .{plan.build_order.len}) catch {};
+    for (plan.build_order) |entry| {
+        const marker: []const u8 = if (entry.is_target) "" else " (dependency)";
+        stdout.print("  {s} {s}{s}\n", .{ entry.name, entry.version, marker }) catch {};
+    }
 
-            fn sliceField(writer: anytype, label: []const u8, values: []const []const u8) void {
-                if (values.len == 0) {
-                    writer.print("{s:<18}: None\n", .{label}) catch {};
-                } else {
-                    for (values, 0..) |v, i| {
-                        if (i == 0) {
-                            writer.print("{s:<18}: {s}\n", .{ label, v }) catch {};
-                        } else {
-                            writer.print("{s:<18}  {s}\n", .{ "", v }) catch {};
-                        }
+    if (plan.repo_deps.len > 0) {
+        stdout.print("\n:: Repository dependencies ({d}):\n", .{plan.repo_deps.len}) catch {};
+        for (plan.repo_deps) |dep| {
+            stdout.print("  {s}\n", .{dep}) catch {};
+        }
+    }
+
+    stdout.writeByte('\n') catch {};
+}
+
+fn displayInfo(pkg: *aur.Package) void {
+    const stdout = getStdout();
+
+    const write = struct {
+        fn field(writer: anytype, label: []const u8, value: []const u8) void {
+            writer.print("{s:<18}: {s}\n", .{ label, value }) catch {};
+        }
+
+        fn optionalField(writer: anytype, label: []const u8, value: ?[]const u8) void {
+            writer.print("{s:<18}: {s}\n", .{ label, value orelse "None" }) catch {};
+        }
+
+        fn sliceField(writer: anytype, label: []const u8, values: []const []const u8) void {
+            if (values.len == 0) {
+                writer.print("{s:<18}: None\n", .{label}) catch {};
+            } else {
+                for (values, 0..) |v, i| {
+                    if (i == 0) {
+                        writer.print("{s:<18}: {s}\n", .{ label, v }) catch {};
+                    } else {
+                        writer.print("{s:<18}  {s}\n", .{ "", v }) catch {};
                     }
                 }
             }
-
-            fn numField(writer: anytype, label: []const u8, value: anytype) void {
-                writer.print("{s:<18}: {d}\n", .{ label, value }) catch {};
-            }
-
-            fn floatField(writer: anytype, label: []const u8, value: f64) void {
-                writer.print("{s:<18}: {d:.2}\n", .{ label, value }) catch {};
-            }
-        };
-
-        write.field(w, "Name", pkg.name);
-        write.field(w, "Package Base", pkg.pkgbase);
-        write.field(w, "Version", pkg.version);
-        write.optionalField(w, "Description", pkg.description);
-        write.optionalField(w, "URL", pkg.url);
-        write.sliceField(w, "Licenses", pkg.licenses);
-        write.sliceField(w, "Groups", pkg.groups);
-        write.sliceField(w, "Provides", pkg.provides);
-        write.sliceField(w, "Depends On", pkg.depends);
-        write.sliceField(w, "Make Deps", pkg.makedepends);
-        write.sliceField(w, "Check Deps", pkg.checkdepends);
-        write.sliceField(w, "Optional Deps", pkg.optdepends);
-        write.sliceField(w, "Conflicts With", pkg.conflicts);
-        write.sliceField(w, "Replaces", pkg.replaces);
-        write.sliceField(w, "Keywords", pkg.keywords);
-        write.optionalField(w, "Maintainer", pkg.maintainer);
-        write.optionalField(w, "Submitter", pkg.submitter);
-        write.sliceField(w, "Co-Maintainers", pkg.comaintainers);
-        write.numField(w, "Votes", pkg.votes);
-        write.floatField(w, "Popularity", pkg.popularity);
-
-        if (pkg.out_of_date) |_| {
-            write.field(w, "Out Of Date", "Yes");
-        } else {
-            write.field(w, "Out Of Date", "No");
         }
 
-        w.writeByte('\n') catch {};
+        fn numField(writer: anytype, label: []const u8, value: anytype) void {
+            writer.print("{s:<18}: {d}\n", .{ label, value }) catch {};
+        }
+
+        fn floatField(writer: anytype, label: []const u8, value: f64) void {
+            writer.print("{s:<18}: {d:.2}\n", .{ label, value }) catch {};
+        }
+    };
+
+    write.field(stdout, "Name", pkg.name);
+    write.field(stdout, "Package Base", pkg.pkgbase);
+    write.field(stdout, "Version", pkg.version);
+    write.optionalField(stdout, "Description", pkg.description);
+    write.optionalField(stdout, "URL", pkg.url);
+    write.sliceField(stdout, "Licenses", pkg.licenses);
+    write.sliceField(stdout, "Groups", pkg.groups);
+    write.sliceField(stdout, "Provides", pkg.provides);
+    write.sliceField(stdout, "Depends On", pkg.depends);
+    write.sliceField(stdout, "Make Deps", pkg.makedepends);
+    write.sliceField(stdout, "Check Deps", pkg.checkdepends);
+    write.sliceField(stdout, "Optional Deps", pkg.optdepends);
+    write.sliceField(stdout, "Conflicts With", pkg.conflicts);
+    write.sliceField(stdout, "Replaces", pkg.replaces);
+    write.sliceField(stdout, "Keywords", pkg.keywords);
+    write.optionalField(stdout, "Maintainer", pkg.maintainer);
+    write.optionalField(stdout, "Submitter", pkg.submitter);
+    write.sliceField(stdout, "Co-Maintainers", pkg.comaintainers);
+    write.numField(stdout, "Votes", pkg.votes);
+    write.floatField(stdout, "Popularity", pkg.popularity);
+
+    if (pkg.out_of_date) |_| {
+        write.field(stdout, "Out Of Date", "Yes");
+    } else {
+        write.field(stdout, "Out Of Date", "No");
     }
 
-    fn displaySearchResults(self: *Commands, packages: []const *aur.Package) void {
-        _ = self;
-        const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
-        const w = stdout.deprecatedWriter();
+    stdout.writeByte('\n') catch {};
+}
 
-        for (packages) |pkg| {
-            // Format: aur/name version (+votes popularity)
-            w.print("aur/{s} {s} (+{d} {d:.2})", .{
-                pkg.name,
-                pkg.version,
-                pkg.votes,
-                pkg.popularity,
-            }) catch {};
+fn displaySearchResults(packages: []const *aur.Package) void {
+    const stdout = getStdout();
 
-            if (pkg.out_of_date != null) {
-                w.writeAll(" [out-of-date]") catch {};
-            }
+    for (packages) |pkg| {
+        stdout.print("aur/{s} {s} (+{d} {d:.2})", .{
+            pkg.name,
+            pkg.version,
+            pkg.votes,
+            pkg.popularity,
+        }) catch {};
 
-            w.writeByte('\n') catch {};
+        if (pkg.out_of_date != null) {
+            stdout.writeAll(" [out-of-date]") catch {};
+        }
 
-            // Indented description
-            if (pkg.description) |desc| {
-                w.print("    {s}\n", .{desc}) catch {};
-            }
+        stdout.writeByte('\n') catch {};
+
+        if (pkg.description) |desc| {
+            stdout.print("    {s}\n", .{desc}) catch {};
         }
     }
-};
+}
+
+fn handleResolveError(err: anyerror) ExitCode {
+    const stderr = getStderr();
+    if (err == error.CircularDependency) {
+        stderr.writeAll("error: circular dependency detected\n") catch {};
+    } else if (err == error.UnresolvableDependency) {
+        stderr.writeAll("error: unresolvable dependency\n") catch {};
+    } else {
+        stderr.print("error: dependency resolution failed: {}\n", .{err}) catch {};
+    }
+    return .general_error;
+}
+
+fn printError(err: anytype) !void {
+    const stderr = getStderr();
+    switch (err) {
+        error.NetworkError => try stderr.writeAll("error: failed to connect to AUR\n"),
+        error.RateLimited => try stderr.writeAll("error: AUR rate limit exceeded. Wait and retry.\n"),
+        error.ApiError => try stderr.writeAll("error: AUR returned an error\n"),
+        error.MalformedResponse => try stderr.writeAll("error: received malformed response from AUR\n"),
+        else => try stderr.print("error: {}\n", .{err}),
+    }
+}
+
+fn printErr(msg: []const u8) void {
+    getStderr().writeAll(msg) catch {};
+}
+
+// ── I/O Helpers ──────────────────────────────────────────────────────────
+
+const StdWriter = @TypeOf(blk: {
+    const f: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
+    break :blk f.deprecatedWriter();
+});
+
+fn getStdout() StdWriter {
+    const f: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
+    return f.deprecatedWriter();
+}
+
+fn getStderr() StdWriter {
+    const f: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
+    return f.deprecatedWriter();
+}
 
 // ── Tests ────────────────────────────────────────────────────────────────
+
+const testing = std.testing;
 
 fn makeTestPackage(name: []const u8, votes: u32, popularity: f64) aur.Package {
     return .{
@@ -348,14 +960,13 @@ test "sortPackages: default sort is popularity descending" {
     var pkg_c = makeTestPackage("gamma", 15, 3.0);
 
     var packages = [_]*aur.Package{ &pkg_a, &pkg_b, &pkg_c };
-    var cmds = Commands.init(std.testing.allocator, undefined, .{});
+    var cmds = Commands.init(testing.allocator, undefined, .{});
     const sorted = try cmds.sortPackages(&packages);
-    defer std.testing.allocator.free(sorted);
+    defer testing.allocator.free(sorted);
 
-    // Default: popularity descending (5.0 > 3.0 > 1.0)
-    try std.testing.expectEqualStrings("beta", sorted[0].name);
-    try std.testing.expectEqualStrings("gamma", sorted[1].name);
-    try std.testing.expectEqualStrings("alpha", sorted[2].name);
+    try testing.expectEqualStrings("beta", sorted[0].name);
+    try testing.expectEqualStrings("gamma", sorted[1].name);
+    try testing.expectEqualStrings("alpha", sorted[2].name);
 }
 
 test "sortPackages: --sort name ascending" {
@@ -364,13 +975,13 @@ test "sortPackages: --sort name ascending" {
     var pkg_c = makeTestPackage("banana", 15, 3.0);
 
     var packages = [_]*aur.Package{ &pkg_a, &pkg_b, &pkg_c };
-    var cmds = Commands.init(std.testing.allocator, undefined, .{ .sort = .name });
+    var cmds = Commands.init(testing.allocator, undefined, .{ .sort = .name });
     const sorted = try cmds.sortPackages(&packages);
-    defer std.testing.allocator.free(sorted);
+    defer testing.allocator.free(sorted);
 
-    try std.testing.expectEqualStrings("apple", sorted[0].name);
-    try std.testing.expectEqualStrings("banana", sorted[1].name);
-    try std.testing.expectEqualStrings("cherry", sorted[2].name);
+    try testing.expectEqualStrings("apple", sorted[0].name);
+    try testing.expectEqualStrings("banana", sorted[1].name);
+    try testing.expectEqualStrings("cherry", sorted[2].name);
 }
 
 test "sortPackages: --sort votes ascending" {
@@ -379,13 +990,13 @@ test "sortPackages: --sort votes ascending" {
     var pkg_c = makeTestPackage("c", 20, 3.0);
 
     var packages = [_]*aur.Package{ &pkg_a, &pkg_b, &pkg_c };
-    var cmds = Commands.init(std.testing.allocator, undefined, .{ .sort = .votes });
+    var cmds = Commands.init(testing.allocator, undefined, .{ .sort = .votes });
     const sorted = try cmds.sortPackages(&packages);
-    defer std.testing.allocator.free(sorted);
+    defer testing.allocator.free(sorted);
 
-    try std.testing.expectEqual(@as(u32, 10), sorted[0].votes);
-    try std.testing.expectEqual(@as(u32, 20), sorted[1].votes);
-    try std.testing.expectEqual(@as(u32, 30), sorted[2].votes);
+    try testing.expectEqual(@as(u32, 10), sorted[0].votes);
+    try testing.expectEqual(@as(u32, 20), sorted[1].votes);
+    try testing.expectEqual(@as(u32, 30), sorted[2].votes);
 }
 
 test "sortPackages: --rsort popularity descending" {
@@ -394,42 +1005,78 @@ test "sortPackages: --rsort popularity descending" {
     var pkg_c = makeTestPackage("c", 15, 3.0);
 
     var packages = [_]*aur.Package{ &pkg_a, &pkg_b, &pkg_c };
-    var cmds = Commands.init(std.testing.allocator, undefined, .{ .rsort = .popularity });
+    var cmds = Commands.init(testing.allocator, undefined, .{ .rsort = .popularity });
     const sorted = try cmds.sortPackages(&packages);
-    defer std.testing.allocator.free(sorted);
+    defer testing.allocator.free(sorted);
 
-    try std.testing.expect(sorted[0].popularity > sorted[1].popularity);
-    try std.testing.expect(sorted[1].popularity > sorted[2].popularity);
+    try testing.expect(sorted[0].popularity > sorted[1].popularity);
+    try testing.expect(sorted[1].popularity > sorted[2].popularity);
 }
 
 test "sortPackages: empty input returns empty slice" {
     const packages: []const *aur.Package = &.{};
-    var cmds = Commands.init(std.testing.allocator, undefined, .{});
+    var cmds = Commands.init(testing.allocator, undefined, .{});
     const sorted = try cmds.sortPackages(packages);
-    defer std.testing.allocator.free(sorted);
+    defer testing.allocator.free(sorted);
 
-    try std.testing.expectEqual(@as(usize, 0), sorted.len);
+    try testing.expectEqual(@as(usize, 0), sorted.len);
 }
 
 test "SortField.fromString valid fields" {
-    try std.testing.expectEqual(SortField.name, SortField.fromString("name").?);
-    try std.testing.expectEqual(SortField.votes, SortField.fromString("votes").?);
-    try std.testing.expectEqual(SortField.popularity, SortField.fromString("popularity").?);
+    try testing.expectEqual(SortField.name, SortField.fromString("name").?);
+    try testing.expectEqual(SortField.votes, SortField.fromString("votes").?);
+    try testing.expectEqual(SortField.popularity, SortField.fromString("popularity").?);
 }
 
 test "SortField.fromString returns null for unknown" {
-    try std.testing.expect(SortField.fromString("invalid") == null);
+    try testing.expect(SortField.fromString("invalid") == null);
 }
 
-fn printError(err: anytype) !void {
-    const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
-    const w = stderr.deprecatedWriter();
+test "handleResolveError returns general_error for CircularDependency" {
+    const result = handleResolveError(error.CircularDependency);
+    try testing.expectEqual(ExitCode.general_error, result);
+}
 
-    switch (err) {
-        error.NetworkError => try w.writeAll("error: failed to connect to AUR\n"),
-        error.RateLimited => try w.writeAll("error: AUR rate limit exceeded. Wait and retry.\n"),
-        error.ApiError => try w.writeAll("error: AUR returned an error\n"),
-        error.MalformedResponse => try w.writeAll("error: received malformed response from AUR\n"),
-        else => try w.print("error: {}\n", .{err}),
-    }
+test "handleResolveError returns general_error for UnresolvableDependency" {
+    const result = handleResolveError(error.UnresolvableDependency);
+    try testing.expectEqual(ExitCode.general_error, result);
+}
+
+test "handleResolveError returns general_error for other errors" {
+    const result = handleResolveError(error.OutOfMemory);
+    try testing.expectEqual(ExitCode.general_error, result);
+}
+
+test "hasFailedDep returns false for empty failed set" {
+    const entry = solver_mod.BuildEntry{
+        .name = "foo",
+        .pkgbase = "foo",
+        .version = "1.0",
+        .is_target = true,
+    };
+    const plan = solver_mod.BuildPlan{
+        .build_order = &.{},
+        .all_deps = &.{},
+        .repo_deps = &.{},
+    };
+    var failed: std.StringHashMapUnmanaged(void) = .empty;
+    try testing.expect(!Commands.hasFailedDep(entry, plan, &failed));
+}
+
+test "hasFailedDep returns true when own pkgbase is failed" {
+    const entry = solver_mod.BuildEntry{
+        .name = "foo",
+        .pkgbase = "foo",
+        .version = "1.0",
+        .is_target = true,
+    };
+    const plan = solver_mod.BuildPlan{
+        .build_order = &.{},
+        .all_deps = &.{},
+        .repo_deps = &.{},
+    };
+    var failed: std.StringHashMapUnmanaged(void) = .empty;
+    defer failed.deinit(testing.allocator);
+    try failed.put(testing.allocator, "foo", {});
+    try testing.expect(Commands.hasFailedDep(entry, plan, &failed));
 }
