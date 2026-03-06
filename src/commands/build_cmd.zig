@@ -665,11 +665,10 @@ fn installTargets(self: *Commands, names: []const []const u8) !void {
         try argv.append(self.allocator, qualified);
     }
 
-    const result = try utils.runSudo(self.allocator, argv.items);
-    defer result.deinit(self.allocator);
+    const exit_code = try utils.runSudoInteractive(self.allocator, argv.items);
 
-    if (!result.success()) {
-        getStderr().print("error: installation failed (exit {d})\n", .{result.exit_code}) catch {};
+    if (exit_code != 0) {
+        getStderr().print("error: installation failed (exit {d})\n", .{exit_code}) catch {};
     }
 }
 

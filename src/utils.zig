@@ -131,10 +131,11 @@ pub fn runCommandWithLog(
     };
 }
 
-/// Run a command with privilege escalation.
-/// Uses sudo by default.
+/// Run a command with privilege escalation (captured I/O).
+/// Stdout/stderr are captured into ProcessResult.
 ///
-/// Never used for makepkg — makepkg must NOT run as root.
+/// Use for non-interactive sudo commands (cp, etc).
+/// For interactive commands (pacman -S), use runSudoInteractive.
 pub fn runSudo(
     allocator: Allocator,
     argv: []const []const u8,
@@ -147,6 +148,26 @@ pub fn runSudo(
     sudo_argv.appendSliceAssumeCapacity(argv);
 
     return runCommand(allocator, sudo_argv.items);
+}
+
+/// Run a command interactively with privilege escalation.
+/// Inherits stdin/stdout/stderr so the user can interact with
+/// sudo password prompts and pacman confirmation prompts.
+pub fn runSudoInteractive(
+    allocator: Allocator,
+    argv: []const []const u8,
+) !u8 {
+    var sudo_argv: std.ArrayList([]const u8) = .empty;
+    defer sudo_argv.deinit(allocator);
+    try sudo_argv.ensureTotalCapacity(allocator, argv.len + 1);
+
+    sudo_argv.appendAssumeCapacity("sudo");
+    sudo_argv.appendSliceAssumeCapacity(argv);
+
+    var child = std.process.Child.init(sudo_argv.items, allocator);
+    try child.spawn();
+    const term = try child.wait();
+    return termToExitCode(term);
 }
 
 /// Prompt the user for yes/no confirmation.
