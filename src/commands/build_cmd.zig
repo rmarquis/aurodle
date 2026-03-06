@@ -534,7 +534,14 @@ fn buildLoop(
             self.allocator.free(added);
         }
 
-        // Invalidate cache so next build can find just-built deps
+        // Refresh aurpkgs sync DB so next makepkg -s can find just-built deps
+        if (self.pacman) |pm| {
+            pm.refreshAurDb() catch |err| {
+                getStderr().print("warning: failed to refresh aurpkgs db: {}\n", .{err}) catch {};
+            };
+        }
+
+        // Invalidate registry cache so next resolve can find just-built deps
         reg.invalidate(&.{entry.name});
 
         try succeeded.append(self.allocator, entry.pkgbase);
