@@ -24,10 +24,12 @@ pub const CleanResult = struct {
 };
 
 pub const MakepkgConfig = struct {
+    pkgdest: ?[]const u8 = null,
     pkgext: []const u8 = DEFAULT_PKGEXT,
     owns_pkgext: bool = false,
 
     fn deinit(self: MakepkgConfig, allocator: Allocator) void {
+        if (self.pkgdest) |p| allocator.free(p);
         if (self.owns_pkgext) allocator.free(self.pkgext);
     }
 };
@@ -43,19 +45,22 @@ pub const Repository = struct {
     makepkg_conf: MakepkgConfig,
     skip_repo_add: bool,
 
-    /// Create a Repository using default paths:
-    /// - repo_dir: /var/lib/aurodle/aurpkgs (shared, readable by root for pacman)
+    /// Create a Repository using paths derived from makepkg.conf:
+    /// - repo_dir: PKGDEST from makepkg.conf (falls back to /var/lib/aurodle/aurpkgs)
     /// - cache_dir: ~/.cache/aurodle (user-owned clones and logs)
-    /// Parses makepkg.conf for PKGDEST/PKGEXT/BUILDDIR.
+    /// Parses makepkg.conf for PKGDEST and PKGEXT.
     pub fn init(allocator: Allocator) !Repository {
         const home = std.posix.getenv("HOME") orelse return error.NoHomeDirectory;
         const cache_dir = try std.fs.path.join(allocator, &.{ home, ".cache/aurodle" });
         errdefer allocator.free(cache_dir);
 
-        const repo_dir = try allocator.dupe(u8, DEFAULT_REPO_DIR);
-        errdefer allocator.free(repo_dir);
-
         const conf = parseMakepkgConf(allocator) catch MakepkgConfig{};
+
+        const repo_dir = if (conf.pkgdest) |p|
+            try allocator.dupe(u8, p)
+        else
+            try allocator.dupe(u8, DEFAULT_REPO_DIR);
+        errdefer allocator.free(repo_dir);
 
         return initFromParts(allocator, cache_dir, repo_dir, conf);
     }
@@ -372,7 +377,7 @@ pub fn isConfiguredFromPath(path: []const u8) bool {
 
 // ── makepkg.conf Parsing ─────────────────────────────────────────────────
 
-/// Parse PKGEXT from makepkg.conf files.
+/// Parse PKGDEST and PKGEXT from makepkg.conf files.
 /// Reads /etc/makepkg.conf first, then ~/.makepkg.conf (user overrides).
 /// Environment variables override config files.
 fn parseMakepkgConf(allocator: Allocator) !MakepkgConfig {
@@ -388,7 +393,11 @@ fn parseMakepkgConf(allocator: Allocator) !MakepkgConfig {
         parseMakepkgConfFromFile(allocator, user_conf, &config) catch {};
     }
 
-    // Environment variable overrides everything
+    // Environment variables override everything
+    if (std.posix.getenv("PKGDEST")) |v| {
+        if (config.pkgdest) |old| allocator.free(old);
+        config.pkgdest = try allocator.dupe(u8, v);
+    }
     if (std.posix.getenv("PKGEXT")) |v| {
         if (config.owns_pkgext) allocator.free(config.pkgext);
         config.pkgext = try allocator.dupe(u8, v);
@@ -398,7 +407,7 @@ fn parseMakepkgConf(allocator: Allocator) !MakepkgConfig {
     return config;
 }
 
-/// Parse a single makepkg.conf file for PKGEXT.
+/// Parse a single makepkg.conf file for PKGDEST and PKGEXT.
 pub fn parseMakepkgConfFromFile(allocator: Allocator, path: []const u8, config: *MakepkgConfig) !void {
     const file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
@@ -412,7 +421,10 @@ pub fn parseMakepkgConfFromFile(allocator: Allocator, path: []const u8, config: 
         const trimmed = std.mem.trim(u8, line, " \t\r");
         if (trimmed.len == 0 or trimmed[0] == '#') continue;
 
-        if (parseAssignment(trimmed, "PKGEXT")) |val| {
+        if (parseAssignment(trimmed, "PKGDEST")) |val| {
+            if (config.pkgdest) |old| allocator.free(old);
+            config.pkgdest = try allocator.dupe(u8, stripQuotes(val));
+        } else if (parseAssignment(trimmed, "PKGEXT")) |val| {
             if (config.owns_pkgext) allocator.free(config.pkgext);
             config.pkgext = try allocator.dupe(u8, stripQuotes(val));
             config.owns_pkgext = true;
@@ -847,7 +859,7 @@ test "clean skips aurpkgs and logs directories" {
     }
 }
 
-test "parseMakepkgConfFromFile reads PKGEXT" {
+test "parseMakepkgConfFromFile reads PKGDEST and PKGEXT" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -855,6 +867,7 @@ test "parseMakepkgConfFromFile reads PKGEXT" {
         .sub_path = "makepkg.conf",
         .data =
         \\# Test config
+        \\PKGDEST="/home/user/packages"
         \\PKGEXT='.pkg.tar.zst'
         ,
     });
@@ -866,6 +879,7 @@ test "parseMakepkgConfFromFile reads PKGEXT" {
     try parseMakepkgConfFromFile(std.testing.allocator, path, &config);
     defer config.deinit(std.testing.allocator);
 
+    try std.testing.expectEqualStrings("/home/user/packages", config.pkgdest.?);
     try std.testing.expectEqualStrings(".pkg.tar.zst", config.pkgext);
     try std.testing.expect(config.owns_pkgext);
 }
