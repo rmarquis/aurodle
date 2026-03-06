@@ -284,6 +284,25 @@ fn displayInfo(pkg: *aur.Package) void {
         fn floatField(writer: anytype, label: []const u8, value: f64) void {
             writer.print("{s:<18}: {d:.2}\n", .{ label, value }) catch {};
         }
+
+        fn timestampField(writer: anytype, label: []const u8, timestamp: i64) void {
+            if (timestamp == 0) return;
+            const epoch = std.time.epoch;
+            const es = epoch.EpochSeconds{ .secs = @intCast(@as(u64, @intCast(timestamp))) };
+            const epoch_day = es.getEpochDay();
+            const year_day = epoch_day.calculateYearDay();
+            const month_day = year_day.calculateMonthDay();
+            const day_secs = es.getDaySeconds();
+            writer.print("{s:<18}: {d}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z\n", .{
+                label,
+                year_day.year,
+                month_day.month.numeric(),
+                @as(u6, month_day.day_index) + 1,
+                day_secs.getHoursIntoDay(),
+                day_secs.getMinutesIntoHour(),
+                day_secs.getSecondsIntoMinute(),
+            }) catch {};
+        }
     };
 
     write.field(stdout, "Name", pkg.name);
@@ -306,6 +325,8 @@ fn displayInfo(pkg: *aur.Package) void {
     write.sliceField(stdout, "Co-Maintainers", pkg.comaintainers);
     write.numField(stdout, "Votes", pkg.votes);
     write.floatField(stdout, "Popularity", pkg.popularity);
+    write.timestampField(stdout, "Submitted", pkg.first_submitted);
+    write.timestampField(stdout, "Last Modified", pkg.last_modified);
 
     if (pkg.out_of_date) |_| {
         write.field(stdout, "Out Of Date", "Yes");
