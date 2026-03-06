@@ -584,7 +584,7 @@ fn buildLoop(
         }
 
         // Build succeeded — add packages to repo
-        const added = repository.addBuiltPackages(clone_dir) catch |err| {
+        const added = repository.addBuiltPackages() catch |err| {
             getStderr().print("error: failed to add built packages for {s}: {}\n", .{ entry.pkgbase, err }) catch {};
             try failed.append(self.allocator, .{
                 .pkgbase = entry.pkgbase,

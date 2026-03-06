@@ -24,15 +24,11 @@ pub const CleanResult = struct {
 };
 
 pub const MakepkgConfig = struct {
-    pkgdest: ?[]const u8 = null,
     pkgext: []const u8 = DEFAULT_PKGEXT,
-    builddir: ?[]const u8 = null,
     owns_pkgext: bool = false,
 
     fn deinit(self: MakepkgConfig, allocator: Allocator) void {
-        if (self.pkgdest) |p| allocator.free(p);
         if (self.owns_pkgext) allocator.free(self.pkgext);
-        if (self.builddir) |b| allocator.free(b);
     }
 };
 
@@ -111,39 +107,20 @@ pub const Repository = struct {
 
     // ── Package Addition ─────────────────────────────────────────────────
 
-    /// Find built packages after a makepkg run, copy them to the repository,
-    /// and update the database. Returns filenames of added packages.
+    /// Find built packages in the repository directory (placed there by
+    /// makepkg via PKGDEST) and update the database.
+    /// Returns filenames of added packages.
     ///
     /// Handles split packages: one PKGBUILD may produce multiple .pkg.tar.* files.
-    pub fn addBuiltPackages(self: *const Repository, build_dir: []const u8) ![]const []const u8 {
-        // Resolve where to find built packages
-        const search_dir = self.makepkg_conf.pkgdest orelse build_dir;
-
-        // Find all matching package files
-        const pkg_files = try self.findBuiltPackages(search_dir);
-        defer {
-            for (pkg_files) |p| self.allocator.free(p);
-            self.allocator.free(pkg_files);
-        }
+    pub fn addBuiltPackages(self: *const Repository) ![]const []const u8 {
+        const pkg_files = try self.findBuiltPackages(self.repo_dir);
 
         if (pkg_files.len == 0) return error.PackageNotFound;
 
-        // Copy each to repository directory
-        var repo_paths: std.ArrayList([]const u8) = .empty;
-        errdefer {
-            for (repo_paths.items) |p| self.allocator.free(p);
-            repo_paths.deinit(self.allocator);
-        }
-
-        for (pkg_files) |src_path| {
-            const dest = try self.copyToRepo(src_path);
-            try repo_paths.append(self.allocator, dest);
-        }
-
         // Update database
-        try self.runRepoAdd(repo_paths.items);
+        try self.runRepoAdd(pkg_files);
 
-        return repo_paths.toOwnedSlice(self.allocator);
+        return pkg_files;
     }
 
     /// Find .pkg.tar.* files in a directory matching PKGEXT.
@@ -170,17 +147,6 @@ pub const Repository = struct {
         }
 
         return results.toOwnedSlice(self.allocator);
-    }
-
-    /// Copy a package file to the repository directory (overwrite if exists).
-    fn copyToRepo(self: *const Repository, src_path: []const u8) ![]const u8 {
-        const filename = std.fs.path.basename(src_path);
-        const dest_path = try std.fs.path.join(self.allocator, &.{ self.repo_dir, filename });
-        errdefer self.allocator.free(dest_path);
-
-        try copyFileRaw(src_path, dest_path);
-
-        return dest_path;
     }
 
     /// Run `repo-add -R <db_path> <pkg1> <pkg2> ...`
@@ -259,6 +225,10 @@ pub const Repository = struct {
             \\[aurpkgs]
             \\SigLevel = Optional TrustAll
             \\Server = file:///var/lib/aurodle/aurpkgs
+            \\
+            \\Set PKGDEST in /etc/makepkg.conf:
+            \\
+            \\PKGDEST=/var/lib/aurodle/aurpkgs
             \\
             \\Then run:
             \\  sudo install -d -o $USER /var/lib/aurodle/aurpkgs
@@ -402,7 +372,7 @@ pub fn isConfiguredFromPath(path: []const u8) bool {
 
 // ── makepkg.conf Parsing ─────────────────────────────────────────────────
 
-/// Parse PKGDEST, PKGEXT, and BUILDDIR from makepkg.conf files.
+/// Parse PKGEXT from makepkg.conf files.
 /// Reads /etc/makepkg.conf first, then ~/.makepkg.conf (user overrides).
 /// Environment variables override config files.
 fn parseMakepkgConf(allocator: Allocator) !MakepkgConfig {
@@ -418,25 +388,17 @@ fn parseMakepkgConf(allocator: Allocator) !MakepkgConfig {
         parseMakepkgConfFromFile(allocator, user_conf, &config) catch {};
     }
 
-    // Environment variables override everything
-    if (std.posix.getenv("PKGDEST")) |v| {
-        if (config.pkgdest) |old| allocator.free(old);
-        config.pkgdest = try allocator.dupe(u8, v);
-    }
+    // Environment variable overrides everything
     if (std.posix.getenv("PKGEXT")) |v| {
         if (config.owns_pkgext) allocator.free(config.pkgext);
         config.pkgext = try allocator.dupe(u8, v);
         config.owns_pkgext = true;
     }
-    if (std.posix.getenv("BUILDDIR")) |v| {
-        if (config.builddir) |old| allocator.free(old);
-        config.builddir = try allocator.dupe(u8, v);
-    }
 
     return config;
 }
 
-/// Parse a single makepkg.conf file for PKGDEST, PKGEXT, BUILDDIR.
+/// Parse a single makepkg.conf file for PKGEXT.
 pub fn parseMakepkgConfFromFile(allocator: Allocator, path: []const u8, config: *MakepkgConfig) !void {
     const file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
@@ -450,16 +412,10 @@ pub fn parseMakepkgConfFromFile(allocator: Allocator, path: []const u8, config: 
         const trimmed = std.mem.trim(u8, line, " \t\r");
         if (trimmed.len == 0 or trimmed[0] == '#') continue;
 
-        if (parseAssignment(trimmed, "PKGDEST")) |val| {
-            if (config.pkgdest) |old| allocator.free(old);
-            config.pkgdest = try allocator.dupe(u8, stripQuotes(val));
-        } else if (parseAssignment(trimmed, "PKGEXT")) |val| {
+        if (parseAssignment(trimmed, "PKGEXT")) |val| {
             if (config.owns_pkgext) allocator.free(config.pkgext);
             config.pkgext = try allocator.dupe(u8, stripQuotes(val));
             config.owns_pkgext = true;
-        } else if (parseAssignment(trimmed, "BUILDDIR")) |val| {
-            if (config.builddir) |old| allocator.free(old);
-            config.builddir = try allocator.dupe(u8, stripQuotes(val));
         }
     }
 }
@@ -491,21 +447,6 @@ fn stripExtension(filename: []const u8) []const u8 {
         return filename[0..dot];
     }
     return filename;
-}
-
-/// Copy a file using streaming I/O (no allocation needed).
-fn copyFileRaw(src_path: []const u8, dest_path: []const u8) !void {
-    const src = try std.fs.cwd().openFile(src_path, .{});
-    defer src.close();
-    const dest = try std.fs.cwd().createFile(dest_path, .{ .truncate = true });
-    defer dest.close();
-
-    var buf: [8192]u8 = undefined;
-    while (true) {
-        const n = src.read(&buf) catch return error.CopyFailed;
-        if (n == 0) break;
-        dest.writeAll(buf[0..n]) catch return error.CopyFailed;
-    }
 }
 
 fn dirExists(path: []const u8) bool {
@@ -588,6 +529,7 @@ test "configInstructions contains required elements" {
     try std.testing.expect(std.mem.indexOf(u8, instructions, "[aurpkgs]") != null);
     try std.testing.expect(std.mem.indexOf(u8, instructions, "SigLevel") != null);
     try std.testing.expect(std.mem.indexOf(u8, instructions, "Server = file://") != null);
+    try std.testing.expect(std.mem.indexOf(u8, instructions, "PKGDEST=") != null);
 }
 
 test "isConfiguredFromPath detects aurpkgs section" {
@@ -715,17 +657,12 @@ test "findBuiltPackages returns empty for nonexistent directory" {
     try std.testing.expectEqual(@as(usize, 0), found.len);
 }
 
-test "addBuiltPackages finds, copies, and registers split packages" {
+test "addBuiltPackages finds and registers split packages in repo dir" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
     const tmp_path = try getTmpPath(tmp);
     defer std.testing.allocator.free(tmp_path);
-
-    // Create build dir with split packages
-    try tmp.dir.makePath("build");
-    try tmp.dir.writeFile(.{ .sub_path = "build/python-attrs-23.1-1-any.pkg.tar.zst", .data = "pkg-a" });
-    try tmp.dir.writeFile(.{ .sub_path = "build/python-attrs-tests-23.1-1-any.pkg.tar.zst", .data = "pkg-b" });
 
     var repo = try Repository.initWithRoot(std.testing.allocator, tmp_path);
     defer repo.deinit();
@@ -733,32 +670,31 @@ test "addBuiltPackages finds, copies, and registers split packages" {
 
     try repo.ensureExists();
 
-    const build_dir = try std.fs.path.join(std.testing.allocator, &.{ tmp_path, "build" });
-    defer std.testing.allocator.free(build_dir);
+    // Place packages directly in repo dir (as makepkg with PKGDEST would)
+    const repo_dir = repo.repo_dir;
+    const pkg_a = try std.fs.path.join(std.testing.allocator, &.{ repo_dir, "python-attrs-23.1-1-any.pkg.tar.zst" });
+    defer std.testing.allocator.free(pkg_a);
+    const pkg_b = try std.fs.path.join(std.testing.allocator, &.{ repo_dir, "python-attrs-tests-23.1-1-any.pkg.tar.zst" });
+    defer std.testing.allocator.free(pkg_b);
 
-    const added = try repo.addBuiltPackages(build_dir);
+    try std.fs.cwd().writeFile(.{ .sub_path = pkg_a, .data = "pkg-a" });
+    try std.fs.cwd().writeFile(.{ .sub_path = pkg_b, .data = "pkg-b" });
+
+    const added = try repo.addBuiltPackages();
     defer {
         for (added) |p| std.testing.allocator.free(p);
         std.testing.allocator.free(added);
     }
 
     try std.testing.expectEqual(@as(usize, 2), added.len);
-
-    // Verify files were copied to repo dir
-    for (added) |path| {
-        const stat = std.fs.cwd().statFile(path) catch unreachable;
-        try std.testing.expect(stat.size > 0);
-    }
 }
 
-test "addBuiltPackages returns PackageNotFound for empty directory" {
+test "addBuiltPackages returns PackageNotFound for empty repo dir" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
     const tmp_path = try getTmpPath(tmp);
     defer std.testing.allocator.free(tmp_path);
-
-    try tmp.dir.makePath("empty");
 
     var repo = try Repository.initWithRoot(std.testing.allocator, tmp_path);
     defer repo.deinit();
@@ -766,10 +702,7 @@ test "addBuiltPackages returns PackageNotFound for empty directory" {
 
     try repo.ensureExists();
 
-    const empty_dir = try std.fs.path.join(std.testing.allocator, &.{ tmp_path, "empty" });
-    defer std.testing.allocator.free(empty_dir);
-
-    try std.testing.expectError(error.PackageNotFound, repo.addBuiltPackages(empty_dir));
+    try std.testing.expectError(error.PackageNotFound, repo.addBuiltPackages());
 }
 
 test "listPackages returns parsed packages" {
@@ -914,7 +847,7 @@ test "clean skips aurpkgs and logs directories" {
     }
 }
 
-test "parseMakepkgConfFromFile reads values" {
+test "parseMakepkgConfFromFile reads PKGEXT" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -922,9 +855,7 @@ test "parseMakepkgConfFromFile reads values" {
         .sub_path = "makepkg.conf",
         .data =
         \\# Test config
-        \\PKGDEST="/home/user/packages"
         \\PKGEXT='.pkg.tar.zst'
-        \\BUILDDIR=/tmp/build
         ,
     });
 
@@ -935,10 +866,8 @@ test "parseMakepkgConfFromFile reads values" {
     try parseMakepkgConfFromFile(std.testing.allocator, path, &config);
     defer config.deinit(std.testing.allocator);
 
-    try std.testing.expectEqualStrings("/home/user/packages", config.pkgdest.?);
     try std.testing.expectEqualStrings(".pkg.tar.zst", config.pkgext);
     try std.testing.expect(config.owns_pkgext);
-    try std.testing.expectEqualStrings("/tmp/build", config.builddir.?);
 }
 
 test "parseMakepkgConfFromFile skips comments and empty lines" {
@@ -948,7 +877,7 @@ test "parseMakepkgConfFromFile skips comments and empty lines" {
     try tmp.dir.writeFile(.{
         .sub_path = "makepkg.conf",
         .data =
-        \\# PKGDEST="/should/be/ignored"
+        \\# PKGEXT="/should/be/ignored"
         \\
         \\PKGEXT='.pkg.tar.xz'
         ,
@@ -961,7 +890,6 @@ test "parseMakepkgConfFromFile skips comments and empty lines" {
     try parseMakepkgConfFromFile(std.testing.allocator, path, &config);
     defer config.deinit(std.testing.allocator);
 
-    try std.testing.expect(config.pkgdest == null);
     try std.testing.expectEqualStrings(".pkg.tar.xz", config.pkgext);
 }
 
@@ -978,33 +906,6 @@ test "Repository paths are correct" {
     try std.testing.expect(std.mem.endsWith(u8, repo.repo_dir, "/aurpkgs"));
     try std.testing.expect(std.mem.endsWith(u8, repo.db_path, "/aurpkgs/aurpkgs.db.tar.xz"));
     try std.testing.expect(std.mem.endsWith(u8, repo.log_dir, "/logs"));
-}
-
-test "copyFileRaw copies content" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const tmp_path = try getTmpPath(tmp);
-    defer std.testing.allocator.free(tmp_path);
-
-    const src_path = try std.fs.path.join(std.testing.allocator, &.{ tmp_path, "source.txt" });
-    defer std.testing.allocator.free(src_path);
-    const dest_path = try std.fs.path.join(std.testing.allocator, &.{ tmp_path, "dest.txt" });
-    defer std.testing.allocator.free(dest_path);
-
-    // Write source file
-    const src_file = try std.fs.cwd().createFile(src_path, .{});
-    try src_file.writeAll("hello world");
-    src_file.close();
-
-    try copyFileRaw(src_path, dest_path);
-
-    // Verify content
-    const dest_file = try std.fs.cwd().openFile(dest_path, .{});
-    defer dest_file.close();
-    var buf: [64]u8 = undefined;
-    const n = try dest_file.readAll(&buf);
-    try std.testing.expectEqualStrings("hello world", buf[0..n]);
 }
 
 test "stripExtension works correctly" {
