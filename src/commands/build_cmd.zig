@@ -421,7 +421,9 @@ fn checkDevelUpgrades(
         if (!devel.isVcsPackage(pkg.name)) continue;
         if (upgrade_set.contains(pkg.name)) continue;
 
-        getStderr().print(":: checking {s}...\n", .{pkg.name}) catch {};
+        if (!self.flags.quiet) {
+            getStderr().print(":: checking {s}...\n", .{pkg.name}) catch {};
+        }
 
         const vcs_result = devel.checkVersion(self.allocator, c_root, pkg.name) catch {
             getStderr().print("warning: failed to check VCS version for {s}\n", .{pkg.name}) catch {};
