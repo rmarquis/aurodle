@@ -43,8 +43,14 @@ pub fn info(self: *Commands, targets: []const []const u8) !ExitCode {
         }
     }
 
+    const alpm_handle = alpm.Handle.init("/", "/var/lib/pacman/") catch null;
+    defer if (alpm_handle) |h| h.deinit();
+    const local_db = if (alpm_handle) |h| h.getLocalDb() else null;
     for (packages) |pkg| {
-        displayInfo(pkg);
+        const installed_version = if (local_db) |db| blk: {
+            break :blk if (db.getPackage(pkg.name)) |p| p.getVersion() else null;
+        } else null;
+        displayInfo(pkg, installed_version);
     }
 
     return if (any_missing) .general_error else .success;
@@ -247,7 +253,7 @@ const SortContext = struct {
 
 // ── Display Helpers ──────────────────────────────────────────────────
 
-fn displayInfo(pkg: *aur.Package) void {
+fn displayInfo(pkg: *aur.Package, installed_version: ?[]const u8) void {
     const stdout = getStdout();
 
     const write = struct {
@@ -309,7 +315,11 @@ fn displayInfo(pkg: *aur.Package) void {
     if (!std.mem.eql(u8, pkg.name, pkg.pkgbase)) {
         write.field(stdout, "Package Base", pkg.pkgbase);
     }
-    write.field(stdout, "Version", pkg.version);
+    if (installed_version) |iv| {
+        stdout.print("{s:<18}: {s} [installed: {s}]\n", .{ "Version", pkg.version, iv }) catch {};
+    } else {
+        write.field(stdout, "Version", pkg.version);
+    }
     write.optionalField(stdout, "Description", pkg.description);
     write.optionalField(stdout, "URL", pkg.url);
     write.sliceField(stdout, "Licenses", pkg.licenses);
