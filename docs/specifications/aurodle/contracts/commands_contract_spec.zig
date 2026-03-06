@@ -191,6 +191,24 @@ test "outdated identifies AUR packages via foreign package list" {
     // NOT in any official sync database. Uses pacman.allForeignPackages().
 }
 
+test "outdated with --devel checks VCS packages via makepkg" {
+    // Contract: When flags.devel is true, outdated() additionally checks
+    // VCS packages (-git, -svn, -hg, -bzr) by running makepkg --nobuild
+    // and --printsrcinfo in their clone directories. VCS packages already
+    // flagged as outdated by normal AUR comparison are skipped.
+}
+
+test "outdated with --devel skips non-VCS packages for VCS check" {
+    // Contract: The devel check only runs for packages whose names end
+    // with a VCS suffix. Non-VCS packages are never checked via makepkg.
+}
+
+test "outdated with --devel gracefully handles VCS check failures" {
+    // Contract: If makepkg --nobuild or --printsrcinfo fails for a
+    // VCS package, a warning is printed and the package is skipped.
+    // Other packages continue to be checked.
+}
+
 // ============================================================================
 // upgrade() Command Contracts
 // ============================================================================
@@ -206,6 +224,19 @@ test "upgrade with args upgrades only specified packages" {
     // even if other packages are also outdated.
 }
 
+test "upgrade with --devel includes outdated VCS packages" {
+    // Contract: When flags.devel is true, upgrade() additionally
+    // checks VCS packages for upstream changes via makepkg --nobuild.
+    // Outdated VCS packages are added to the upgrade list and
+    // processed through the sync workflow alongside regular upgrades.
+}
+
+test "upgrade with --devel does not duplicate already-outdated VCS packages" {
+    // Contract: If a VCS package is already flagged as outdated by
+    // AUR version comparison, the devel check skips it. Each package
+    // appears at most once in the upgrade list.
+}
+
 // ============================================================================
 // clean() Command Contracts
 // ============================================================================
@@ -214,6 +245,11 @@ test "clean displays removal plan and prompts for confirmation" {
     // Contract: clean() shows what will be removed (stale clones,
     // old packages, logs) and asks for confirmation before deleting.
     // Upfront prompting philosophy — show everything, then ask once.
+}
+
+test "clean requires pacman and repository to be initialized" {
+    // Contract: clean() returns general_error if pacman or repository
+    // is not initialized. Both are needed to determine staleness.
 }
 
 // ============================================================================

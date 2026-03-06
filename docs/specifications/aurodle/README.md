@@ -22,7 +22,8 @@ Executable test specifications defining the formal contracts, expected behaviors
 | [solver_contract_spec.zig](contracts/solver_contract_spec.zig) | `solver.Solver` | resolve → BuildPlan, cycle detection, pkgbase dedup |
 | [repo_contract_spec.zig](contracts/repo_contract_spec.zig) | `repo.Repository` | ensureExists, addBuiltPackages, listPackages, clean, isConfigured |
 | [git_contract_spec.zig](contracts/git_contract_spec.zig) | `git.*` | clone, update, cloneOrUpdate, listFiles, readFile, isCloned |
-| [commands_contract_spec.zig](contracts/commands_contract_spec.zig) | `commands.*` | sync, build, info, search, show, outdated, upgrade, clean |
+| [commands_contract_spec.zig](contracts/commands_contract_spec.zig) | `commands.*` | sync, build, info, search, show, outdated, upgrade, clean, --devel |
+| [devel_contract_spec.zig](contracts/devel_contract_spec.zig) | `devel.*` | isVcsPackage, checkVersion, parseSrcinfoVersion, VcsVersionResult |
 | [main_contract_spec.zig](contracts/main_contract_spec.zig) | `main` | parseArgs, exit codes, preconditions, module init order |
 | [utils_contract_spec.zig](contracts/utils_contract_spec.zig) | `utils.*` | runCommand, runCommandWithLog, runSudo, promptYesNo, expandHome |
 
@@ -38,6 +39,8 @@ Executable test specifications defining the formal contracts, expected behaviors
 | [git_clone_behavior_spec.zig](behaviors/git_clone_behavior_spec.zig) | FR-8 | Clone to cache, pkgbase resolution, idempotent clone, --recurse, --clean, AURDEST |
 | [package_building_behavior_spec.zig](behaviors/package_building_behavior_spec.zig) | FR-9 | makepkg invocation, --syncdeps, topo order, aurpkgs refresh, PKGDEST, split packages, log capture, --needed/--rebuild |
 | [sync_workflow_behavior_spec.zig](behaviors/sync_workflow_behavior_spec.zig) | FR-10 | Full workflow, review, confirmation, install targets only, --asdeps, --noconfirm, --noshow, --ignore |
+| [outdated_upgrade_behavior_spec.zig](behaviors/outdated_upgrade_behavior_spec.zig) | FR-12, FR-13 | Outdated detection, version comparison, --devel VCS check, upgrade workflow, --rebuild, filter by targets |
+| [cache_cleanup_behavior_spec.zig](behaviors/cache_cleanup_behavior_spec.zig) | FR-18 | Stale clone/log detection, size display, confirmation prompt, --noconfirm, --quiet |
 | [local_repo_behavior_spec.zig](behaviors/local_repo_behavior_spec.zig) | FR-14, NFR-2 | Auto-create, repo-add -R, valid pacman repo, config check, atomic updates, build isolation |
 | [cli_options_behavior_spec.zig](behaviors/cli_options_behavior_spec.zig) | FR-15, FR-16, NFR-3, NFR-4 | Help, version, unknown commands, exit codes, security review, root rejection, signal handling, sudo |
 
@@ -51,6 +54,7 @@ Executable test specifications defining the formal contracts, expected behaviors
 | [aur_property_spec.zig](properties/aur_property_spec.zig) | `aur.Client` | Cache consistency, batch splitting correctness, cache monotonicity, search independence, field completeness, idempotent fetch |
 | [repo_property_spec.zig](properties/repo_property_spec.zig) | `repo.Repository` | ensureExists idempotency, filename parsing roundtrip, add idempotency, clean safety, split package completeness, config instructions stability |
 | [git_property_spec.zig](properties/git_property_spec.zig) | `git.*` | Clone idempotency, cleanup on failure, cloneOrUpdate completeness, path traversal safety, PKGBUILD-first ordering, listFiles completeness, isCloned consistency |
+| [devel_property_spec.zig](properties/devel_property_spec.zig) | `devel.*` | Suffix completeness/exclusivity, case sensitivity, version format, epoch inclusion, field order independence, pkgbase isolation, whitespace tolerance |
 
 ## Traceability Matrix
 
@@ -66,9 +70,14 @@ Executable test specifications defining the formal contracts, expected behaviors
 | FR-8: Git Clone Management | git_contract | git_clone_behavior | git_property |
 | FR-9: Package Building | commands_contract, repo_contract | package_building_behavior | repo_property |
 | FR-10: Package Sync | commands_contract | sync_workflow_behavior | — |
+| FR-11: Package Show/Review | commands_contract | sync_workflow_behavior | — |
+| FR-12: Outdated Detection | commands_contract | outdated_upgrade_behavior | — |
+| FR-13: Package Upgrade | commands_contract, devel_contract | outdated_upgrade_behavior | devel_property |
 | FR-14: Local Repository | repo_contract | local_repo_behavior | repo_property |
 | FR-15: Global CLI Options | main_contract | cli_options_behavior | — |
 | FR-16: Privilege Escalation | utils_contract | cli_options_behavior | — |
+| FR-17: Pacman Configuration | pacman_contract | libalpm_behavior | — |
+| FR-18: Cache Cleanup | commands_contract, repo_contract | cache_cleanup_behavior | repo_property |
 | NFR-2: Reliability | commands_contract | local_repo_behavior, cli_options_behavior | solver_property |
 | NFR-3: Security | git_contract | cli_options_behavior | git_property (path traversal) |
 | NFR-4: Usability | main_contract | cli_options_behavior | — |
