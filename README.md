@@ -35,13 +35,21 @@ SigLevel = Optional TrustAll
 Server = file:///var/lib/aurodle/aurpkgs
 ```
 
-**3. Create an empty local aurpkgs repo database**
+**3. Set PKGDEST in `/etc/makepkg.conf`:**
+
+```bash
+PKGDEST=/var/lib/aurodle/aurpkgs
+```
+
+This tells makepkg to place built packages directly into the local repository.
+
+**4. Create an empty local aurpkgs repo database**
 
 ```bash
 repo-add /var/lib/aurodle/aurpkgs/aurpkgs.db.tar.xz
 ```
 
-**4. Sync the database:**
+**5. Sync the database:**
 
 ```bash
 sudo pacman -Sy
