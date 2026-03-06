@@ -258,19 +258,19 @@ fn displayInfo(pkg: *aur.Package, installed_version: ?[]const u8) void {
 
     const write = struct {
         fn field(writer: anytype, label: []const u8, value: []const u8) void {
-            writer.print("{s:<18}: {s}\n", .{ label, value }) catch {};
+            writer.print("{s:<16}: {s}\n", .{ label, value }) catch {};
         }
 
         fn optionalField(writer: anytype, label: []const u8, value: ?[]const u8) void {
             const v = value orelse return;
-            writer.print("{s:<18}: {s}\n", .{ label, v }) catch {};
+            writer.print("{s:<16}: {s}\n", .{ label, v }) catch {};
         }
 
         fn sliceField(writer: anytype, label: []const u8, values: []const []const u8) void {
             if (values.len == 0) {
                 return;
             } else {
-                writer.print("{s:<18}:", .{label}) catch {};
+                writer.print("{s:<16}:", .{label}) catch {};
                 for (values, 0..) |v, i| {
                     if (i > 0) {
                         writer.writeAll("  ") catch {};
@@ -284,11 +284,11 @@ fn displayInfo(pkg: *aur.Package, installed_version: ?[]const u8) void {
         }
 
         fn numField(writer: anytype, label: []const u8, value: anytype) void {
-            writer.print("{s:<18}: {d}\n", .{ label, value }) catch {};
+            writer.print("{s:<16}: {d}\n", .{ label, value }) catch {};
         }
 
         fn floatField(writer: anytype, label: []const u8, value: f64) void {
-            writer.print("{s:<18}: {d:.2}\n", .{ label, value }) catch {};
+            writer.print("{s:<16}: {d:.2}\n", .{ label, value }) catch {};
         }
 
         fn timestampField(writer: anytype, label: []const u8, timestamp: i64) void {
@@ -299,7 +299,7 @@ fn displayInfo(pkg: *aur.Package, installed_version: ?[]const u8) void {
             const year_day = epoch_day.calculateYearDay();
             const month_day = year_day.calculateMonthDay();
             const day_secs = es.getDaySeconds();
-            writer.print("{s:<18}: {d}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z\n", .{
+            writer.print("{s:<16}: {d}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z\n", .{
                 label,
                 year_day.year,
                 month_day.month.numeric(),
@@ -316,7 +316,7 @@ fn displayInfo(pkg: *aur.Package, installed_version: ?[]const u8) void {
         write.field(stdout, "Package Base", pkg.pkgbase);
     }
     if (installed_version) |iv| {
-        stdout.print("{s:<18}: {s} [installed: {s}]\n", .{ "Version", pkg.version, iv }) catch {};
+        stdout.print("{s:<16}: {s} [installed: {s}]\n", .{ "Version", pkg.version, iv }) catch {};
     } else {
         write.field(stdout, "Version", pkg.version);
     }
