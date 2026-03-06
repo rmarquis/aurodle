@@ -263,13 +263,16 @@ fn displayInfo(pkg: *aur.Package) void {
             if (values.len == 0) {
                 writer.print("{s:<18}: None\n", .{label}) catch {};
             } else {
+                writer.print("{s:<18}:", .{label}) catch {};
                 for (values, 0..) |v, i| {
-                    if (i == 0) {
-                        writer.print("{s:<18}: {s}\n", .{ label, v }) catch {};
+                    if (i > 0) {
+                        writer.writeAll("  ") catch {};
                     } else {
-                        writer.print("{s:<18}  {s}\n", .{ "", v }) catch {};
+                        writer.writeAll(" ") catch {};
                     }
+                    writer.writeAll(v) catch {};
                 }
+                writer.writeAll("\n") catch {};
             }
         }
 
