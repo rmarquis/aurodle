@@ -1,4 +1,5 @@
 const std = @import("std");
+const registry_mod = @import("../registry.zig");
 const solver_mod = @import("../solver.zig");
 const cmds = @import("../commands.zig");
 
@@ -48,8 +49,16 @@ pub fn buildorder(self: *Commands, targets: []const []const u8) !ExitCode {
     defer plan.deinit(self.allocator);
 
     const stdout = getStdout();
-    for (plan.build_order) |entry| {
-        stdout.print("{s}\n", .{entry.pkgbase}) catch {};
+
+    // Show all dependencies with classification prefixes (FR-7)
+    for (plan.all_deps) |dep| {
+        const prefix: []const u8 = if (dep.is_target) "TARGET" else switch (dep.source) {
+            .aur => "AUR",
+            .repos => "REPOS",
+            .satisfied => "SATISFIED",
+            .unknown => "UNKNOWN",
+        };
+        stdout.print("{s} {s}\n", .{ prefix, dep.name }) catch {};
     }
     return .success;
 }
