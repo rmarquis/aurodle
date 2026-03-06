@@ -306,7 +306,9 @@ fn displayInfo(pkg: *aur.Package) void {
     };
 
     write.field(stdout, "Name", pkg.name);
-    write.field(stdout, "Package Base", pkg.pkgbase);
+    if (!std.mem.eql(u8, pkg.name, pkg.pkgbase)) {
+        write.field(stdout, "Package Base", pkg.pkgbase);
+    }
     write.field(stdout, "Version", pkg.version);
     write.optionalField(stdout, "Description", pkg.description);
     write.optionalField(stdout, "URL", pkg.url);
