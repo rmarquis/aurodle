@@ -256,12 +256,13 @@ fn displayInfo(pkg: *aur.Package) void {
         }
 
         fn optionalField(writer: anytype, label: []const u8, value: ?[]const u8) void {
-            writer.print("{s:<18}: {s}\n", .{ label, value orelse "None" }) catch {};
+            const v = value orelse return;
+            writer.print("{s:<18}: {s}\n", .{ label, v }) catch {};
         }
 
         fn sliceField(writer: anytype, label: []const u8, values: []const []const u8) void {
             if (values.len == 0) {
-                writer.print("{s:<18}: None\n", .{label}) catch {};
+                return;
             } else {
                 writer.print("{s:<18}:", .{label}) catch {};
                 for (values, 0..) |v, i| {
