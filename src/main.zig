@@ -362,6 +362,7 @@ fn printHelp() void {
         \\  --rebuild              Force rebuild
         \\  --asdeps               Install as dependency
         \\  --asexplicit           Install as explicitly installed
+        \\  --devel                Check VCS packages (-git, -svn, etc.) for updates
         \\
         \\Search options:
         \\  --by <field>           Search by: name, name-desc, maintainer

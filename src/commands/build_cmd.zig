@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const aur = @import("../aur.zig");
 const alpm = @import("../alpm.zig");
 const git = @import("../git.zig");
+const devel = @import("../devel.zig");
 const registry_mod = @import("../registry.zig");
 const solver_mod = @import("../solver.zig");
 const repo_mod = @import("../repo.zig");
@@ -348,6 +349,10 @@ pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
     var outdated_display: std.ArrayListUnmanaged(OutdatedEntry) = .empty;
     defer outdated_display.deinit(self.allocator);
 
+    // Track which packages are already queued for upgrade
+    var upgrade_set: std.StringHashMapUnmanaged(void) = .empty;
+    defer upgrade_set.deinit(self.allocator);
+
     for (to_check) |pkg| {
         const dominated_by_aur = if (aur_map.get(pkg.name)) |aur_ver|
             alpm.vercmp(pkg.version, aur_ver) < 0
@@ -356,6 +361,7 @@ pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
 
         if (dominated_by_aur or self.flags.rebuild) {
             try to_upgrade.append(self.allocator, pkg.name);
+            try upgrade_set.put(self.allocator, pkg.name, {});
             if (aur_map.get(pkg.name)) |aur_ver| {
                 try outdated_display.append(self.allocator, .{
                     .name = pkg.name,
@@ -364,6 +370,11 @@ pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
                 });
             }
         }
+    }
+
+    // --devel: check VCS packages for upstream updates
+    if (self.flags.devel) {
+        try checkDevelUpgrades(self, to_check, &upgrade_set, &to_upgrade, &outdated_display);
     }
 
     if (to_upgrade.items.len == 0) {
@@ -378,6 +389,58 @@ pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
 
     // Delegate to sync for the actual build+install workflow
     return sync(self, to_upgrade.items);
+}
+
+// ── Devel Upgrade Check ──────────────────────────────────────────────
+
+/// Check VCS packages for upstream updates and add outdated ones to upgrade lists.
+fn checkDevelUpgrades(
+    self: *Commands,
+    packages: []const pacman_mod.InstalledPackage,
+    upgrade_set: *std.StringHashMapUnmanaged(void),
+    to_upgrade: *std.ArrayListUnmanaged([]const u8),
+    outdated_display: *std.ArrayListUnmanaged(OutdatedEntry),
+) !void {
+    const c_root = self.cache_root orelse blk: {
+        break :blk git.defaultCacheRoot(self.allocator) catch {
+            getStderr().writeAll("warning: could not determine cache directory for --devel check\n") catch {};
+            return;
+        };
+    };
+    const owns_root = self.cache_root == null;
+    defer if (owns_root) self.allocator.free(c_root);
+
+    // Collect allocated version strings for cleanup
+    var devel_versions: std.ArrayListUnmanaged(devel.VcsVersionResult) = .empty;
+    defer {
+        for (devel_versions.items) |v| v.deinit();
+        devel_versions.deinit(self.allocator);
+    }
+
+    for (packages) |pkg| {
+        if (!devel.isVcsPackage(pkg.name)) continue;
+        if (upgrade_set.contains(pkg.name)) continue;
+
+        getStderr().print(":: checking {s}...\n", .{pkg.name}) catch {};
+
+        const vcs_result = devel.checkVersion(self.allocator, c_root, pkg.name) catch {
+            getStderr().print("warning: failed to check VCS version for {s}\n", .{pkg.name}) catch {};
+            continue;
+        };
+
+        const result = vcs_result orelse continue;
+        try devel_versions.append(self.allocator, result);
+
+        if (alpm.vercmp(pkg.version, result.version) < 0) {
+            try to_upgrade.append(self.allocator, pkg.name);
+            try upgrade_set.put(self.allocator, pkg.name, {});
+            try outdated_display.append(self.allocator, .{
+                .name = pkg.name,
+                .installed_version = pkg.version,
+                .aur_version = result.version,
+            });
+        }
+    }
 }
 
 // ── Clean Command ────────────────────────────────────────────────────

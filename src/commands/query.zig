@@ -2,6 +2,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const aur = @import("../aur.zig");
 const alpm = @import("../alpm.zig");
+const git = @import("../git.zig");
+const devel = @import("../devel.zig");
 const pacman_mod = @import("../pacman.zig");
 const cmds = @import("../commands.zig");
 
@@ -118,6 +120,11 @@ pub fn outdated(self: *Commands, filter: []const []const u8) !ExitCode {
     // Compare versions
     var outdated_list: std.ArrayListUnmanaged(OutdatedEntry) = .empty;
     defer outdated_list.deinit(self.allocator);
+
+    // Track which packages were already flagged as outdated by AUR version
+    var already_outdated: std.StringHashMapUnmanaged(void) = .empty;
+    defer already_outdated.deinit(self.allocator);
+
     for (to_check) |pkg| {
         if (aur_map.get(pkg.name)) |aur_ver| {
             if (alpm.vercmp(pkg.version, aur_ver) < 0) {
@@ -126,9 +133,15 @@ pub fn outdated(self: *Commands, filter: []const []const u8) !ExitCode {
                     .installed_version = pkg.version,
                     .aur_version = aur_ver,
                 });
+                try already_outdated.put(self.allocator, pkg.name, {});
             }
         }
         // Packages not in AUR are silently skipped (might be custom local packages)
+    }
+
+    // --devel: check VCS packages via makepkg --nobuild + --printsrcinfo
+    if (self.flags.devel) {
+        try checkDevelPackages(self, to_check, &already_outdated, &outdated_list);
     }
 
     if (outdated_list.items.len == 0) {
@@ -140,6 +153,58 @@ pub fn outdated(self: *Commands, filter: []const []const u8) !ExitCode {
 
     formatOutdated(outdated_list.items);
     return .success;
+}
+
+// ── Devel Check ─────────────────────────────────────────────────────
+
+/// Check VCS packages for upstream updates via makepkg --nobuild.
+/// Only checks packages not already flagged as outdated by normal AUR comparison.
+fn checkDevelPackages(
+    self: *Commands,
+    packages: []const pacman_mod.InstalledPackage,
+    already_outdated: *std.StringHashMapUnmanaged(void),
+    outdated_list: *std.ArrayListUnmanaged(OutdatedEntry),
+) !void {
+    const c_root = self.cache_root orelse blk: {
+        break :blk git.defaultCacheRoot(self.allocator) catch {
+            getStderr().writeAll("warning: could not determine cache directory for --devel check\n") catch {};
+            return;
+        };
+    };
+    const owns_root = self.cache_root == null;
+    defer if (owns_root) self.allocator.free(c_root);
+
+    // Collect allocated version strings for cleanup
+    var devel_versions: std.ArrayListUnmanaged(devel.VcsVersionResult) = .empty;
+    defer {
+        for (devel_versions.items) |v| v.deinit();
+        devel_versions.deinit(self.allocator);
+    }
+
+    for (packages) |pkg| {
+        if (!devel.isVcsPackage(pkg.name)) continue;
+        if (already_outdated.contains(pkg.name)) continue;
+
+        if (!self.flags.quiet) {
+            getStderr().print(":: checking {s}...\n", .{pkg.name}) catch {};
+        }
+
+        const vcs_result = devel.checkVersion(self.allocator, c_root, pkg.name) catch {
+            getStderr().print("warning: failed to check VCS version for {s}\n", .{pkg.name}) catch {};
+            continue;
+        };
+
+        const result = vcs_result orelse continue;
+        try devel_versions.append(self.allocator, result);
+
+        if (alpm.vercmp(pkg.version, result.version) < 0) {
+            try outdated_list.append(self.allocator, .{
+                .name = pkg.name,
+                .installed_version = pkg.version,
+                .aur_version = result.version,
+            });
+        }
+    }
 }
 
 // ── Sorting ──────────────────────────────────────────────────────────
