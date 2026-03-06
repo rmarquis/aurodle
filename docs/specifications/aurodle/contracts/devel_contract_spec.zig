@@ -117,8 +117,11 @@ test "checkVersion clones or updates the AUR repository" {
 
 test "checkVersion runs makepkg --nobuild to execute pkgver()" {
     // Contract: After clone/update, checkVersion() runs
-    // `makepkg --nobuild --noconfirm` in the clone directory.
-    // This fetches sources and executes the PKGBUILD pkgver() function.
+    // `makepkg --nobuild --noconfirm --noextract` in the clone directory.
+    // This executes pkgver() without re-extracting already-present sources.
+    // If that fails (e.g. sources not yet extracted), it retries with
+    // `makepkg --nobuild --noconfirm` (without --noextract) to allow
+    // full source preparation.
 }
 
 test "checkVersion runs makepkg --printsrcinfo to extract version" {
