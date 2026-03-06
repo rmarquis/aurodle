@@ -534,12 +534,12 @@ fn buildLoop(
             self.allocator.free(added);
         }
 
-        // Refresh aurpkgs sync DB so next makepkg -s can find just-built deps
-        if (self.pacman) |pm| {
-            pm.refreshAurDb() catch |err| {
-                getStderr().print("warning: failed to refresh aurpkgs db: {}\n", .{err}) catch {};
-            };
-        }
+        // Refresh aurpkgs sync DB so next makepkg -s can find just-built deps.
+        // repo-add updates the repo dir DB, but pacman's sync cache
+        // (/var/lib/pacman/sync/aurpkgs.db) is stale and root-owned.
+        refreshAurpkgsSyncDb(self.allocator, repository) catch |err| {
+            getStderr().print("warning: failed to refresh aurpkgs sync db: {}\n", .{err}) catch {};
+        };
 
         // Invalidate registry cache so next resolve can find just-built deps
         reg.invalidate(&.{entry.name});
@@ -706,6 +706,16 @@ fn printBuildSummary(result: BuildResult) void {
             f.log_path,
         }) catch {};
     }
+}
+
+/// Copy the aurpkgs repo DB to pacman's sync cache so that subsequent
+/// makepkg -s calls (which spawn their own pacman) see just-built packages.
+/// Only touches the aurpkgs entry — official repo DBs are left untouched.
+fn refreshAurpkgsSyncDb(allocator: Allocator, repository: *repo_mod.Repository) !void {
+    const sync_db_path = "/var/lib/pacman/sync/" ++ repo_mod.REPO_NAME ++ ".db";
+    const result = try utils.runSudo(allocator, &.{ "cp", repository.db_path, sync_db_path });
+    defer result.deinit(allocator);
+    if (!result.success()) return error.SyncDbRefreshFailed;
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
