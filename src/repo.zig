@@ -7,7 +7,6 @@ const utils = @import("utils.zig");
 pub const REPO_NAME = "aurpkgs";
 pub const DB_FILENAME = "aurpkgs.db.tar.xz";
 pub const DEFAULT_PKGEXT = ".pkg.tar.zst";
-pub const DEFAULT_REPO_DIR = "/var/lib/aurodle/aurpkgs";
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -46,7 +45,7 @@ pub const Repository = struct {
     skip_repo_add: bool,
 
     /// Create a Repository using paths derived from makepkg.conf:
-    /// - repo_dir: PKGDEST from makepkg.conf (falls back to /var/lib/aurodle/aurpkgs)
+    /// - repo_dir: PKGDEST from makepkg.conf (required)
     /// - cache_dir: ~/.cache/aurodle (user-owned clones and logs)
     /// Parses makepkg.conf for PKGDEST and PKGEXT.
     pub fn init(allocator: Allocator) !Repository {
@@ -56,10 +55,7 @@ pub const Repository = struct {
 
         const conf = parseMakepkgConf(allocator) catch MakepkgConfig{};
 
-        const repo_dir = if (conf.pkgdest) |p|
-            try allocator.dupe(u8, p)
-        else
-            try allocator.dupe(u8, DEFAULT_REPO_DIR);
+        const repo_dir = try allocator.dupe(u8, conf.pkgdest orelse return error.PkgdestNotSet);
         errdefer allocator.free(repo_dir);
 
         return initFromParts(allocator, cache_dir, repo_dir, conf);

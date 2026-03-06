@@ -295,7 +295,11 @@ fn runWithFullStack(
     var repository = repo_mod.Repository.init(allocator) catch |err| {
         const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
         const w = stderr.deprecatedWriter();
-        w.print("error: failed to initialize repository: {}\n", .{err}) catch {};
+        if (err == error.PkgdestNotSet) {
+            w.writeAll("error: PKGDEST is not set in /etc/makepkg.conf\n") catch {};
+        } else {
+            w.print("error: failed to initialize repository: {}\n", .{err}) catch {};
+        }
         return .general_error;
     };
     defer repository.deinit();
