@@ -126,23 +126,33 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                 return error.UnresolvableDependency;
             }
 
-            // Only recurse into AUR packages — repo/satisfied deps
-            // are handled transitively by pacman.
-            if (resolution.source == .aur) {
-                if (resolution.aur_pkg) |pkg| {
-                    // Follow depends
-                    for (pkg.depends) |dep| {
-                        const dep_name = registry_mod.parseDep(dep).name;
-                        try self.discover(dep_name, depth + 1);
-                        try self.graph.addEdge(name, dep_name);
-                    }
+            // Determine AUR package info for recursion.
+            // For AUR packages, we already have it. For targets that are
+            // installed/in repos, fetch from AUR so we can resolve their deps.
+            const aur_pkg: ?*aur.Package = if (resolution.aur_pkg) |pkg|
+                pkg
+            else if (self.targets.contains(name) and
+                (resolution.source == .satisfied or resolution.source == .repos))
+                if (try self.registry.resolveFromAur(name)) |aur_res| aur_res.aur_pkg else null
+            else
+                null;
 
-                    // Follow makedepends
-                    for (pkg.makedepends) |dep| {
-                        const dep_name = registry_mod.parseDep(dep).name;
-                        try self.discover(dep_name, depth + 1);
-                        try self.graph.addEdge(name, dep_name);
-                    }
+            // Recurse into dependencies if we have AUR package info.
+            // For non-target deps, repo/satisfied packages are handled
+            // transitively by pacman and won't have aur_pkg set.
+            if (aur_pkg) |pkg| {
+                // Follow depends
+                for (pkg.depends) |dep| {
+                    const dep_name = registry_mod.parseDep(dep).name;
+                    try self.discover(dep_name, depth + 1);
+                    try self.graph.addEdge(name, dep_name);
+                }
+
+                // Follow makedepends
+                for (pkg.makedepends) |dep| {
+                    const dep_name = registry_mod.parseDep(dep).name;
+                    try self.discover(dep_name, depth + 1);
+                    try self.graph.addEdge(name, dep_name);
                 }
             }
 
@@ -362,6 +372,7 @@ const testing = std.testing;
 
 const MockRegistry = struct {
     packages: std.StringHashMapUnmanaged(MockPackageInfo),
+    aur_overrides: std.StringHashMapUnmanaged(MockPackageInfo),
     arena: std.heap.ArenaAllocator,
 
     const MockPackageInfo = struct {
@@ -376,12 +387,14 @@ const MockRegistry = struct {
     fn initEmpty() MockRegistry {
         return .{
             .packages = .empty,
+            .aur_overrides = .empty,
             .arena = std.heap.ArenaAllocator.init(testing.allocator),
         };
     }
 
     fn deinitMock(self: *MockRegistry) void {
         self.packages.deinit(testing.allocator);
+        self.aur_overrides.deinit(testing.allocator);
         self.arena.deinit();
     }
 
@@ -430,6 +443,60 @@ const MockRegistry = struct {
         }) catch unreachable;
     }
 
+    /// Register a package as installed locally, but also available in AUR
+    /// with dependency info. Simulates `resolve` → .satisfied, `resolveFromAur` → .aur with deps.
+    fn addSatisfiedWithAurDeps(self: *MockRegistry, name: []const u8, version: []const u8, depends: []const []const u8, makedepends: []const []const u8) void {
+        // Primary entry: satisfied (no aur_pkg)
+        self.packages.put(testing.allocator, name, .{
+            .source = .satisfied,
+            .version = version,
+            .pkgbase = name,
+            .depends = &.{},
+            .makedepends = &.{},
+            .aur_pkg = null,
+        }) catch unreachable;
+
+        // AUR override with dependency info
+        const alloc = self.arena.allocator();
+        const pkg = alloc.create(aur.Package) catch unreachable;
+        pkg.* = .{
+            .id = 0,
+            .name = name,
+            .pkgbase = name,
+            .pkgbase_id = 0,
+            .version = version,
+            .description = null,
+            .url = null,
+            .url_path = null,
+            .maintainer = null,
+            .submitter = null,
+            .votes = 0,
+            .popularity = 0,
+            .first_submitted = 0,
+            .last_modified = 0,
+            .out_of_date = null,
+            .depends = depends,
+            .makedepends = makedepends,
+            .checkdepends = &.{},
+            .optdepends = &.{},
+            .provides = &.{},
+            .conflicts = &.{},
+            .replaces = &.{},
+            .groups = &.{},
+            .keywords = &.{},
+            .licenses = &.{},
+            .comaintainers = &.{},
+        };
+        self.aur_overrides.put(testing.allocator, name, .{
+            .source = .aur,
+            .version = version,
+            .pkgbase = name,
+            .depends = depends,
+            .makedepends = makedepends,
+            .aur_pkg = pkg,
+        }) catch unreachable;
+    }
+
     fn addRepoPackage(self: *MockRegistry, name: []const u8, version: []const u8) void {
         self.packages.put(testing.allocator, name, .{
             .source = .repos,
@@ -462,6 +529,27 @@ const MockRegistry = struct {
         return .{
             .name = spec.name,
             .source = info.source,
+            .version = info.version,
+            .aur_pkg = info.aur_pkg,
+        };
+    }
+
+    pub fn resolveFromAur(self: *MockRegistry, name: []const u8) !?registry_mod.Resolution {
+        // Check AUR-specific entries first (for packages registered with addAurPackage)
+        if (self.aur_overrides.get(name)) |aur_info| {
+            return .{
+                .name = name,
+                .source = .aur,
+                .version = aur_info.version,
+                .aur_pkg = aur_info.aur_pkg,
+            };
+        }
+        // Fall back to primary entry if it has AUR data
+        const info = self.packages.get(name) orelse return null;
+        if (info.aur_pkg == null) return null;
+        return .{
+            .name = name,
+            .source = .aur,
             .version = info.version,
             .aur_pkg = info.aur_pkg,
         };
@@ -803,6 +891,34 @@ test "resolve handles diamond dependency patterns" {
     try testing.expect(indices.get("D").? < indices.get("C").?);
     try testing.expect(indices.get("B").? < indices.get("A").?);
     try testing.expect(indices.get("C").? < indices.get("A").?);
+}
+
+test "resolve discovers deps of installed target via AUR fallback" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+
+    // pacaur is installed but also in AUR with deps
+    mock.addSatisfiedWithAurDeps("pacaur", "4.8.6-2", &.{ "auracle-git", "expac" }, &.{});
+    mock.addAurPackage("auracle-git", &.{}, &.{});
+    mock.addRepoPackage("expac", "10-3");
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"pacaur"});
+    defer plan.deinit(testing.allocator);
+
+    // Should discover auracle-git (AUR dep) and expac (repo dep)
+    try testing.expect(plan.all_deps.len >= 3); // pacaur + auracle-git + expac
+    try testing.expectEqual(@as(usize, 1), plan.repo_deps.len);
+    try testing.expectEqualStrings("expac", plan.repo_deps[0]);
+
+    // auracle-git should be in build_order
+    var found_auracle = false;
+    for (plan.build_order) |entry| {
+        if (std.mem.eql(u8, entry.name, "auracle-git")) found_auracle = true;
+    }
+    try testing.expect(found_auracle);
 }
 
 test "resolve handles makedepends in addition to depends" {

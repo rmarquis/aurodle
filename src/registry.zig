@@ -176,6 +176,15 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
             }
         }
 
+        /// Resolve a package directly from AUR, bypassing local/sync tiers.
+        /// Used by the solver for target packages that need dependency info
+        /// even when the package is already installed or in sync repos.
+        pub fn resolveFromAur(self: *Self, name: []const u8) !?Resolution {
+            if (try self.resolveAur(name)) |res| return res;
+            if (try self.resolveAurProvider(name)) |res| return res;
+            return null;
+        }
+
         // ── Private Resolution Tiers ────────────────────────────────────
 
         fn resolveLocal(self: *Self, name: []const u8, constraint: ?pacman_mod.VersionConstraint) ?Resolution {
