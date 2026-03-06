@@ -12,8 +12,7 @@
 const std = @import("std");
 const testing = std.testing;
 
-// TODO: Replace with real import when implementation exists
-// const alpm = @import("../../../../src/alpm.zig");
+const alpm = @import("aurodle").alpm;
 
 // ============================================================================
 // Generators
@@ -21,44 +20,56 @@ const testing = std.testing;
 
 /// Generates random version strings following Arch Linux version format:
 /// [epoch:]upstream_version[-pkgrel]
-fn randomVersion(rng: *std.Random) [64]u8 {
-    var buf: [64]u8 = undefined;
+/// Returns a stack buffer with the generated string and its length.
+const VersionBuf = struct {
+    buf: [64]u8,
+    len: usize,
+
+    fn slice(self: *const VersionBuf) []const u8 {
+        return self.buf[0..self.len];
+    }
+};
+
+fn randomVersion(random: std.Random) VersionBuf {
+    var result: VersionBuf = .{ .buf = undefined, .len = 0 };
     var pos: usize = 0;
 
     // Optional epoch (20% chance)
-    if (rng.intRangeAtMost(u8, 0, 4) == 0) {
-        const epoch = rng.intRangeAtMost(u8, 1, 9);
-        buf[pos] = '0' + epoch;
+    if (random.intRangeAtMost(u8, 0, 4) == 0) {
+        const epoch = random.intRangeAtMost(u8, 1, 9);
+        result.buf[pos] = '0' + epoch;
         pos += 1;
-        buf[pos] = ':';
+        result.buf[pos] = ':';
         pos += 1;
     }
 
-    // Major.minor.patch version
-    const parts = rng.intRangeAtMost(u8, 1, 3);
+    // Major.minor.patch version (1-3 parts)
+    const parts = random.intRangeAtMost(u8, 1, 3);
     var i: u8 = 0;
     while (i < parts) : (i += 1) {
         if (i > 0) {
-            buf[pos] = '.';
+            result.buf[pos] = '.';
             pos += 1;
         }
-        const num = rng.intRangeAtMost(u16, 0, 999);
-        const written = std.fmt.formatInt(num, 10, .lower, .{}, buf[pos..]) catch break;
+        const num = random.intRangeAtMost(u16, 0, 999);
+        const written = std.fmt.bufPrint(result.buf[pos..], "{d}", .{num}) catch break;
         pos += written.len;
     }
 
     // Optional pkgrel (60% chance)
-    if (rng.intRangeAtMost(u8, 0, 4) < 3) {
-        buf[pos] = '-';
+    if (random.intRangeAtMost(u8, 0, 4) < 3) {
+        result.buf[pos] = '-';
         pos += 1;
-        const rel = rng.intRangeAtMost(u8, 1, 20);
-        const written = std.fmt.formatInt(rel, 10, .lower, .{}, buf[pos..]) catch {};
+        const rel = random.intRangeAtMost(u8, 1, 20);
+        const written = std.fmt.bufPrint(result.buf[pos..], "{d}", .{rel}) catch {
+            result.len = pos;
+            return result;
+        };
         pos += written.len;
     }
 
-    // Null-terminate remaining
-    @memset(buf[pos..], 0);
-    return buf;
+    result.len = pos;
+    return result;
 }
 
 // ============================================================================
@@ -72,20 +83,23 @@ test "antisymmetry: vercmp(a,b) and vercmp(b,a) have opposite signs" {
     // If a < b, then b > a. If a == b, then b == a.
     // This is a fundamental property of any valid comparison function.
 
-    var rng = std.Random.DefaultPrng.init(42);
-    var random = rng.random();
+    var prng = std.Random.DefaultPrng.init(42);
+    const random = prng.random();
 
-    var i: usize = 0;
-    while (i < 100) : (i += 1) {
-        _ = randomVersion(&random);
-        _ = randomVersion(&random);
+    for (0..100) |_| {
+        const a = randomVersion(random);
+        const b = randomVersion(random);
 
-        // const ab = alpm.vercmp(a_str, b_str);
-        // const ba = alpm.vercmp(b_str, a_str);
-        //
-        // if (ab > 0) try testing.expect(ba < 0)
-        // else if (ab < 0) try testing.expect(ba > 0)
-        // else try testing.expectEqual(@as(i32, 0), ba);
+        const ab = alpm.vercmp(a.slice(), b.slice());
+        const ba = alpm.vercmp(b.slice(), a.slice());
+
+        if (ab > 0) {
+            try testing.expect(ba < 0);
+        } else if (ab < 0) {
+            try testing.expect(ba > 0);
+        } else {
+            try testing.expectEqual(@as(i32, 0), ba);
+        }
     }
 }
 
@@ -99,15 +113,13 @@ test "reflexivity: vercmp(a, a) == 0 for all versions" {
     //
     // Every version is equal to itself.
 
-    var rng = std.Random.DefaultPrng.init(42);
-    var random = rng.random();
+    var prng = std.Random.DefaultPrng.init(42);
+    const random = prng.random();
 
-    var i: usize = 0;
-    while (i < 100) : (i += 1) {
-        _ = randomVersion(&random);
-
-        // const result = alpm.vercmp(a_str, a_str);
-        // try testing.expectEqual(@as(i32, 0), result);
+    for (0..100) |_| {
+        const a = randomVersion(random);
+        const result = alpm.vercmp(a.slice(), a.slice());
+        try testing.expectEqual(@as(i32, 0), result);
     }
 }
 
@@ -123,7 +135,6 @@ test "transitivity: if a < b and b < c then a < c" {
     // The ordering is transitive — a fundamental requirement for
     // topological sorting to produce correct results.
 
-    // Test with known-ordered triples
     const triples = [_][3][]const u8{
         .{ "1.0", "2.0", "3.0" },
         .{ "1.0-1", "1.0-2", "1.0-3" },
@@ -131,16 +142,15 @@ test "transitivity: if a < b and b < c then a < c" {
         .{ "0.9", "1.0", "1.0.1" },
         .{ "1.0alpha", "1.0beta", "1.0" },
     };
-    _ = triples;
 
-    // for (triples) |t| {
-    //     const ab = alpm.vercmp(t[0], t[1]);
-    //     const bc = alpm.vercmp(t[1], t[2]);
-    //     const ac = alpm.vercmp(t[0], t[2]);
-    //     try testing.expect(ab < 0);
-    //     try testing.expect(bc < 0);
-    //     try testing.expect(ac < 0);
-    // }
+    for (triples) |t| {
+        const ab = alpm.vercmp(t[0], t[1]);
+        const bc = alpm.vercmp(t[1], t[2]);
+        const ac = alpm.vercmp(t[0], t[2]);
+        try testing.expect(ab < 0);
+        try testing.expect(bc < 0);
+        try testing.expect(ac < 0);
+    }
 }
 
 // ============================================================================
@@ -153,17 +163,29 @@ test "epoch dominance: higher epoch always wins regardless of version" {
     //
     // Epoch completely overrides version comparison.
 
-    var rng = std.Random.DefaultPrng.init(42);
-    var random = rng.random();
+    var prng = std.Random.DefaultPrng.init(42);
+    const random = prng.random();
 
-    var i: usize = 0;
-    while (i < 100) : (i += 1) {
-        _ = randomVersion(&random);
-        _ = randomVersion(&random);
+    for (0..100) |_| {
+        // Generate versions without epoch
+        var v1 = randomVersion(random);
+        var v2 = randomVersion(random);
 
-        // Prepend epoch 2: to first, epoch 1: to second
-        // const result = alpm.vercmp("2:" ++ v1, "1:" ++ v2);
-        // try testing.expect(result > 0);
+        // Strip any epoch that randomVersion may have added
+        const v1_str = if (std.mem.indexOfScalar(u8, v1.slice(), ':')) |idx| v1.slice()[idx + 1 ..] else v1.slice();
+        const v2_str = if (std.mem.indexOfScalar(u8, v2.slice(), ':')) |idx| v2.slice()[idx + 1 ..] else v2.slice();
+
+        // Build "2:v1" and "1:v2"
+        var high_buf: [68]u8 = undefined;
+        var low_buf: [68]u8 = undefined;
+        const high = std.fmt.bufPrint(&high_buf, "2:{s}", .{v1_str}) catch continue;
+        const low = std.fmt.bufPrint(&low_buf, "1:{s}", .{v2_str}) catch continue;
+
+        _ = &v1;
+        _ = &v2;
+
+        const result = alpm.vercmp(high, low);
+        try testing.expect(result > 0);
     }
 }
 
@@ -177,13 +199,14 @@ test "pkgrel is secondary to upstream version" {
     //
     // Upstream version always takes priority over pkgrel.
 
-    // const pairs = [_][2][]const u8{
-    //     .{ "1.0-999", "2.0-1" },
-    //     .{ "1.99-100", "2.0-1" },
-    // };
-    // for (pairs) |p| {
-    //     try testing.expect(alpm.vercmp(p[0], p[1]) < 0);
-    // }
+    const pairs = [_][2][]const u8{
+        .{ "1.0-999", "2.0-1" },
+        .{ "1.99-100", "2.0-1" },
+        .{ "0.1-50", "1.0-1" },
+    };
+    for (pairs) |p| {
+        try testing.expect(alpm.vercmp(p[0], p[1]) < 0);
+    }
 }
 
 // ============================================================================
@@ -196,18 +219,17 @@ test "determinism: vercmp returns same result for same inputs" {
     //
     // Version comparison must be a pure function.
 
-    var rng = std.Random.DefaultPrng.init(42);
-    var random = rng.random();
+    var prng = std.Random.DefaultPrng.init(42);
+    const random = prng.random();
 
-    var i: usize = 0;
-    while (i < 50) : (i += 1) {
-        _ = randomVersion(&random);
-        _ = randomVersion(&random);
+    for (0..50) |_| {
+        const a = randomVersion(random);
+        const b = randomVersion(random);
 
-        // const first = alpm.vercmp(a_str, b_str);
-        // const second = alpm.vercmp(a_str, b_str);
-        // const third = alpm.vercmp(a_str, b_str);
-        // try testing.expectEqual(first, second);
-        // try testing.expectEqual(second, third);
+        const first = alpm.vercmp(a.slice(), b.slice());
+        const second = alpm.vercmp(a.slice(), b.slice());
+        const third = alpm.vercmp(a.slice(), b.slice());
+        try testing.expectEqual(first, second);
+        try testing.expectEqual(second, third);
     }
 }

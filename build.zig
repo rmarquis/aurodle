@@ -52,4 +52,22 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
+
+    // Specification tests (docs/specifications/)
+    const spec_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("docs/specifications/aurodle/spec_root.zig"),
+            .target = target,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "aurodle", .module = mod },
+            },
+        }),
+    });
+    spec_tests.root_module.linkSystemLibrary("alpm", .{});
+
+    const run_spec_tests = b.addRunArtifact(spec_tests);
+
+    const spec_step = b.step("spec", "Run specification tests");
+    spec_step.dependOn(&run_spec_tests.step);
 }
