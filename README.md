@@ -16,3 +16,35 @@ zig build
 ```bash
 zig build -Doptimize=ReleaseSafe
 ```
+
+## Setup
+
+aurodle builds AUR packages into a local pacman repository. Before using it, create the repository directory and register it with pacman.
+
+**1. Create the repository directory:**
+
+```bash
+sudo install -d -o $USER /var/lib/aurodle/aurpkgs
+```
+
+**2. Add the repository to `/etc/pacman.conf`:**
+
+```ini
+[aurpkgs]
+SigLevel = Optional TrustAll
+Server = file:///var/lib/aurodle/aurpkgs
+```
+
+**3. Create an empty local aurpkgs repo database**
+
+```bash
+repo-add /var/lib/aurodle/aurpkgs/aurpkgs.db.tar.xz
+```
+
+**4. Sync the database:**
+
+```bash
+sudo pacman -Sy
+```
+
+After setup, packages built with `aurodle sync <package>` will be added to the local repository and installed via pacman.
