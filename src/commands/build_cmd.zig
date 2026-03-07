@@ -559,9 +559,13 @@ fn buildLoop(
         getStdout().print(":: building {s} {s}...\n", .{ entry.name, entry.version }) catch {};
 
         // Run makepkg -s (--syncdeps installs missing deps as --asdeps)
+        const makepkg_args: []const []const u8 = if (self.flags.rebuild)
+            &.{ "makepkg", "-sf", "--noconfirm" }
+        else
+            &.{ "makepkg", "-s", "--noconfirm" };
         const makepkg_result = try utils.runCommandWithLog(
             self.allocator,
-            &.{ "makepkg", "-s", "--noconfirm" },
+            makepkg_args,
             clone_dir,
             log_path,
         );
