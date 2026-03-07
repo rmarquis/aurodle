@@ -57,6 +57,10 @@ pub fn buildorder(self: *Commands, targets: []const []const u8) !ExitCode {
             if (a.is_target != b.is_target) return !a.is_target;
             // Among non-targets, deeper deps come first
             if (a.depth != b.depth) return a.depth > b.depth;
+            // Within same depth: satisfied before unsatisfied
+            const sa = @intFromEnum(a.source);
+            const sb = @intFromEnum(b.source);
+            if (sa != sb) return sa < sb;
             // Stable tiebreak by name
             return std.mem.order(u8, a.name, b.name) == .lt;
         }
