@@ -168,6 +168,7 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
 
     // Phase 1: Resolve
     var s = solver_mod.Solver.init(self.allocator, reg);
+    s.rebuild = self.flags.rebuild;
     defer s.deinit();
 
     const plan = s.resolve(targets) catch |err| {
@@ -263,6 +264,7 @@ pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
     };
 
     var s = solver_mod.Solver.init(self.allocator, reg);
+    s.rebuild = self.flags.rebuild;
     defer s.deinit();
 
     const plan = s.resolve(targets) catch |err| {

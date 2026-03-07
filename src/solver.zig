@@ -54,6 +54,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
         graph: DepGraph,
         targets: std.StringHashMapUnmanaged(void),
         visiting: std.StringHashMapUnmanaged(void),
+        rebuild: bool = false,
 
         pub fn init(allocator: Allocator, reg: *RegistryT) Self {
             return .{
@@ -148,15 +149,17 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                     if (node.meta.pkgbase == null) {
                         node.meta.pkgbase = pkg.pkgbase;
                     }
-                    // For targets in aurpkgs: compare versions.
-                    // If AUR has a newer version, reclassify as .aur (needs rebuild).
-                    if (node.meta.source == .repo_aur) {
-                        if (node.meta.version) |local_ver| {
-                            if (alpm.vercmp(pkg.version, local_ver) > 0) {
-                                node.meta.source = .aur;
-                                node.meta.version = pkg.version;
-                                node.meta.aur_pkg = pkg;
-                            }
+                    // For targets in aurpkgs: compare versions or force rebuild.
+                    // Reclassify as .aur if AUR is newer or --rebuild is set.
+                    if (node.meta.source == .repo_aur and self.targets.contains(name)) {
+                        const dominated = if (node.meta.version) |local_ver|
+                            alpm.vercmp(pkg.version, local_ver) > 0
+                        else
+                            false;
+                        if (dominated or self.rebuild) {
+                            node.meta.source = .aur;
+                            node.meta.version = pkg.version;
+                            node.meta.aur_pkg = pkg;
                         }
                     }
                 }
