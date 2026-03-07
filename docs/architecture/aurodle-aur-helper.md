@@ -246,9 +246,10 @@ graph TB
 
       pub const Source = enum {
           satisfied_repo,  // installed, from official repos
-          satisfied_aur,   // installed, from aurpkgs local repo
-          repos,           // in official sync databases (not installed)
-          aur,             // found in AUR (not installed)
+          satisfied_aur,   // installed, from AUR (foreign package)
+          repos,           // not installed, available in official sync databases
+          repo_aur,        // not installed, available in aurpkgs local repo
+          aur,             // not installed, needs to be built from AUR
           unknown,         // not found anywhere
       };
       pub const Resolution = struct {
@@ -259,7 +260,7 @@ graph TB
       };
   };
   ```
-- **Hidden Complexity**: Multi-source lookup ordering and short-circuiting, AUR batch query optimization (collects unknown packages and issues a single `multiInfo`), result caching across multiple calls within a session, version constraint satisfaction checking, provider resolution for virtual packages, distinguishing installed-from-repos (`satisfied_repo`) vs installed-from-aurpkgs (`satisfied_aur`) via sync database membership.
+- **Hidden Complexity**: Multi-source lookup ordering and short-circuiting, AUR batch query optimization (collects unknown packages and issues a single `multiInfo`), result caching across multiple calls within a session, version constraint satisfaction checking, provider resolution for virtual packages, distinguishing installed-from-repos (`satisfied_repo`) vs installed-from-AUR (`satisfied_aur`) vs available-in-aurpkgs (`repo_aur`) via sync database membership, excluding the aurpkgs database from official repo classification.
 - **Depth Score**: **Deep** — The mediator pattern pays off here. The resolver calls `registry.resolve("libfoo>=2.0")` and gets back a classified result without knowing anything about libalpm queries, AUR HTTP calls, or caching strategies.
 
 ---
@@ -574,14 +575,18 @@ flowchart TD
     A[Target packages] --> B[Registry: classify each]
     B --> C{Source?}
     C -->|SATISFIED_REPO| D1[Skip - installed from repos]
-    C -->|SATISFIED_AUR| D2[Skip - installed from aurpkgs]
+    C -->|SATISFIED_AUR| D2[Skip - installed from AUR]
     C -->|REPOS| E[Add to repo_deps list]
+    C -->|REPO_AUR| R[Skip - available in aurpkgs]
     C -->|AUR| F[Fetch AUR metadata]
     C -->|UNKNOWN| G[Error: unresolvable]
     F --> H[Extract depends + makedepends]
     H --> I[Registry: classify each dependency]
     I --> B
     F --> J[Add to dependency graph]
+    R -->|Target: compare versions| V{AUR newer?}
+    V -->|Yes| F
+    V -->|No| D2b[Skip - aurpkgs version current]
     J --> K[Topological sort via Kahn's]
     K --> L{Remaining edges?}
     L -->|Yes| M[Error: circular dependency]
@@ -592,10 +597,11 @@ flowchart TD
 
 | `is_target` | `Source` | Display prefix |
 |---|---|---|
-| true | aur | TARGETAUR |
-| true | repos | TARGETREPO |
+| true | aur, satisfied_aur, repo_aur | TARGETAUR |
+| true | repos, satisfied_repo | TARGETREPO |
 | false | aur | AUR |
 | false | repos | REPOS |
+| false | repo_aur | REPOAUR |
 | false | satisfied_aur | SATISFIEDAUR |
 | false | satisfied_repo | SATISFIEDREPO |
 | — | unknown | UNKNOWN |
