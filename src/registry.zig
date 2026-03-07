@@ -232,7 +232,7 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
             const source: Source = if (self.pacman.isInstalled(provider.provider_name))
                 if (self.pacman.isInOfficialSyncDb(provider.provider_name)) .satisfied_repo else .satisfied_aur
             else if (from_aurpkgs)
-                .aur
+                .satisfied_aur
             else
                 .repos;
             return .{
@@ -904,7 +904,7 @@ test "resolve falls through to pacman provider when direct lookups fail" {
     try testing.expectEqualStrings("jre-openjdk", res.provider.?);
 }
 
-test "resolve returns Source.aur for uninstalled provider in aurpkgs" {
+test "resolve returns Source.satisfied_aur for uninstalled provider in aurpkgs" {
     var pm = MockPacman.initEmpty();
     defer pm.deinitMock();
     // auracle-git is in aurpkgs (not installed), provides "auracle"
@@ -921,7 +921,7 @@ test "resolve returns Source.aur for uninstalled provider in aurpkgs" {
     defer reg.deinit();
 
     const res = try reg.resolve("auracle");
-    try testing.expectEqual(Source.aur, res.source);
+    try testing.expectEqual(Source.satisfied_aur, res.source);
     try testing.expectEqualStrings("auracle", res.name);
     try testing.expectEqualStrings("auracle-git", res.provider.?);
 }

@@ -128,10 +128,11 @@ pub fn SolverImpl(comptime RegistryT: type) type {
 
             // Determine AUR package info for recursion.
             // For AUR packages resolved directly, we already have it.
-            // For targets or aurpkgs providers without aur_pkg, fetch from AUR.
+            // For targets that are satisfied/in repos, fetch from AUR
+            // so we can resolve their build dependencies.
             const aur_pkg: ?*aur.Package = if (resolution.aur_pkg) |pkg|
                 pkg
-            else if (self.targets.contains(name) or resolution.source == .aur)
+            else if (self.targets.contains(name))
                 if (try self.registry.resolveFromAur(name)) |aur_res| aur_res.aur_pkg else null
             else
                 null;
