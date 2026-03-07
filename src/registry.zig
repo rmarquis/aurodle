@@ -197,13 +197,13 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
 
             return .{
                 .name = name,
-                .source = if (self.pacman.isInSyncDb(name)) .satisfied_repo else .satisfied_aur,
+                .source = if (self.pacman.isInOfficialSyncDb(name)) .satisfied_repo else .satisfied_aur,
                 .version = self.pacman.installedVersion(name),
             };
         }
 
         fn resolveSync(self: *Self, name: []const u8, constraint: ?pacman_mod.VersionConstraint) ?Resolution {
-            const version = self.pacman.syncVersion(name) orelse return null;
+            const version = self.pacman.officialSyncVersion(name) orelse return null;
 
             if (constraint) |c| {
                 if (!pacman_mod.checkVersion(version, c)) return null;
@@ -229,7 +229,7 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
         fn resolveProvider(self: *Self, name: []const u8) ?Resolution {
             const provider = self.pacman.findProvider(name) orelse return null;
             const source: Source = if (self.pacman.isInstalled(provider.provider_name))
-                if (self.pacman.isInSyncDb(provider.provider_name)) .satisfied_repo else .satisfied_aur
+                if (self.pacman.isInOfficialSyncDb(provider.provider_name)) .satisfied_repo else .satisfied_aur
             else
                 .repos;
             return .{
@@ -368,6 +368,11 @@ const MockPacman = struct {
         return self.sync.contains(name);
     }
 
+    pub fn isInOfficialSyncDb(self: MockPacman, name: []const u8) bool {
+        const entry = self.sync.get(name) orelse return false;
+        return !std.mem.eql(u8, entry.db_name, "aurpkgs");
+    }
+
     pub fn syncDbFor(self: MockPacman, name: []const u8) ?[]const u8 {
         const entry = self.sync.get(name) orelse return null;
         return entry.db_name;
@@ -375,6 +380,12 @@ const MockPacman = struct {
 
     pub fn syncVersion(self: MockPacman, name: []const u8) ?[]const u8 {
         const entry = self.sync.get(name) orelse return null;
+        return entry.version;
+    }
+
+    pub fn officialSyncVersion(self: MockPacman, name: []const u8) ?[]const u8 {
+        const entry = self.sync.get(name) orelse return null;
+        if (std.mem.eql(u8, entry.db_name, "aurpkgs")) return null;
         return entry.version;
     }
 
@@ -683,6 +694,39 @@ test "installed packages take priority over sync databases" {
 
     const res = try reg.resolve("pkg");
     try testing.expectEqual(Source.satisfied_repo, res.source);
+}
+
+test "installed package in aurpkgs is classified as satisfied_aur" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+    pm.addInstalled("pacaur", "4.8.6-2");
+    pm.addSync("pacaur", "4.8.6-2", "aurpkgs");
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+
+    const res = try reg.resolve("pacaur");
+    try testing.expectEqual(Source.satisfied_aur, res.source);
+}
+
+test "aurpkgs-only package is not found by resolveSync" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+    pm.addSync("auracle", "1.0", "aurpkgs");
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+    ac.addPackage("auracle", "1.0");
+
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+
+    // Should skip aurpkgs in resolveSync and find it via AUR instead
+    const res = try reg.resolve("auracle");
+    try testing.expectEqual(Source.aur, res.source);
 }
 
 test "sync databases take priority over AUR" {

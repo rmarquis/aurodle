@@ -134,6 +134,15 @@ pub const Pacman = struct {
         return false;
     }
 
+    /// Is this package available in an official sync database (excludes aurpkgs)?
+    pub fn isInOfficialSyncDb(self: Pacman, name: []const u8) bool {
+        for (self.sync_dbs) |db| {
+            if (std.mem.eql(u8, db.getName(), "aurpkgs")) continue;
+            if (db.getPackage(name) != null) return true;
+        }
+        return false;
+    }
+
     /// Which sync database provides this package? Returns db name or null.
     pub fn syncDbFor(self: Pacman, name: []const u8) ?[]const u8 {
         for (self.sync_dbs) |db| {
@@ -145,6 +154,15 @@ pub const Pacman = struct {
     /// What version is available in sync databases? Returns first match.
     pub fn syncVersion(self: Pacman, name: []const u8) ?[]const u8 {
         for (self.sync_dbs) |db| {
+            if (db.getPackage(name)) |pkg| return pkg.getVersion();
+        }
+        return null;
+    }
+
+    /// What version is available in official sync databases (excludes aurpkgs)?
+    pub fn officialSyncVersion(self: Pacman, name: []const u8) ?[]const u8 {
+        for (self.sync_dbs) |db| {
+            if (std.mem.eql(u8, db.getName(), "aurpkgs")) continue;
             if (db.getPackage(name)) |pkg| return pkg.getVersion();
         }
         return null;
