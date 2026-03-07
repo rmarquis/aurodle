@@ -176,6 +176,18 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
     defer plan.deinit(self.allocator);
 
     if (plan.build_order.len == 0) {
+        // Check for repo_aur targets: available in aurpkgs but not installed.
+        var repo_aur_targets: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer repo_aur_targets.deinit(self.allocator);
+        for (plan.all_deps) |dep| {
+            if (dep.is_target and dep.source == .repo_aur) {
+                try repo_aur_targets.append(self.allocator, dep.name);
+            }
+        }
+        if (repo_aur_targets.items.len > 0) {
+            try installTargets(self, repo_aur_targets.items);
+            return .success;
+        }
         getStdout().writeAll(" nothing to do -- all targets are up to date\n") catch {};
         return .success;
     }
