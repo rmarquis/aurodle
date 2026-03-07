@@ -458,9 +458,9 @@ discover("foo", depth=0)
   │   │   ├─ baz.depends = ["glibc"]
   │   │   │
   │   │   ├─ discover("glibc", depth=3)
-  │   │   │   ├─ registry.resolve("glibc") → { source=.satisfied }
-  │   │   │   ├─ graph.addNode("glibc", {satisfied, depth=3})
-  │   │   │   └─ (satisfied → don't recurse)
+  │   │   │   ├─ registry.resolve("glibc") → { source=.satisfied_repo }
+  │   │   │   ├─ graph.addNode("glibc", {satisfied_repo, depth=3})
+  │   │   │   └─ (satisfied_repo → don't recurse)
   │   │   │
   │   │   └─ graph.addEdge("baz", "glibc")
   │   │
@@ -503,7 +503,7 @@ all_deps: [
   { name="bar",   source=.aur,       is_target=false, depth=1 },
   { name="zlib",  source=.repos,     is_target=false, depth=1 },
   { name="baz",   source=.aur,       is_target=false, depth=2 },
-  { name="glibc", source=.satisfied, is_target=false, depth=3 },
+  { name="glibc", source=.satisfied_repo, is_target=false, depth=3 },
 ]
 repo_deps: ["zlib"]
 ```

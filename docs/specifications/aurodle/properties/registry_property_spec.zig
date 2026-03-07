@@ -34,12 +34,15 @@ fn randomPackageName(rng: *std.Random) [32]u8 {
 
 test "cascade priority: installed always beats repos which always beats AUR" {
     // Property: For all package names P, if P exists in multiple sources:
-    //   if P is installed → source == .satisfied
+    //   if P is installed AND in sync DB → source == .satisfied_repo
+    //   else if P is installed AND NOT in sync DB → source == .satisfied_aur
     //   else if P is in sync DB → source == .repos
     //   else if P is in AUR → source == .aur
     //   else → source == .unknown
     //
     // The priority order is strict and must never be violated.
+    // The satisfied_repo/satisfied_aur distinction is determined by
+    // whether the installed package also exists in an official sync DB.
 
     // For 100 random package configurations:
     //   Configure mock to have package in various combinations of sources
@@ -114,10 +117,10 @@ test "invalidation correctness: invalidated packages are re-resolved fresh" {
     // For 50 random packages:
     //   Setup: mock returns Source.aur for first call
     //   reg.resolve(name) → .aur
-    //   Change mock to return Source.satisfied (simulating just-built package)
+    //   Change mock to return Source.satisfied_aur (simulating just-built package now in aurpkgs)
     //   Without invalidation: still returns .aur (cached)
     //   reg.invalidate(&.{name})
-    //   reg.resolve(name) → .satisfied (fresh lookup)
+    //   reg.resolve(name) → .satisfied_aur (fresh lookup)
 }
 
 // ============================================================================
@@ -143,17 +146,17 @@ test "invalidation isolation: invalidating P does not affect Q" {
 
 test "constraint re-check: cached version is re-validated against new constraints" {
     // Property: For all packages P with version V:
-    //   resolve("P") → .satisfied (V installed)
-    //   resolve("P>=V+1") → NOT .satisfied (V doesn't satisfy >=V+1)
+    //   resolve("P") → .satisfied_repo or .satisfied_aur (V installed)
+    //   resolve("P>=V+1") → NOT satisfied (V doesn't satisfy >=V+1)
     //
     // Cache is by name, but constraint satisfaction must be re-checked
     // each time, because different callers may have different constraints.
 
     // For 50 random packages:
-    //   Mock: P installed at version "1.0"
-    //   resolve("P") → .satisfied
-    //   resolve("P>=2.0") → NOT .satisfied (1.0 < 2.0)
-    //   resolve("P>=0.5") → .satisfied (1.0 >= 0.5)
+    //   Mock: P installed at version "1.0" (in sync db)
+    //   resolve("P") → .satisfied_repo
+    //   resolve("P>=2.0") → NOT .satisfied_repo (1.0 < 2.0)
+    //   resolve("P>=0.5") → .satisfied_repo (1.0 >= 0.5)
 }
 
 // ============================================================================

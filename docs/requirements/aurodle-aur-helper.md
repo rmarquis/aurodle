@@ -127,9 +127,8 @@ Aurodle is a minimalist AUR helper written in Zig that builds AUR packages into 
 **Acceptance Criteria**:
 - `aurodle buildorder <packages...>` displays ordered build sequence
 - Uses topological sort to order packages respecting dependency constraints
-- Output includes dependency classification (AUR, REPOS, UNKNOWN) per entry
-- Marks already-satisfied dependencies with SATISFIED prefix
-- Marks explicitly requested packages with TARGET prefix
+- Output includes dependency classification per entry: AUR, REPOS, SATISFIEDREPO, SATISFIEDAUR, UNKNOWN
+- Marks explicitly requested packages with TARGETAUR or TARGETREPO prefix
 - Fails with clear error if topological sort is impossible (cycle detected)
 - *[Should Have]* `--quiet` shows only AUR packages that need building
 - *[Nice to Have]* `--resolve-deps <deplist>` controls which dependency types are considered

@@ -149,7 +149,8 @@ test "target marking: exactly the requested targets are marked is_target=true" {
 test "exclusion: repo and satisfied packages never appear in build_order" {
     // Property: For all DAGs:
     //   For all entries in build_order:
-    //     entry.source != .repos AND entry.source != .satisfied
+    //     entry.source != .repos AND entry.source != .satisfied_repo
+    //     AND entry.source != .satisfied_aur
     //
     // Only AUR packages need building. Repo packages are installed
     // by pacman, and satisfied packages are already installed.
@@ -157,7 +158,7 @@ test "exclusion: repo and satisfied packages never appear in build_order" {
     // For 50 random DAGs with mixed sources:
     //   for (plan.build_order) |entry| {
     //       // All entries should be AUR packages
-    //       // (repo and satisfied are in repo_deps / all_deps only)
+    //       // (repo and satisfied_* are in repo_deps / all_deps only)
     //   }
 }
 

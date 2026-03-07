@@ -244,7 +244,13 @@ graph TB
       pub fn resolveMany(self: *Registry, names: []const []const u8) ![]Resolution
       pub fn classify(self: *Registry, name: []const u8) !Source
 
-      pub const Source = enum { satisfied, repos, aur, unknown };
+      pub const Source = enum {
+          satisfied_repo,  // installed, from official repos
+          satisfied_aur,   // installed, from aurpkgs local repo
+          repos,           // in official sync databases (not installed)
+          aur,             // found in AUR (not installed)
+          unknown,         // not found anywhere
+      };
       pub const Resolution = struct {
           name: []const u8,
           source: Source,
@@ -253,7 +259,7 @@ graph TB
       };
   };
   ```
-- **Hidden Complexity**: Multi-source lookup ordering and short-circuiting, AUR batch query optimization (collects unknown packages and issues a single `multiInfo`), result caching across multiple calls within a session, version constraint satisfaction checking, provider resolution for virtual packages.
+- **Hidden Complexity**: Multi-source lookup ordering and short-circuiting, AUR batch query optimization (collects unknown packages and issues a single `multiInfo`), result caching across multiple calls within a session, version constraint satisfaction checking, provider resolution for virtual packages, distinguishing installed-from-repos (`satisfied_repo`) vs installed-from-aurpkgs (`satisfied_aur`) via sync database membership.
 - **Depth Score**: **Deep** — The mediator pattern pays off here. The resolver calls `registry.resolve("libfoo>=2.0")` and gets back a classified result without knowing anything about libalpm queries, AUR HTTP calls, or caching strategies.
 
 ---
@@ -287,7 +293,7 @@ graph TB
 
       pub const DependencyEntry = struct {
           name: []const u8,
-          source: Registry.Source,
+          source: Registry.Source,  // satisfied_repo, satisfied_aur, repos, aur, unknown
           is_target: bool,
           depth: u32,
       };
@@ -567,7 +573,8 @@ sequenceDiagram
 flowchart TD
     A[Target packages] --> B[Registry: classify each]
     B --> C{Source?}
-    C -->|SATISFIED| D[Skip - already installed]
+    C -->|SATISFIED_REPO| D1[Skip - installed from repos]
+    C -->|SATISFIED_AUR| D2[Skip - installed from aurpkgs]
     C -->|REPOS| E[Add to repo_deps list]
     C -->|AUR| F[Fetch AUR metadata]
     C -->|UNKNOWN| G[Error: unresolvable]
@@ -580,6 +587,18 @@ flowchart TD
     L -->|Yes| M[Error: circular dependency]
     L -->|No| N[BuildPlan with ordered entries]
 ```
+
+**Buildorder display prefixes** combine `is_target` with `Source`:
+
+| `is_target` | `Source` | Display prefix |
+|---|---|---|
+| true | aur | TARGETAUR |
+| true | repos | TARGETREPO |
+| false | aur | AUR |
+| false | repos | REPOS |
+| false | satisfied_aur | SATISFIEDAUR |
+| false | satisfied_repo | SATISFIEDREPO |
+| — | unknown | UNKNOWN |
 
 ## Testing Architecture
 

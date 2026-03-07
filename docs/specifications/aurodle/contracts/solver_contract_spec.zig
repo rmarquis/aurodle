@@ -73,11 +73,11 @@ test "resolve classifies repo dependencies separately" {
 }
 
 test "resolve skips satisfied dependencies" {
-    // Contract: Dependencies already installed (Source.satisfied) do not
-    // appear in build_order or repo_deps. They appear in all_deps
-    // with source == .satisfied for display purposes.
+    // Contract: Dependencies already installed (Source.satisfied_repo or
+    // Source.satisfied_aur) do not appear in build_order or repo_deps.
+    // They appear in all_deps with their satisfied source for display.
     //
-    // Mock: A.depends = ["installed-pkg"], registry classifies as .satisfied
+    // Mock: A.depends = ["installed-pkg"], registry classifies as .satisfied_repo
     //
     // const plan = try s.resolve(&.{"A"});
     // for (plan.build_order) |entry| {

@@ -37,13 +37,24 @@ test "Registry.deinit releases only its own allocations" {
 // resolve() Single Lookup Contracts
 // ============================================================================
 
-test "resolve returns Source.satisfied for installed package" {
-    // Contract: resolve(name) returns Source.satisfied when the package
-    // is installed locally. This is the first tier of the cascade.
+test "resolve returns Source.satisfied_repo for installed package from official repos" {
+    // Contract: resolve(name) returns Source.satisfied_repo when the package
+    // is installed locally AND exists in an official sync database.
+    // This is the first tier of the cascade.
     //
-    // // Mock: pacman.isInstalled("pkg") = true
+    // // Mock: pacman.isInstalled("pkg") = true, pacman.isInSyncDb("pkg") = true
     // const res = try reg.resolve("pkg");
-    // try testing.expectEqual(registry.Source.satisfied, res.source);
+    // try testing.expectEqual(registry.Source.satisfied_repo, res.source);
+}
+
+test "resolve returns Source.satisfied_aur for installed package from aurpkgs" {
+    // Contract: resolve(name) returns Source.satisfied_aur when the package
+    // is installed locally but NOT in any official sync database (i.e., it
+    // was installed from the aurpkgs local repo or manually).
+    //
+    // // Mock: pacman.isInstalled("pkg") = true, pacman.isInSyncDb("pkg") = false
+    // const res = try reg.resolve("pkg");
+    // try testing.expectEqual(registry.Source.satisfied_aur, res.source);
 }
 
 test "resolve returns Source.repos for official repo package" {
@@ -91,7 +102,7 @@ test "resolve parses versioned dependency strings" {
     // // Mock: pacman.installedVersion("pkg") = "0.5"
     // const res = try reg.resolve("pkg>=1.0");
     // // Installed version 0.5 does NOT satisfy >=1.0, so keep looking
-    // try testing.expect(res.source != .satisfied);
+    // try testing.expect(res.source != .satisfied_repo and res.source != .satisfied_aur);
 }
 
 test "resolve caches results by package name" {
@@ -109,9 +120,9 @@ test "resolve re-checks constraint on cache hit" {
     // is cached as version 1.0, and we resolve("pkg>=2.0"), the cache
     // hit must re-check the constraint against the cached version.
     //
-    // // First: resolve("pkg") → satisfied (v1.0 installed)
+    // // First: resolve("pkg") → satisfied_repo (v1.0 installed, in sync db)
     // // Second: resolve("pkg>=2.0") → cache hit, but 1.0 < 2.0
-    // // Should NOT return .satisfied for the second call
+    // // Should NOT return .satisfied_repo for the second call
 }
 
 // ============================================================================
@@ -142,7 +153,7 @@ test "resolveMany returns results in input order" {
     // each resolution came from.
     //
     // const results = try reg.resolveMany(&.{ "installed-pkg", "aur-pkg", "repo-pkg" });
-    // try testing.expectEqual(registry.Source.satisfied, results[0].source);
+    // try testing.expectEqual(registry.Source.satisfied_repo, results[0].source);
     // try testing.expectEqual(registry.Source.aur, results[1].source);
     // try testing.expectEqual(registry.Source.repos, results[2].source);
 }
@@ -200,8 +211,9 @@ test "resolve does not error on package not found" {
 
 test "installed packages take priority over sync databases" {
     // Contract: If a package is both installed AND in sync DBs,
-    // resolve returns Source.satisfied (not Source.repos).
+    // resolve returns Source.satisfied_repo (not Source.repos).
     // The cascade short-circuits at the first match.
+    // The _repo suffix indicates the package is also in official repos.
 }
 
 test "sync databases take priority over AUR" {

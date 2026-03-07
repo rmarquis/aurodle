@@ -35,7 +35,8 @@ classDiagram
 
     class Source {
         <<enumeration>>
-        satisfied
+        satisfied_repo
+        satisfied_aur
         repos
         aur
         unknown
@@ -82,7 +83,7 @@ resolve("libfoo>=2.0")
   │
   ├─ 3. resolveLocal("libfoo", {ge, "2.0"})
   │     └─ pacman.isInstalled("libfoo") AND pacman.satisfies("libfoo", {ge, "2.0"})
-  │     └─ hit? → return Resolution{ source=.satisfied }
+  │     └─ hit? → return Resolution{ source=.satisfied_repo or .satisfied_aur }
   │
   ├─ 4. resolveSync("libfoo", {ge, "2.0"})
   │     └─ pacman.isInSyncDb("libfoo") AND version satisfies constraint
@@ -353,7 +354,7 @@ A package name goes through the following states within a registry session:
                   found │  │ not found
                         ▼  ▼
                   ┌──────────┐
-                  │ Cached   │ (source = satisfied|repos|aur|unknown)
+                  │ Cached   │ (source = satisfied_repo|satisfied_aur|repos|aur|unknown)
                   │ forever  │ (within this session)
                   └──────────┘
 ```
@@ -388,7 +389,7 @@ When a dependency like `java-runtime` isn't a real package name, it's a virtual 
 if (self.pacman.findProvider(spec.name)) |provider_name| {
     const res = Resolution{
         .name = spec.name,
-        .source = .repos, // or .satisfied if the provider is installed
+        .source = .repos, // or .satisfied_repo/.satisfied_aur if the provider is installed
         .version = null,
         .aur_pkg = null,
         .provider = provider_name,
@@ -426,7 +427,7 @@ These are genuine "can't proceed" situations, distinct from "package doesn't exi
 The registry is designed for straightforward testing through constructor injection:
 
 ```zig
-test "resolve classifies installed package as satisfied" {
+test "resolve classifies installed repo package as satisfied_repo" {
     var mock_pacman = MockPacman.init();
     mock_pacman.addInstalled("zlib", "1.3.1");
 
@@ -436,7 +437,7 @@ test "resolve classifies installed package as satisfied" {
     defer reg.deinit();
 
     const res = try reg.resolve("zlib>=1.0");
-    try testing.expectEqual(.satisfied, res.source);
+    try testing.expectEqual(.satisfied_repo, res.source);
     try testing.expectEqualStrings("1.3.1", res.version.?);
 }
 
