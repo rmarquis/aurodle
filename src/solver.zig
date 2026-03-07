@@ -100,9 +100,12 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                 return error.CircularDependency;
             }
 
-            // Already fully processed?
+            // Already fully processed? Update depth to max (diamond deps).
             if (self.graph.getNode(name)) |node| {
-                if (node.fully_resolved) return;
+                if (node.fully_resolved) {
+                    if (depth > node.meta.depth) node.meta.depth = depth;
+                    return;
+                }
             }
 
             // Mark as visiting (gray)
