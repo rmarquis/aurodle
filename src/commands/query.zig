@@ -152,7 +152,7 @@ pub fn outdated(self: *Commands, filter: []const []const u8) !ExitCode {
 
     if (outdated_list.items.len == 0) {
         if (!self.flags.quiet) {
-            getStdout().writeAll(" all AUR packages are up to date\n") catch {};
+            getStdout().writeAll("all AUR packages are up to date\n") catch {};
         }
         return .success;
     }
@@ -375,7 +375,7 @@ fn displaySearchResults(packages: []const *aur.Package) void {
 pub fn formatOutdated(entries: []const OutdatedEntry) void {
     const stdout = getStdout();
     for (entries) |entry| {
-        stdout.print("  {s}  {s} -> {s}\n", .{
+        stdout.print("{s} {s} -> {s}\n", .{
             entry.name,
             entry.installed_version,
             entry.aur_version,
