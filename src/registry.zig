@@ -6,7 +6,8 @@ const pacman_mod = @import("pacman.zig");
 // ── Public Types ─────────────────────────────────────────────────────────
 
 pub const Source = enum {
-    satisfied, // installed locally
+    satisfied_repo, // installed locally and available in official repos
+    satisfied_aur, // installed locally (AUR / foreign package)
     repos, // in official sync databases
     aur, // found in AUR
     unknown, // not found anywhere
@@ -196,7 +197,7 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
 
             return .{
                 .name = name,
-                .source = .satisfied,
+                .source = if (self.pacman.isInSyncDb(name)) .satisfied_repo else .satisfied_aur,
                 .version = self.pacman.installedVersion(name),
             };
         }
@@ -228,7 +229,7 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
         fn resolveProvider(self: *Self, name: []const u8) ?Resolution {
             const provider = self.pacman.findProvider(name) orelse return null;
             const source: Source = if (self.pacman.isInstalled(provider.provider_name))
-                .satisfied
+                if (self.pacman.isInSyncDb(provider.provider_name)) .satisfied_repo else .satisfied_aur
             else
                 .repos;
             return .{
@@ -546,7 +547,7 @@ test "parseDep: complex package name with hyphens" {
 
 // ── resolve() Single Lookup Tests ───────────────────────────────────────
 
-test "resolve returns Source.satisfied for installed package" {
+test "resolve returns Source.satisfied_aur for installed foreign package" {
     var pm = MockPacman.initEmpty();
     defer pm.deinitMock();
     pm.addInstalled("zlib", "1.3.1-1");
@@ -558,7 +559,7 @@ test "resolve returns Source.satisfied for installed package" {
     defer reg.deinit();
 
     const res = try reg.resolve("zlib");
-    try testing.expectEqual(Source.satisfied, res.source);
+    try testing.expectEqual(Source.satisfied_aur, res.source);
     try testing.expectEqualStrings("zlib", res.name);
     try testing.expectEqualStrings("1.3.1-1", res.version.?);
 }
@@ -659,7 +660,7 @@ test "resolve re-checks constraint on cache hit" {
 
     // First: resolve("pkg") → satisfied (v1.0)
     const first = try reg.resolve("pkg");
-    try testing.expectEqual(Source.satisfied, first.source);
+    try testing.expectEqual(Source.satisfied_aur, first.source);
 
     // Second: resolve("pkg>=2.0") → cache hit, but 1.0 < 2.0
     const second = try reg.resolve("pkg>=2.0");
@@ -681,7 +682,7 @@ test "installed packages take priority over sync databases" {
     defer reg.deinit();
 
     const res = try reg.resolve("pkg");
-    try testing.expectEqual(Source.satisfied, res.source);
+    try testing.expectEqual(Source.satisfied_repo, res.source);
 }
 
 test "sync databases take priority over AUR" {
@@ -721,7 +722,7 @@ test "resolveMany returns results in input order" {
     defer testing.allocator.free(results);
 
     try testing.expectEqual(@as(usize, 3), results.len);
-    try testing.expectEqual(Source.satisfied, results[0].source);
+    try testing.expectEqual(Source.satisfied_aur, results[0].source);
     try testing.expectEqual(Source.aur, results[1].source);
     try testing.expectEqual(Source.repos, results[2].source);
 }
@@ -769,7 +770,7 @@ test "resolveMany handles mix of sources" {
     defer testing.allocator.free(results);
 
     try testing.expectEqual(@as(usize, 4), results.len);
-    try testing.expectEqual(Source.satisfied, results[0].source);
+    try testing.expectEqual(Source.satisfied_aur, results[0].source);
     try testing.expectEqual(Source.repos, results[1].source);
     try testing.expectEqual(Source.aur, results[2].source);
     try testing.expectEqual(Source.unknown, results[3].source);
@@ -851,7 +852,7 @@ test "resolve falls through to pacman provider when direct lookups fail" {
     defer reg.deinit();
 
     const res = try reg.resolve("java-runtime");
-    try testing.expectEqual(Source.satisfied, res.source);
+    try testing.expectEqual(Source.satisfied_aur, res.source);
     try testing.expectEqualStrings("java-runtime", res.name);
     try testing.expectEqualStrings("jre-openjdk", res.provider.?);
 }
@@ -895,7 +896,7 @@ test "resolve prefers pacman provider over AUR provider" {
 
     // Pacman provider (Tier 3) should win over AUR provider (Tier 5)
     const res = try reg.resolve("auracle");
-    try testing.expectEqual(Source.satisfied, res.source);
+    try testing.expectEqual(Source.satisfied_aur, res.source);
     try testing.expectEqualStrings("auracle-local", res.provider.?);
     // AUR search should not have been called
     try testing.expectEqual(@as(usize, 0), ac.search_call_count);

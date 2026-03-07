@@ -197,12 +197,12 @@ pub fn displayPlan(plan: solver_mod.BuildPlan) void {
     // Count satisfied deps (already installed)
     var satisfied_count: usize = 0;
     for (plan.all_deps) |dep| {
-        if (dep.source == .satisfied and !dep.is_target) satisfied_count += 1;
+        if ((dep.source == .satisfied_repo or dep.source == .satisfied_aur) and !dep.is_target) satisfied_count += 1;
     }
     if (satisfied_count > 0) {
         stdout.print("\n:: Already installed ({d}):\n", .{satisfied_count}) catch {};
         for (plan.all_deps) |dep| {
-            if (dep.source == .satisfied and !dep.is_target) {
+            if ((dep.source == .satisfied_repo or dep.source == .satisfied_aur) and !dep.is_target) {
                 stdout.print("  {s}\n", .{dep.name}) catch {};
             }
         }

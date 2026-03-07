@@ -52,10 +52,15 @@ pub fn buildorder(self: *Commands, targets: []const []const u8) !ExitCode {
 
     // Show all dependencies with classification prefixes (FR-7)
     for (plan.all_deps) |dep| {
-        const prefix: []const u8 = if (dep.is_target) "TARGET" else switch (dep.source) {
+        const prefix: []const u8 = if (dep.is_target) switch (dep.source) {
+            .aur, .satisfied_aur => "TARGETAUR",
+            .repos, .satisfied_repo => "TARGETREPO",
+            .unknown => "UNKNOWN",
+        } else switch (dep.source) {
             .aur => "AUR",
             .repos => "REPOS",
-            .satisfied => "SATISFIED",
+            .satisfied_repo => "SATISFIEDREPO",
+            .satisfied_aur => "SATISFIEDAUR",
             .unknown => "UNKNOWN",
         };
         stdout.print("{s} {s}\n", .{ prefix, dep.name }) catch {};

@@ -132,7 +132,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
             const aur_pkg: ?*aur.Package = if (resolution.aur_pkg) |pkg|
                 pkg
             else if (self.targets.contains(name) and
-                (resolution.source == .satisfied or resolution.source == .repos))
+                (resolution.source == .satisfied_repo or resolution.source == .satisfied_aur or resolution.source == .repos))
                 if (try self.registry.resolveFromAur(name)) |aur_res| aur_res.aur_pkg else null
             else
                 null;
@@ -444,11 +444,11 @@ const MockRegistry = struct {
     }
 
     /// Register a package as installed locally, but also available in AUR
-    /// with dependency info. Simulates `resolve` → .satisfied, `resolveFromAur` → .aur with deps.
+    /// with dependency info. Simulates `resolve` → .satisfied_aur, `resolveFromAur` → .aur with deps.
     fn addSatisfiedWithAurDeps(self: *MockRegistry, name: []const u8, version: []const u8, depends: []const []const u8, makedepends: []const []const u8) void {
-        // Primary entry: satisfied (no aur_pkg)
+        // Primary entry: satisfied_aur (no aur_pkg)
         self.packages.put(testing.allocator, name, .{
-            .source = .satisfied,
+            .source = .satisfied_aur,
             .version = version,
             .pkgbase = name,
             .depends = &.{},
@@ -510,7 +510,7 @@ const MockRegistry = struct {
 
     fn addSatisfied(self: *MockRegistry, name: []const u8, version: []const u8) void {
         self.packages.put(testing.allocator, name, .{
-            .source = .satisfied,
+            .source = .satisfied_aur,
             .version = version,
             .pkgbase = name,
             .depends = &.{},
@@ -649,7 +649,7 @@ test "resolve skips satisfied dependencies" {
     var found = false;
     for (plan.all_deps) |dep| {
         if (std.mem.eql(u8, dep.name, "installed-pkg")) {
-            try testing.expectEqual(registry_mod.Source.satisfied, dep.source);
+            try testing.expectEqual(registry_mod.Source.satisfied_aur, dep.source);
             found = true;
         }
     }
