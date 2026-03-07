@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const registry_mod = @import("registry.zig");
 const aur = @import("aur.zig");
+const alpm = @import("alpm.zig");
 
 // ── Public Types ─────────────────────────────────────────────────────────
 
@@ -143,6 +144,17 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                 if (self.graph.getNode(name)) |node| {
                     if (node.meta.pkgbase == null) {
                         node.meta.pkgbase = pkg.pkgbase;
+                    }
+                    // For targets in aurpkgs: compare versions.
+                    // If AUR has a newer version, reclassify as .aur (needs rebuild).
+                    if (node.meta.source == .repo_aur) {
+                        if (node.meta.version) |local_ver| {
+                            if (alpm.vercmp(pkg.version, local_ver) > 0) {
+                                node.meta.source = .aur;
+                                node.meta.version = pkg.version;
+                                node.meta.aur_pkg = pkg;
+                            }
+                        }
                     }
                 }
             }
@@ -516,6 +528,69 @@ const MockRegistry = struct {
             .depends = &.{},
             .makedepends = &.{},
             .aur_pkg = null,
+        }) catch unreachable;
+    }
+
+    /// Package available in aurpkgs but not installed (no AUR override).
+    fn addRepoAur(self: *MockRegistry, name: []const u8, version: []const u8) void {
+        self.packages.put(testing.allocator, name, .{
+            .source = .repo_aur,
+            .version = version,
+            .pkgbase = name,
+            .depends = &.{},
+            .makedepends = &.{},
+            .aur_pkg = null,
+        }) catch unreachable;
+    }
+
+    /// Package in aurpkgs with a different (newer) version available in AUR.
+    fn addRepoAurWithAurVersion(self: *MockRegistry, name: []const u8, local_version: []const u8, aur_version: []const u8, depends: []const []const u8, makedepends: []const []const u8) void {
+        self.packages.put(testing.allocator, name, .{
+            .source = .repo_aur,
+            .version = local_version,
+            .pkgbase = name,
+            .depends = &.{},
+            .makedepends = &.{},
+            .aur_pkg = null,
+        }) catch unreachable;
+
+        const alloc = self.arena.allocator();
+        const pkg = alloc.create(aur.Package) catch unreachable;
+        pkg.* = .{
+            .id = 0,
+            .name = name,
+            .pkgbase = name,
+            .pkgbase_id = 0,
+            .version = aur_version,
+            .description = null,
+            .url = null,
+            .url_path = null,
+            .maintainer = null,
+            .submitter = null,
+            .votes = 0,
+            .popularity = 0,
+            .first_submitted = 0,
+            .last_modified = 0,
+            .out_of_date = null,
+            .depends = depends,
+            .makedepends = makedepends,
+            .checkdepends = &.{},
+            .optdepends = &.{},
+            .provides = &.{},
+            .conflicts = &.{},
+            .replaces = &.{},
+            .groups = &.{},
+            .keywords = &.{},
+            .licenses = &.{},
+            .comaintainers = &.{},
+        };
+        self.aur_overrides.put(testing.allocator, name, .{
+            .source = .aur,
+            .version = aur_version,
+            .pkgbase = name,
+            .depends = depends,
+            .makedepends = makedepends,
+            .aur_pkg = pkg,
         }) catch unreachable;
     }
 
@@ -955,4 +1030,74 @@ test "resolve handles makedepends in addition to depends" {
 
     try testing.expect(indices.get("B").? < indices.get("A").?);
     try testing.expect(indices.get("C").? < indices.get("A").?);
+}
+
+// ── repo_aur Version Check Tests ─────────────────────────────────────────
+
+test "resolve reclassifies repo_aur target as aur when AUR version is newer" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // aurpkgs has 1.0, AUR has 2.0
+    mock.addRepoAurWithAurVersion("pkg", "1.0-1", "2.0-1", &.{}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"pkg"});
+    defer plan.deinit(testing.allocator);
+
+    // Should be in build_order (reclassified to .aur)
+    try testing.expectEqual(@as(usize, 1), plan.build_order.len);
+    try testing.expectEqualStrings("pkg", plan.build_order[0].name);
+
+    // all_deps should show .aur source
+    for (plan.all_deps) |dep| {
+        if (std.mem.eql(u8, dep.name, "pkg")) {
+            try testing.expectEqual(registry_mod.Source.aur, dep.source);
+        }
+    }
+}
+
+test "resolve keeps repo_aur target when aurpkgs version matches AUR" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // Same version in aurpkgs and AUR
+    mock.addRepoAurWithAurVersion("pkg", "1.0-1", "1.0-1", &.{}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"pkg"});
+    defer plan.deinit(testing.allocator);
+
+    // Should NOT be in build_order (stays repo_aur)
+    try testing.expectEqual(@as(usize, 0), plan.build_order.len);
+
+    // all_deps should show .repo_aur source
+    for (plan.all_deps) |dep| {
+        if (std.mem.eql(u8, dep.name, "pkg")) {
+            try testing.expectEqual(registry_mod.Source.repo_aur, dep.source);
+        }
+    }
+}
+
+test "resolve does not version-check repo_aur dependencies" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    mock.addAurPackage("target", &.{"dep"}, &.{});
+    // dep is in aurpkgs with old version, but it's not a target
+    mock.addRepoAur("dep", "1.0-1");
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"target"});
+    defer plan.deinit(testing.allocator);
+
+    // dep should stay repo_aur (no version check for non-targets)
+    for (plan.all_deps) |d| {
+        if (std.mem.eql(u8, d.name, "dep")) {
+            try testing.expectEqual(registry_mod.Source.repo_aur, d.source);
+        }
+    }
 }
