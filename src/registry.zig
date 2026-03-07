@@ -228,8 +228,11 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
 
         fn resolveProvider(self: *Self, name: []const u8) ?Resolution {
             const provider = self.pacman.findProvider(name) orelse return null;
+            const from_aurpkgs = std.mem.eql(u8, provider.db_name, "aurpkgs");
             const source: Source = if (self.pacman.isInstalled(provider.provider_name))
                 if (self.pacman.isInOfficialSyncDb(provider.provider_name)) .satisfied_repo else .satisfied_aur
+            else if (from_aurpkgs)
+                .aur
             else
                 .repos;
             return .{
@@ -899,6 +902,28 @@ test "resolve falls through to pacman provider when direct lookups fail" {
     try testing.expectEqual(Source.satisfied_aur, res.source);
     try testing.expectEqualStrings("java-runtime", res.name);
     try testing.expectEqualStrings("jre-openjdk", res.provider.?);
+}
+
+test "resolve returns Source.aur for uninstalled provider in aurpkgs" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+    // auracle-git is in aurpkgs (not installed), provides "auracle"
+    pm.addProvider("auracle", .{
+        .provider_name = "auracle-git",
+        .provider_version = "r427-1",
+        .db_name = "aurpkgs",
+    });
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+
+    const res = try reg.resolve("auracle");
+    try testing.expectEqual(Source.aur, res.source);
+    try testing.expectEqualStrings("auracle", res.name);
+    try testing.expectEqualStrings("auracle-git", res.provider.?);
 }
 
 test "resolve finds AUR provider when package not found by name" {
