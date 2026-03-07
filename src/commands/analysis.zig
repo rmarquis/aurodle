@@ -66,13 +66,13 @@ pub fn buildorder(self: *Commands, targets: []const []const u8) !ExitCode {
     for (plan.all_deps) |dep| {
         const prefix: []const u8 = if (dep.is_target) switch (dep.source) {
             .aur, .satisfied_aur, .repo_aur => "TARGETAUR",
-            .repos, .satisfied_repo => "TARGETREPO",
+            .repos, .satisfied_repos => "TARGETREPO",
             .unknown => "UNKNOWN",
         } else switch (dep.source) {
             .aur => "AUR",
             .repos => "REPOS",
             .repo_aur => "REPOAUR",
-            .satisfied_repo => "SATISFIEDREPO",
+            .satisfied_repos => "SATISFIEDREPOS",
             .satisfied_aur => "SATISFIEDAUR",
             .unknown => "UNKNOWN",
         };

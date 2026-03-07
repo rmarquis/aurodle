@@ -6,7 +6,7 @@ const pacman_mod = @import("pacman.zig");
 // ── Public Types ─────────────────────────────────────────────────────────
 
 pub const Source = enum {
-    satisfied_repo, // installed locally and available in official repos
+    satisfied_repos, // installed locally and available in official repos
     satisfied_aur, // installed locally (AUR / foreign package)
     repos, // not installed, available in official sync databases
     repo_aur, // not installed, available in aurpkgs local repo
@@ -198,7 +198,7 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
 
             return .{
                 .name = name,
-                .source = if (self.pacman.isInOfficialSyncDb(name)) .satisfied_repo else .satisfied_aur,
+                .source = if (self.pacman.isInOfficialSyncDb(name)) .satisfied_repos else .satisfied_aur,
                 .version = self.pacman.installedVersion(name),
             };
         }
@@ -231,7 +231,7 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
             const provider = self.pacman.findProvider(name) orelse return null;
             const from_aurpkgs = std.mem.eql(u8, provider.db_name, "aurpkgs");
             const source: Source = if (self.pacman.isInstalled(provider.provider_name))
-                if (self.pacman.isInOfficialSyncDb(provider.provider_name)) .satisfied_repo else .satisfied_aur
+                if (self.pacman.isInOfficialSyncDb(provider.provider_name)) .satisfied_repos else .satisfied_aur
             else if (from_aurpkgs)
                 .repo_aur
             else
@@ -697,7 +697,7 @@ test "installed packages take priority over sync databases" {
     defer reg.deinit();
 
     const res = try reg.resolve("pkg");
-    try testing.expectEqual(Source.satisfied_repo, res.source);
+    try testing.expectEqual(Source.satisfied_repos, res.source);
 }
 
 test "installed package in aurpkgs is classified as satisfied_aur" {
