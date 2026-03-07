@@ -75,7 +75,11 @@ pub fn buildorder(self: *Commands, targets: []const []const u8) !ExitCode {
             .satisfied_aur => "SATISFIEDAUR",
             .unknown => "UNKNOWN",
         };
-        stdout.print("{s} {s}\n", .{ prefix, dep.name }) catch {};
+        if (dep.pkgbase) |pkgbase| {
+            stdout.print("{s} {s} {s}\n", .{ prefix, pkgbase, dep.name }) catch {};
+        } else {
+            stdout.print("{s} {s}\n", .{ prefix, dep.name }) catch {};
+        }
     }
     return .success;
 }

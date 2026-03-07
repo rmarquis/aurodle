@@ -20,6 +20,7 @@ pub const BuildEntry = struct {
 
 pub const DependencyEntry = struct {
     name: []const u8,
+    pkgbase: ?[]const u8,
     source: registry_mod.Source,
     is_target: bool,
     depth: u32,
@@ -136,6 +137,15 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                 if (try self.registry.resolveFromAur(name)) |aur_res| aur_res.aur_pkg else null
             else
                 null;
+
+            // Update node metadata if we fetched AUR info after initial creation
+            if (aur_pkg) |pkg| {
+                if (self.graph.getNode(name)) |node| {
+                    if (node.meta.pkgbase == null) {
+                        node.meta.pkgbase = pkg.pkgbase;
+                    }
+                }
+            }
 
             // Recurse into dependencies if we have AUR package info.
             // For non-target deps, repo/satisfied packages are handled
@@ -279,6 +289,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                 const node = entry.value_ptr;
                 try all_deps.append(alloc, .{
                     .name = node.meta.name,
+                    .pkgbase = node.meta.pkgbase,
                     .source = node.meta.source,
                     .is_target = self.targets.contains(node.meta.name),
                     .depth = node.meta.depth,
