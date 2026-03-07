@@ -8,8 +8,9 @@ const pacman_mod = @import("pacman.zig");
 pub const Source = enum {
     satisfied_repo, // installed locally and available in official repos
     satisfied_aur, // installed locally (AUR / foreign package)
-    repos, // in official sync databases
-    aur, // found in AUR
+    repos, // not installed, available in official sync databases
+    repo_aur, // not installed, available in aurpkgs local repo
+    aur, // not installed, needs to be built from AUR
     unknown, // not found anywhere
 };
 
@@ -232,7 +233,7 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
             const source: Source = if (self.pacman.isInstalled(provider.provider_name))
                 if (self.pacman.isInOfficialSyncDb(provider.provider_name)) .satisfied_repo else .satisfied_aur
             else if (from_aurpkgs)
-                .satisfied_aur
+                .repo_aur
             else
                 .repos;
             return .{
@@ -904,7 +905,7 @@ test "resolve falls through to pacman provider when direct lookups fail" {
     try testing.expectEqualStrings("jre-openjdk", res.provider.?);
 }
 
-test "resolve returns Source.satisfied_aur for uninstalled provider in aurpkgs" {
+test "resolve returns Source.repo_aur for uninstalled provider in aurpkgs" {
     var pm = MockPacman.initEmpty();
     defer pm.deinitMock();
     // auracle-git is in aurpkgs (not installed), provides "auracle"
@@ -921,7 +922,7 @@ test "resolve returns Source.satisfied_aur for uninstalled provider in aurpkgs" 
     defer reg.deinit();
 
     const res = try reg.resolve("auracle");
-    try testing.expectEqual(Source.satisfied_aur, res.source);
+    try testing.expectEqual(Source.repo_aur, res.source);
     try testing.expectEqualStrings("auracle", res.name);
     try testing.expectEqualStrings("auracle-git", res.provider.?);
 }
