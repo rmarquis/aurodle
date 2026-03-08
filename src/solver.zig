@@ -116,6 +116,17 @@ pub fn SolverImpl(comptime RegistryT: type) type {
             // Classify via registry
             const resolution = try self.registry.resolve(name);
 
+            // If resolved via provider (e.g. "auracle" → "auracle-git"),
+            // redirect discovery to the actual package name.
+            if (resolution.provider) |provider_name| {
+                if (!std.mem.eql(u8, provider_name, name)) {
+                    if (self.targets.contains(name)) {
+                        try self.targets.put(self.allocator, provider_name, {});
+                    }
+                    return self.discover(provider_name, depth);
+                }
+            }
+
             const meta = NodeMeta{
                 .source = resolution.source,
                 .version = resolution.version,
@@ -411,6 +422,7 @@ const MockRegistry = struct {
         depends: []const []const u8,
         makedepends: []const []const u8,
         aur_pkg: ?*aur.Package,
+        provider: ?[]const u8 = null,
     };
 
     fn initEmpty() MockRegistry {
@@ -611,6 +623,20 @@ const MockRegistry = struct {
         }) catch unreachable;
     }
 
+    /// Register a virtual name that redirects to a provider package.
+    /// Simulates "auracle" → "auracle-git" via provider resolution.
+    fn addProvider(self: *MockRegistry, virtual_name: []const u8, provider_name: []const u8, source: registry_mod.Source, version: []const u8) void {
+        self.packages.put(testing.allocator, virtual_name, .{
+            .source = source,
+            .version = version,
+            .pkgbase = provider_name,
+            .depends = &.{},
+            .makedepends = &.{},
+            .aur_pkg = null,
+            .provider = provider_name,
+        }) catch unreachable;
+    }
+
     // ── Interface matching PackageRegistry ────────────────────────────
 
     pub fn resolve(self: *MockRegistry, dep_string: []const u8) !registry_mod.Resolution {
@@ -623,6 +649,7 @@ const MockRegistry = struct {
             .source = info.source,
             .version = info.version,
             .aur_pkg = info.aur_pkg,
+            .provider = info.provider,
         };
     }
 
@@ -1107,6 +1134,26 @@ test "rebuild reclassifies satisfied_aur target into build plan" {
         if (std.mem.eql(u8, entry.name, "pacaur")) found_pacaur = true;
     }
     try testing.expect(found_pacaur);
+}
+
+test "resolve redirects virtual name to provider package" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // "auracle" is a virtual name provided by "auracle-git"
+    mock.addProvider("auracle", "auracle-git", .satisfied_aur, "r427-1");
+    mock.addSatisfiedWithAurDeps("auracle-git", "r427-1", &.{}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    s.rebuild = true;
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"auracle"});
+    defer plan.deinit(testing.allocator);
+
+    // Build plan should show "auracle-git", not "auracle"
+    try testing.expectEqual(@as(usize, 1), plan.build_order.len);
+    try testing.expectEqualStrings("auracle-git", plan.build_order[0].name);
+    try testing.expect(plan.build_order[0].is_target);
 }
 
 test "resolve does not version-check repo_aur dependencies" {
