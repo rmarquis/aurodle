@@ -209,23 +209,20 @@ pub fn readFile(allocator: Allocator, cache_root: []const u8, pkgbase: []const u
 
 /// Show the diff between the previous HEAD and current HEAD.
 /// Uses ORIG_HEAD which git sets during pull.
-pub fn diffSinceLastPull(allocator: Allocator, cache_root: []const u8, pkgbase: []const u8) ![]u8 {
+/// Check whether ORIG_HEAD exists in the clone (set by git pull).
+/// Returns false for fresh clones that have never been pulled.
+pub fn hasOrigHead(allocator: Allocator, cache_root: []const u8, pkgbase: []const u8) !bool {
     const dest = try cloneDir(allocator, cache_root, pkgbase);
     defer allocator.free(dest);
 
     if (!dirExists(dest)) return error.NotCloned;
 
     const result = try utils.runCommandIn(allocator, &.{
-        "git", "diff", "ORIG_HEAD..HEAD",
+        "git", "rev-parse", "--verify", "ORIG_HEAD",
     }, dest);
     defer result.deinit(allocator);
 
-    if (result.exit_code != 0) {
-        // ORIG_HEAD might not exist (first clone, never pulled)
-        return try allocator.dupe(u8, "");
-    }
-
-    return try allocator.dupe(u8, result.stdout);
+    return result.exit_code == 0;
 }
 
 // ── Internal Helpers ────────────────────────────────────────────────────
@@ -538,7 +535,7 @@ test "cloneOrUpdate returns NotCloned-free result for existing repo" {
     try std.testing.expectError(error.PullFailed, result);
 }
 
-test "diffSinceLastPull returns empty for fresh clone" {
+test "hasOrigHead returns false for fresh clone" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -548,14 +545,12 @@ test "diffSinceLastPull returns empty for fresh clone" {
     const repo_dir = try createTestGitRepo(std.testing.allocator, tmp_path, "diff-pkg");
     defer std.testing.allocator.free(repo_dir);
 
-    // No ORIG_HEAD exists on a fresh repo, should return empty
-    const diff = try diffSinceLastPull(std.testing.allocator, tmp_path, "diff-pkg");
-    defer std.testing.allocator.free(diff);
-
-    try std.testing.expectEqualStrings("", diff);
+    // No ORIG_HEAD exists on a fresh repo
+    const result = try hasOrigHead(std.testing.allocator, tmp_path, "diff-pkg");
+    try std.testing.expect(!result);
 }
 
-test "diffSinceLastPull returns NotCloned when not cloned" {
-    const result = diffSinceLastPull(std.testing.allocator, "/tmp/nonexistent-aurodle-test", "fake-pkg");
+test "hasOrigHead returns NotCloned when not cloned" {
+    const result = hasOrigHead(std.testing.allocator, "/tmp/nonexistent-aurodle-test", "fake-pkg");
     try std.testing.expectError(error.NotCloned, result);
 }

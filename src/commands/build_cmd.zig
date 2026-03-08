@@ -645,27 +645,50 @@ fn reviewPackages(
     const editor = getEditor();
 
     for (entries) |entry| {
-        const msg = try std.fmt.allocPrint(self.allocator, "Review {s} files?", .{entry.pkgbase});
-        defer self.allocator.free(msg);
-        const review = try utils.promptYesNo(msg);
+        const clone_dir = try git.cloneDir(self.allocator, c_root, entry.pkgbase);
+        defer self.allocator.free(clone_dir);
 
-        if (review) {
-            const clone_dir = try git.cloneDir(self.allocator, c_root, entry.pkgbase);
-            defer self.allocator.free(clone_dir);
+        const is_update = git.hasOrigHead(self.allocator, c_root, entry.pkgbase) catch false;
 
-            const exit_code = utils.runInteractive(self.allocator, &.{ editor, clone_dir }, null) catch {
-                stdout.writeAll("  (could not open editor)\n") catch {};
-                continue;
-            };
+        if (is_update) {
+            // Updated clone — show diff interactively
+            const msg = try std.fmt.allocPrint(self.allocator, "View {s} diff?", .{entry.pkgbase});
+            defer self.allocator.free(msg);
 
-            if (exit_code != 0) {
-                stdout.print("  editor exited with {d}\n", .{exit_code}) catch {};
+            if (try utils.promptYesNo(msg)) {
+                const exit_code = utils.runInteractive(
+                    self.allocator,
+                    &.{ "git", "diff", "ORIG_HEAD..HEAD" },
+                    clone_dir,
+                ) catch {
+                    stdout.writeAll("  (could not show diff)\n") catch {};
+                    continue;
+                };
+                _ = exit_code;
+                stdout.print(":: {s} diff reviewed\n", .{entry.pkgbase}) catch {};
             }
+        } else {
+            // Fresh clone — open all files in editor
+            const msg = try std.fmt.allocPrint(self.allocator, "Review {s} files?", .{entry.pkgbase});
+            defer self.allocator.free(msg);
 
-            stdout.print(":: {s} files reviewed\n", .{entry.pkgbase}) catch {};
+            if (try utils.promptYesNo(msg)) {
+                const exit_code = utils.runInteractive(
+                    self.allocator,
+                    &.{ editor, clone_dir },
+                    null,
+                ) catch {
+                    stdout.writeAll("  (could not open editor)\n") catch {};
+                    continue;
+                };
+
+                if (exit_code != 0) {
+                    stdout.print("  editor exited with {d}\n", .{exit_code}) catch {};
+                }
+                stdout.print(":: {s} files reviewed\n", .{entry.pkgbase}) catch {};
+            }
         }
     }
-
 }
 
 fn getEditor() []const u8 {
