@@ -198,18 +198,24 @@ fn displayPlanCompact(
     pm: ?*pacman_mod.Pacman,
     stdout: anytype,
 ) void {
+    const aur_hdr = "AUR Packages ()".len + countDigits(plan.build_order.len);
+    const repo_hdr = "Repo Packages ()".len + countDigits(plan.repo_deps.len);
+    const hdr_width = @max(aur_hdr, repo_hdr);
+
     if (plan.build_order.len > 0) {
         stdout.print("\nAUR Packages ({d})", .{plan.build_order.len}) catch {};
+        stdout.writeByteNTimes(' ', hdr_width - aur_hdr) catch {};
         for (plan.build_order) |entry| {
-            stdout.print("  {s}-{s}", .{ entry.name, entry.version }) catch {};
+            stdout.print(" {s}-{s}", .{ entry.name, entry.version }) catch {};
         }
         stdout.writeByte('\n') catch {};
     }
     if (plan.repo_deps.len > 0) {
         stdout.print("\nRepo Packages ({d})", .{plan.repo_deps.len}) catch {};
+        stdout.writeByteNTimes(' ', hdr_width - repo_hdr) catch {};
         for (plan.repo_deps) |dep| {
             const ver = if (pm) |p| p.syncVersion(dep) orelse "?" else "?";
-            stdout.print("  {s}-{s}", .{ dep, ver }) catch {};
+            stdout.print(" {s}-{s}", .{ dep, ver }) catch {};
         }
         stdout.writeByte('\n') catch {};
     }
