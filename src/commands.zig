@@ -184,8 +184,14 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman) void {
     }
 
     if (pm) |p| {
-        if (plan.repo_deps.len > 0) {
-            const sizes = p.repoDepSizes(plan.repo_deps);
+        if (plan.repo_deps.len > 0 or plan.repo_targets.len > 0) {
+            var sizes = p.repoDepSizes(plan.repo_deps);
+            const target_sizes = p.repoDepSizes(plan.repo_targets);
+            sizes.download += target_sizes.download;
+            sizes.install += target_sizes.install;
+            sizes.net_upgrade += target_sizes.net_upgrade;
+            if (target_sizes.has_upgrades) sizes.has_upgrades = true;
+
             stdout.writeByte('\n') catch {};
             if (sizes.download > 0) {
                 printSize(stdout, "Total Download Size:  ", sizes.download);
@@ -205,8 +211,9 @@ fn displayPlanCompact(
     pm: ?*pacman_mod.Pacman,
     stdout: anytype,
 ) void {
+    const repo_count = plan.repo_deps.len + plan.repo_targets.len;
     const aur_hdr = "AUR Packages ()".len + countDigits(plan.build_order.len);
-    const repo_hdr = "Repo Packages ()".len + countDigits(plan.repo_deps.len);
+    const repo_hdr = "Repo Packages ()".len + countDigits(repo_count);
     const hdr_width = @max(aur_hdr, repo_hdr);
 
     if (plan.build_order.len > 0) {
@@ -217,9 +224,13 @@ fn displayPlanCompact(
         }
         stdout.writeByte('\n') catch {};
     }
-    if (plan.repo_deps.len > 0) {
-        stdout.print("\nRepo Packages ({d})", .{plan.repo_deps.len}) catch {};
+    if (repo_count > 0) {
+        stdout.print("\nRepo Packages ({d})", .{repo_count}) catch {};
         stdout.writeByteNTimes(' ', hdr_width - repo_hdr) catch {};
+        for (plan.repo_targets) |name| {
+            const ver = if (pm) |p| p.syncVersion(name) orelse "?" else "?";
+            stdout.print(" {s}-{s}", .{ name, ver }) catch {};
+        }
         for (plan.repo_deps) |dep| {
             const ver = if (pm) |p| p.syncVersion(dep) orelse "?" else "?";
             stdout.print(" {s}-{s}", .{ dep, ver }) catch {};
@@ -243,8 +254,9 @@ fn displayPlanVerbose(
         const w = "AUR Package ()".len + countDigits(plan.build_order.len);
         if (w > name_col) name_col = w;
     }
-    if (plan.repo_deps.len > 0) {
-        const w = "Repo Package ()".len + countDigits(plan.repo_deps.len);
+    const repo_count = plan.repo_deps.len + plan.repo_targets.len;
+    if (repo_count > 0) {
+        const w = "Repo Package ()".len + countDigits(repo_count);
         if (w > name_col) name_col = w;
     }
 
@@ -256,6 +268,11 @@ fn displayPlanVerbose(
                 if (v.len > old_col) old_col = v.len;
             }
         }
+    }
+    for (plan.repo_targets) |name| {
+        const repo = if (pm) |p| p.syncDbFor(name) else null;
+        const w = if (repo) |r| r.len + 1 + name.len else name.len;
+        if (w > name_col) name_col = w;
     }
     for (plan.repo_deps) |dep| {
         const repo = if (pm) |p| p.syncDbFor(dep) else null;
@@ -286,25 +303,28 @@ fn displayPlanVerbose(
         }
     }
 
-    // Repo deps section
-    if (plan.repo_deps.len > 0) {
+    // Repo section (targets + deps combined)
+    if (repo_count > 0) {
         stdout.writeByte('\n') catch {};
-        stdout.print("Repo Package ({d})", .{plan.repo_deps.len}) catch {};
-        pad(stdout, countDigits(plan.repo_deps.len) + "Repo Package ()".len, name_col);
+        stdout.print("Repo Package ({d})", .{repo_count}) catch {};
+        pad(stdout, countDigits(repo_count) + "Repo Package ()".len, name_col);
         stdout.writeAll("New Version\n\n") catch {};
 
-        for (plan.repo_deps) |dep| {
-            const repo = if (pm) |p| p.syncDbFor(dep) else null;
-            const ver = if (pm) |p| p.syncVersion(dep) orelse "?" else "?";
-            const w = if (repo) |r| blk: {
-                stdout.print("{s}/{s}", .{ r, dep }) catch {};
-                break :blk r.len + 1 + dep.len;
-            } else blk: {
-                stdout.writeAll(dep) catch {};
-                break :blk dep.len;
-            };
-            pad(stdout, w, name_col);
-            stdout.print("{s}\n", .{ver}) catch {};
+        const repo_lists = [_][]const []const u8{ plan.repo_targets, plan.repo_deps };
+        for (repo_lists) |list| {
+            for (list) |name| {
+                const repo = if (pm) |p| p.syncDbFor(name) else null;
+                const ver = if (pm) |p| p.syncVersion(name) orelse "?" else "?";
+                const w = if (repo) |r| blk: {
+                    stdout.print("{s}/{s}", .{ r, name }) catch {};
+                    break :blk r.len + 1 + name.len;
+                } else blk: {
+                    stdout.writeAll(name) catch {};
+                    break :blk name.len;
+                };
+                pad(stdout, w, name_col);
+                stdout.print("{s}\n", .{ver}) catch {};
+            }
         }
     }
 }

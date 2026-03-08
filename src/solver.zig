@@ -31,11 +31,13 @@ pub const BuildPlan = struct {
     build_order: []BuildEntry,
     all_deps: []DependencyEntry,
     repo_deps: [][]const u8,
+    repo_targets: [][]const u8,
 
     pub fn deinit(self: BuildPlan, allocator: Allocator) void {
         allocator.free(self.build_order);
         allocator.free(self.all_deps);
         allocator.free(self.repo_deps);
+        allocator.free(self.repo_targets);
     }
 };
 
@@ -325,11 +327,17 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                 });
             }
 
-            // Repo deps: packages from sync DBs
+            // Repo deps: packages from sync DBs (dependencies, not targets)
+            // Repo targets: targets explicitly requested that live in official repos
+            var repo_targets: std.ArrayListUnmanaged([]const u8) = .empty;
             var repo_it = self.graph.nodes.iterator();
             while (repo_it.next()) |entry| {
-                if (entry.value_ptr.meta.source == .repos) {
-                    try repo_deps.append(alloc, entry.value_ptr.meta.name);
+                const node = entry.value_ptr;
+                const is_target = self.targets.contains(node.meta.name);
+                if (is_target and (node.meta.source == .repos or node.meta.source == .satisfied_repos)) {
+                    try repo_targets.append(alloc, node.meta.name);
+                } else if (node.meta.source == .repos) {
+                    try repo_deps.append(alloc, node.meta.name);
                 }
             }
 
@@ -337,6 +345,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                 .build_order = try build_order.toOwnedSlice(alloc),
                 .all_deps = try all_deps.toOwnedSlice(alloc),
                 .repo_deps = try repo_deps.toOwnedSlice(alloc),
+                .repo_targets = try repo_targets.toOwnedSlice(alloc),
             };
         }
     };
@@ -623,6 +632,17 @@ const MockRegistry = struct {
         }) catch unreachable;
     }
 
+    fn addSatisfiedRepo(self: *MockRegistry, name: []const u8, version: []const u8) void {
+        self.packages.put(testing.allocator, name, .{
+            .source = .satisfied_repos,
+            .version = version,
+            .pkgbase = name,
+            .depends = &.{},
+            .makedepends = &.{},
+            .aur_pkg = null,
+        }) catch unreachable;
+    }
+
     /// Register a virtual name that redirects to a provider package.
     /// Simulates "auracle" → "auracle-git" via provider resolution.
     fn addProvider(self: *MockRegistry, virtual_name: []const u8, provider_name: []const u8, source: registry_mod.Source, version: []const u8) void {
@@ -773,6 +793,64 @@ test "resolve skips satisfied dependencies" {
         }
     }
     try testing.expect(found);
+}
+
+test "resolve classifies repo targets separately from repo deps" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // expac is installed from official repos — target
+    mock.addSatisfiedRepo("expac", "10.4");
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"expac"});
+    defer plan.deinit(testing.allocator);
+
+    // Should be in repo_targets, not repo_deps or build_order
+    try testing.expectEqual(@as(usize, 0), plan.build_order.len);
+    try testing.expectEqual(@as(usize, 0), plan.repo_deps.len);
+    try testing.expectEqual(@as(usize, 1), plan.repo_targets.len);
+    try testing.expectEqualStrings("expac", plan.repo_targets[0]);
+}
+
+test "resolve classifies uninstalled repo targets into repo_targets" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // expac is in official repos but not installed — target
+    mock.addRepoPackage("expac", "10.4");
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"expac"});
+    defer plan.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), plan.build_order.len);
+    try testing.expectEqual(@as(usize, 0), plan.repo_deps.len);
+    try testing.expectEqual(@as(usize, 1), plan.repo_targets.len);
+    try testing.expectEqualStrings("expac", plan.repo_targets[0]);
+}
+
+test "resolve separates repo targets from repo deps in mixed plan" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // AUR target depends on repo dep; user also targets a repo package
+    mock.addAurPackage("aurpkg", &.{"zlib"}, &.{});
+    mock.addRepoPackage("zlib", "1.3");
+    mock.addSatisfiedRepo("expac", "10.4");
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{ "aurpkg", "expac" });
+    defer plan.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), plan.build_order.len);
+    try testing.expectEqual(@as(usize, 1), plan.repo_deps.len);
+    try testing.expectEqualStrings("zlib", plan.repo_deps[0]);
+    try testing.expectEqual(@as(usize, 1), plan.repo_targets.len);
+    try testing.expectEqualStrings("expac", plan.repo_targets[0]);
 }
 
 test "resolve does not recurse into repo dependencies" {

@@ -196,9 +196,14 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
         }
         if (aurpkgs_targets.items.len > 0) {
             try installTargets(self, aurpkgs_targets.items);
-            return .success;
         }
-        getStdout().writeAll(" nothing to do -- all targets are up to date\n") catch {};
+        // Install repo targets (official repo packages explicitly requested)
+        if (plan.repo_targets.len > 0) {
+            try installRepoTargets(self, plan.repo_targets);
+        }
+        if (aurpkgs_targets.items.len == 0 and plan.repo_targets.len == 0) {
+            getStdout().writeAll(" nothing to do -- all targets are up to date\n") catch {};
+        }
         return .success;
     }
 
@@ -246,6 +251,11 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
         }
         printBuildSummary(build_result);
         return .build_failed;
+    }
+
+    // Phase 7: Install repo targets (official repo packages explicitly requested)
+    if (plan.repo_targets.len > 0) {
+        try installRepoTargets(self, plan.repo_targets);
     }
 
     return .success;
@@ -709,6 +719,12 @@ fn getEditor() []const u8 {
 // ── Install ──────────────────────────────────────────────────────────
 
 fn installTargets(self: *Commands, names: []const []const u8) !void {
+    try installFromRepo(self, names, "aurpkgs");
+}
+
+/// Install packages via pacman -S, qualifying each name with the given repo
+/// (e.g., "aurpkgs/pkg" or "extra/pkg"). If repo is null, no qualification.
+fn installFromRepo(self: *Commands, names: []const []const u8, default_repo: ?[]const u8) !void {
     var argv: std.ArrayListUnmanaged([]const u8) = .empty;
     defer argv.deinit(self.allocator);
 
@@ -724,7 +740,6 @@ fn installTargets(self: *Commands, names: []const []const u8) !void {
         try argv.append(self.allocator, "--noconfirm");
     }
 
-    // Qualify with repo name to install from aurpkgs, not official repos
     var qualified_names: std.ArrayListUnmanaged([]const u8) = .empty;
     defer {
         for (qualified_names.items) |q| self.allocator.free(q);
@@ -732,9 +747,54 @@ fn installTargets(self: *Commands, names: []const []const u8) !void {
     }
 
     for (names) |name| {
-        const qualified = try std.fmt.allocPrint(self.allocator, "aurpkgs/{s}", .{name});
-        try qualified_names.append(self.allocator, qualified);
-        try argv.append(self.allocator, qualified);
+        if (default_repo) |repo| {
+            const qualified = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ repo, name });
+            try qualified_names.append(self.allocator, qualified);
+            try argv.append(self.allocator, qualified);
+        } else {
+            try argv.append(self.allocator, name);
+        }
+    }
+
+    const exit_code = try utils.runSudoInteractive(self.allocator, argv.items);
+
+    if (exit_code != 0) {
+        getStderr().print("error: installation failed (exit {d})\n", .{exit_code}) catch {};
+    }
+}
+
+/// Install repo targets using their actual sync database names (e.g., extra/expac).
+fn installRepoTargets(self: *Commands, names: []const []const u8) !void {
+    var argv: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer argv.deinit(self.allocator);
+
+    try argv.appendSlice(self.allocator, &.{ "pacman", "-S" });
+
+    if (self.flags.asdeps) {
+        try argv.append(self.allocator, "--asdeps");
+    } else if (self.flags.asexplicit) {
+        try argv.append(self.allocator, "--asexplicit");
+    }
+
+    if (self.flags.noconfirm) {
+        try argv.append(self.allocator, "--noconfirm");
+    }
+
+    var qualified_names: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer {
+        for (qualified_names.items) |q| self.allocator.free(q);
+        qualified_names.deinit(self.allocator);
+    }
+
+    for (names) |name| {
+        const repo = if (self.pacman) |pm| pm.syncDbFor(name) else null;
+        if (repo) |r| {
+            const qualified = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ r, name });
+            try qualified_names.append(self.allocator, qualified);
+            try argv.append(self.allocator, qualified);
+        } else {
+            try argv.append(self.allocator, name);
+        }
     }
 
     const exit_code = try utils.runSudoInteractive(self.allocator, argv.items);
@@ -803,6 +863,7 @@ test "hasFailedDep returns false for empty failed set" {
         .build_order = &.{},
         .all_deps = &.{},
         .repo_deps = &.{},
+        .repo_targets = &.{},
     };
     var failed: std.StringHashMapUnmanaged(void) = .empty;
     try testing.expect(!hasFailedDep(entry, plan, &failed));
@@ -819,6 +880,7 @@ test "hasFailedDep returns true when own pkgbase is failed" {
         .build_order = &.{},
         .all_deps = &.{},
         .repo_deps = &.{},
+        .repo_targets = &.{},
     };
     var failed: std.StringHashMapUnmanaged(void) = .empty;
     defer failed.deinit(testing.allocator);
