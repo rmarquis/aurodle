@@ -178,38 +178,62 @@ pub const Commands = struct {
 
 // ── Shared Helpers (used by sub-modules) ─────────────────────────────
 
-pub fn displayPlan(plan: solver_mod.BuildPlan) void {
+pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman) void {
     const stdout = getStdout();
 
-    stdout.print(":: AUR packages ({d}):\n", .{plan.build_order.len}) catch {};
-    for (plan.build_order) |entry| {
-        const marker: []const u8 = if (entry.is_target) "" else " (dependency)";
-        stdout.print("  {s} {s}{s}\n", .{ entry.name, entry.version, marker }) catch {};
-    }
+    stdout.writeAll("resolving dependencies...\n") catch {};
 
-    if (plan.repo_deps.len > 0) {
-        stdout.print("\n:: Repository dependencies ({d}):\n", .{plan.repo_deps.len}) catch {};
-        for (plan.repo_deps) |dep| {
-            stdout.print("  {s}\n", .{dep}) catch {};
+    // Check if any AUR package has an old version (upgrade scenario)
+    var has_old_version = false;
+    if (pm) |p| {
+        for (plan.build_order) |entry| {
+            if (p.installedVersion(entry.name) != null) {
+                has_old_version = true;
+                break;
+            }
         }
     }
 
-    // Count satisfied deps (already installed)
-    var satisfied_count: usize = 0;
-    for (plan.all_deps) |dep| {
-        if ((dep.source == .satisfied_repos or dep.source == .satisfied_aur) and !dep.is_target) satisfied_count += 1;
+    // AUR section
+    if (plan.build_order.len > 0) {
+        stdout.writeByte('\n') catch {};
+        if (has_old_version) {
+            stdout.print("AUR Package ({d})  Old Version  New Version\n", .{plan.build_order.len}) catch {};
+        } else {
+            stdout.print("AUR Package ({d})  New Version\n", .{plan.build_order.len}) catch {};
+        }
+        stdout.writeByte('\n') catch {};
+
+        for (plan.build_order) |entry| {
+            if (has_old_version) {
+                const old_ver = if (pm) |p| p.installedVersion(entry.name) orelse "-" else "-";
+                stdout.print("{s}  {s}  {s}\n", .{ entry.name, old_ver, entry.version }) catch {};
+            } else {
+                stdout.print("{s}  {s}\n", .{ entry.name, entry.version }) catch {};
+            }
+        }
     }
-    if (satisfied_count > 0) {
-        stdout.print("\n:: Already installed ({d}):\n", .{satisfied_count}) catch {};
-        for (plan.all_deps) |dep| {
-            if ((dep.source == .satisfied_repos or dep.source == .satisfied_aur) and !dep.is_target) {
-                stdout.print("  {s}\n", .{dep.name}) catch {};
+
+    // Repo deps section
+    if (plan.repo_deps.len > 0) {
+        stdout.writeByte('\n') catch {};
+        stdout.print("Package ({d})  New Version\n", .{plan.repo_deps.len}) catch {};
+        stdout.writeByte('\n') catch {};
+
+        for (plan.repo_deps) |dep| {
+            const repo = if (pm) |p| p.syncDbFor(dep) else null;
+            const ver = if (pm) |p| p.syncVersion(dep) orelse "?" else "?";
+            if (repo) |r| {
+                stdout.print("{s}/{s}  {s}\n", .{ r, dep, ver }) catch {};
+            } else {
+                stdout.print("{s}  {s}\n", .{ dep, ver }) catch {};
             }
         }
     }
 
     stdout.writeByte('\n') catch {};
 }
+
 
 pub fn handleResolveError(err: anyerror) ExitCode {
     const stderr = getStderr();

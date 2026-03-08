@@ -26,7 +26,7 @@ pub fn resolve(self: *Commands, targets: []const []const u8) !ExitCode {
     };
     defer plan.deinit(self.allocator);
 
-    displayPlan(plan);
+    displayPlan(plan, self.pacman);
     return .success;
 }
 

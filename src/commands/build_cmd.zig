@@ -194,10 +194,10 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
     }
 
     // Phase 2: Display and confirm
-    displayPlan(plan);
+    displayPlan(plan, self.pacman);
 
     if (!self.flags.noconfirm) {
-        if (!try utils.promptYesNo("Proceed with build?")) {
+        if (!try utils.promptYesNo("Proceed with installation?")) {
             return .success;
         }
     }
@@ -277,7 +277,7 @@ pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
         return .success;
     }
 
-    displayPlan(plan);
+    displayPlan(plan, self.pacman);
 
     if (!self.flags.noconfirm) {
         if (!try utils.promptYesNo("Proceed with build?")) {
