@@ -183,55 +183,94 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman) void {
 
     stdout.writeAll("resolving dependencies...\n") catch {};
 
-    // Check if any AUR package has an old version (upgrade scenario)
+    // Compute column widths across both sections
+    var name_col: usize = 0;
+    var old_col: usize = 0;
     var has_old_version = false;
-    if (pm) |p| {
-        for (plan.build_order) |entry| {
-            if (p.installedVersion(entry.name) != null) {
+
+    // Include header widths: "AUR Package (N)" / "Repo Package (N)"
+    if (plan.build_order.len > 0) {
+        const w = "AUR Package ()".len + countDigits(plan.build_order.len);
+        if (w > name_col) name_col = w;
+    }
+    if (plan.repo_deps.len > 0) {
+        const w = "Repo Package ()".len + countDigits(plan.repo_deps.len);
+        if (w > name_col) name_col = w;
+    }
+
+    for (plan.build_order) |entry| {
+        if (entry.name.len > name_col) name_col = entry.name.len;
+        if (pm) |p| {
+            if (p.installedVersion(entry.name)) |v| {
                 has_old_version = true;
-                break;
+                if (v.len > old_col) old_col = v.len;
             }
         }
+    }
+    for (plan.repo_deps) |dep| {
+        const repo = if (pm) |p| p.syncDbFor(dep) else null;
+        const w = if (repo) |r| r.len + 1 + dep.len else dep.len;
+        if (w > name_col) name_col = w;
     }
 
     // AUR section
     if (plan.build_order.len > 0) {
         stdout.writeByte('\n') catch {};
+        stdout.print("AUR Package ({d})", .{plan.build_order.len}) catch {};
+        pad(stdout, countDigits(plan.build_order.len) + "AUR Package ()".len, name_col);
         if (has_old_version) {
-            stdout.print("AUR Package ({d})  Old Version  New Version\n", .{plan.build_order.len}) catch {};
-        } else {
-            stdout.print("AUR Package ({d})  New Version\n", .{plan.build_order.len}) catch {};
+            stdout.writeAll("Old Version") catch {};
+            pad(stdout, "Old Version".len, old_col);
         }
-        stdout.writeByte('\n') catch {};
+        stdout.writeAll("New Version\n\n") catch {};
 
         for (plan.build_order) |entry| {
+            stdout.writeAll(entry.name) catch {};
+            pad(stdout, entry.name.len, name_col);
             if (has_old_version) {
                 const old_ver = if (pm) |p| p.installedVersion(entry.name) orelse "-" else "-";
-                stdout.print("{s}  {s}  {s}\n", .{ entry.name, old_ver, entry.version }) catch {};
-            } else {
-                stdout.print("{s}  {s}\n", .{ entry.name, entry.version }) catch {};
+                stdout.writeAll(old_ver) catch {};
+                pad(stdout, old_ver.len, old_col);
             }
+            stdout.print("{s}\n", .{entry.version}) catch {};
         }
     }
 
     // Repo deps section
     if (plan.repo_deps.len > 0) {
         stdout.writeByte('\n') catch {};
-        stdout.print("Package ({d})  New Version\n", .{plan.repo_deps.len}) catch {};
-        stdout.writeByte('\n') catch {};
+        stdout.print("Repo Package ({d})", .{plan.repo_deps.len}) catch {};
+        pad(stdout, countDigits(plan.repo_deps.len) + "Repo Package ()".len, name_col);
+        stdout.writeAll("New Version\n\n") catch {};
 
         for (plan.repo_deps) |dep| {
             const repo = if (pm) |p| p.syncDbFor(dep) else null;
             const ver = if (pm) |p| p.syncVersion(dep) orelse "?" else "?";
-            if (repo) |r| {
-                stdout.print("{s}/{s}  {s}\n", .{ r, dep, ver }) catch {};
-            } else {
-                stdout.print("{s}  {s}\n", .{ dep, ver }) catch {};
-            }
+            const w = if (repo) |r| blk: {
+                stdout.print("{s}/{s}", .{ r, dep }) catch {};
+                break :blk r.len + 1 + dep.len;
+            } else blk: {
+                stdout.writeAll(dep) catch {};
+                break :blk dep.len;
+            };
+            pad(stdout, w, name_col);
+            stdout.print("{s}\n", .{ver}) catch {};
         }
     }
 
     stdout.writeByte('\n') catch {};
+}
+
+fn pad(writer: anytype, current: usize, col: usize) void {
+    const spaces = (col + 2) -| current;
+    writer.writeByteNTimes(' ', if (spaces < 2) 2 else spaces) catch {};
+}
+
+fn countDigits(n: usize) usize {
+    var digits: usize = 1;
+    var v = n;
+    while (v >= 10) { v /= 10; digits += 1; }
+    return digits;
 }
 
 
