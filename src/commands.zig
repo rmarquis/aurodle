@@ -183,6 +183,20 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman) void {
         displayPlanCompact(plan, pm, stdout);
     }
 
+    if (pm) |p| {
+        if (plan.repo_deps.len > 0) {
+            const sizes = p.repoDepSizes(plan.repo_deps);
+            stdout.writeByte('\n') catch {};
+            if (sizes.download > 0) {
+                printSize(stdout, "Total Download Size:  ", sizes.download);
+            }
+            printSize(stdout, "Total Installed Size: ", sizes.install);
+            if (sizes.has_upgrades) {
+                printSize(stdout, "Net Upgrade Size:     ", sizes.net_upgrade);
+            }
+        }
+    }
+
     stdout.writeByte('\n') catch {};
 }
 
@@ -305,6 +319,18 @@ fn countDigits(n: usize) usize {
     var v = n;
     while (v >= 10) { v /= 10; digits += 1; }
     return digits;
+}
+
+fn printSize(writer: anytype, label: []const u8, bytes: i64) void {
+    const abs = if (bytes < 0) -bytes else bytes;
+    const sign: []const u8 = if (bytes < 0) "-" else "";
+    if (abs >= 1024 * 1024) {
+        writer.print("{s}{s}{d:.2} MiB\n", .{ label, sign, @as(f64, @floatFromInt(abs)) / (1024.0 * 1024.0) }) catch {};
+    } else if (abs >= 1024) {
+        writer.print("{s}{s}{d:.2} KiB\n", .{ label, sign, @as(f64, @floatFromInt(abs)) / 1024.0 }) catch {};
+    } else {
+        writer.print("{s}{s}{d} B\n", .{ label, sign, abs }) catch {};
+    }
 }
 
 

@@ -218,6 +218,16 @@ pub const AlpmPackage = struct {
     pub fn getConflicts(self: AlpmPackage) DepIterator {
         return .{ .current = c.alpm_pkg_get_conflicts(self.raw) };
     }
+
+    /// Download size in bytes (sync db packages only; 0 for local).
+    pub fn getSize(self: AlpmPackage) i64 {
+        return c.alpm_pkg_get_size(self.raw);
+    }
+
+    /// Installed size in bytes.
+    pub fn getIsize(self: AlpmPackage) i64 {
+        return c.alpm_pkg_get_isize(self.raw);
+    }
 };
 
 // ── Free Functions ───────────────────────────────────────────────────────
@@ -351,6 +361,25 @@ test "AlpmPackage accessors return Zig slices" {
     // getDesc returns ?[]const u8
     const desc = pkg.getDesc();
     try std.testing.expect(desc != null);
+
+    // getIsize returns positive installed size for local packages
+    try std.testing.expect(pkg.getIsize() > 0);
+}
+
+test "AlpmPackage size accessors return valid values for sync packages" {
+    if (!isArchLinux()) return error.SkipZigTest;
+
+    const handle = try Handle.init("/", "/var/lib/pacman/");
+    defer handle.deinit();
+
+    const db = handle.registerSyncDb("core", .use_default) catch return error.SkipZigTest;
+    const pkg = db.getPackage("glibc") orelse return error.SkipZigTest;
+
+    // Sync packages have both download size and installed size
+    try std.testing.expect(pkg.getSize() > 0);
+    try std.testing.expect(pkg.getIsize() > 0);
+    // Installed size is always >= download size (compressed)
+    try std.testing.expect(pkg.getIsize() >= pkg.getSize());
 }
 
 test "AlpmPackage.getDepends returns iterable dependencies" {

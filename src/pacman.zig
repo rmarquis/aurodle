@@ -161,6 +161,33 @@ pub const Pacman = struct {
         return null;
     }
 
+    /// Size information for a set of repo dependency packages.
+    pub const SizeInfo = struct {
+        download: i64 = 0,
+        install: i64 = 0,
+        net_upgrade: i64 = 0,
+        has_upgrades: bool = false,
+    };
+
+    /// Compute aggregate download/install/upgrade sizes for repo deps.
+    pub fn repoDepSizes(self: Pacman, names: []const []const u8) SizeInfo {
+        var info = SizeInfo{};
+        for (names) |name| {
+            for (self.sync_dbs) |db| {
+                if (db.getPackage(name)) |sync_pkg| {
+                    info.download += sync_pkg.getSize();
+                    info.install += sync_pkg.getIsize();
+                    if (self.local_db.getPackage(name)) |local_pkg| {
+                        info.net_upgrade += sync_pkg.getIsize() - local_pkg.getIsize();
+                        info.has_upgrades = true;
+                    }
+                    break;
+                }
+            }
+        }
+        return info;
+    }
+
     /// What version is available in official sync databases (excludes aurpkgs)?
     pub fn officialSyncVersion(self: Pacman, name: []const u8) ?[]const u8 {
         for (self.sync_dbs) |db| {
@@ -591,6 +618,33 @@ test "allForeignPackages returns packages not in official repos" {
         };
         try std.testing.expect(!in_official);
     }
+}
+
+test "repoDepSizes returns nonzero sizes for real packages" {
+    if (!isArchLinux()) return error.SkipZigTest;
+
+    var pm = try Pacman.init(std.testing.allocator);
+    defer pm.deinit();
+
+    // glibc is always in sync dbs and installed
+    const names = &[_][]const u8{"glibc"};
+    const sizes = pm.repoDepSizes(names);
+    try std.testing.expect(sizes.download > 0);
+    try std.testing.expect(sizes.install > 0);
+    try std.testing.expect(sizes.has_upgrades); // glibc is installed
+}
+
+test "repoDepSizes returns zeros for unknown packages" {
+    if (!isArchLinux()) return error.SkipZigTest;
+
+    var pm = try Pacman.init(std.testing.allocator);
+    defer pm.deinit();
+
+    const names = &[_][]const u8{"zzz-nonexistent-pkg-99999"};
+    const sizes = pm.repoDepSizes(names);
+    try std.testing.expectEqual(@as(i64, 0), sizes.download);
+    try std.testing.expectEqual(@as(i64, 0), sizes.install);
+    try std.testing.expect(!sizes.has_upgrades);
 }
 
 test "refreshAurDb errors when aurpkgs not configured" {
