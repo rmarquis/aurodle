@@ -146,14 +146,21 @@ test "target marking: exactly the requested targets are marked is_target=true" {
 // Exclusion Property
 // ============================================================================
 
-test "exclusion: repo and satisfied packages never appear in build_order" {
-    // Property: For all DAGs:
+test "exclusion: repo and satisfied packages never appear in build_order (without reclassification)" {
+    // Property: For all DAGs (without --rebuild and with up-to-date versions):
     //   For all entries in build_order:
     //     entry.source != .repos AND entry.source != .satisfied_repo
     //     AND entry.source != .satisfied_aur
     //
     // Only AUR packages need building. Repo packages are installed
     // by pacman, and satisfied packages are already installed.
+    //
+    // Exception: satisfied_aur and repo_aur *targets* may be reclassified
+    // to .aur by the solver when --rebuild is set or the AUR version is
+    // newer. After reclassification, they appear in build_order as .aur.
+    // Provider redirects may also cause the solver to discover the real
+    // package name (e.g. "auracle" → "auracle-git") which then follows
+    // the normal classification flow.
 
     // For 50 random DAGs with mixed sources:
     //   for (plan.build_order) |entry| {

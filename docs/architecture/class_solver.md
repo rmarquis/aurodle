@@ -137,6 +137,18 @@ fn discover(self: *Solver, name: []const u8, depth: u32) !void {
     // Classify via registry
     const resolution = try self.registry.resolve(name);
 
+    // Provider redirect: if resolved via provides (e.g. "auracle" → "auracle-git"),
+    // redirect discovery to the actual package name. This ensures the build plan
+    // shows the real package and its correct dependencies are resolved.
+    if (resolution.provider) |provider_name| {
+        if (!std.mem.eql(u8, provider_name, name)) {
+            if (self.targets.contains(name)) {
+                try self.targets.put(provider_name, {});
+            }
+            return self.discover(provider_name, depth);
+        }
+    }
+
     const meta = NodeMeta{
         .source = resolution.source,
         .version = resolution.version,
@@ -148,9 +160,34 @@ fn discover(self: *Solver, name: []const u8, depth: u32) !void {
 
     try self.graph.addNode(name, meta);
 
+    // For AUR targets that are in aurpkgs (repo_aur) or already installed
+    // (satisfied_aur): fetch AUR metadata and reclassify as .aur if
+    // the AUR version is newer or --rebuild is set. This enables version
+    // checking and forced rebuilds of installed AUR packages.
+    if (resolution.source == .repo_aur or resolution.source == .satisfied_aur) {
+        if (self.targets.contains(name)) {
+            if (try self.registry.resolveFromAur(name)) |aur_res| {
+                if (aur_res.aur_pkg) |pkg| {
+                    const dominated = if (resolution.version) |local_ver|
+                        alpm.vercmp(pkg.version, local_ver) > 0
+                    else false;
+                    if (dominated or self.rebuild) {
+                        // Reclassify: needs building
+                        if (self.graph.getNode(name)) |node| {
+                            node.meta.source = .aur;
+                            node.meta.version = pkg.version;
+                            node.meta.aur_pkg = pkg;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Only recurse into AUR packages — repo/satisfied packages
     // have their deps handled by pacman, not by us.
-    if (resolution.source == .aur) {
+    if (resolution.source == .aur or (self.graph.getNode(name) != null and
+        self.graph.getNode(name).?.meta.source == .aur)) {
         if (resolution.aur_pkg) |pkg| {
             // Follow depends
             for (pkg.depends) |dep| {
@@ -182,11 +219,13 @@ fn discover(self: *Solver, name: []const u8, depth: u32) !void {
 
 **Key design decisions in discovery:**
 
-1. **Only recurse into AUR packages.** If `libfoo` is in the official repos, we don't need to resolve *its* dependencies — pacman handles that transitively when `makepkg -s` installs it. This dramatically prunes the graph.
+1. **Only recurse into AUR packages.** If `libfoo` is in the official repos, we don't need to resolve *its* dependencies — pacman handles that transitively when `makepkg -s` installs it. This dramatically prunes the graph. Note: `repo_aur` and `satisfied_aur` targets may be reclassified to `.aur` (when `--rebuild` is set or the AUR version is newer), which then triggers recursion into their dependencies.
 
-2. **Cycle detection uses the visiting set, not graph coloring.** The `visiting` set is a `StringHashMap` that tracks the current DFS path. This is more explicit than repurposing graph node states and doesn't leak algorithm concerns into the `DepGraph` data structure.
+2. **Provider redirect before node creation.** When the registry resolves a virtual name (e.g., `auracle` → `auracle-git` via provides), the solver redirects discovery to the real package name before creating any graph node. This ensures the build plan shows the actual package being built, the correct pkgbase is used for cloning, and dependencies are resolved from the right AUR metadata.
 
-3. **Fail fast on unknown.** If a dependency can't be found anywhere, we error immediately during discovery rather than building a partial graph and discovering the problem later during sort. This gives the user the clearest error — "package X depends on Y, which isn't found" — with full context of where in the tree the failure occurred.
+3. **Cycle detection uses the visiting set, not graph coloring.** The `visiting` set is a `StringHashMap` that tracks the current DFS path. This is more explicit than repurposing graph node states and doesn't leak algorithm concerns into the `DepGraph` data structure.
+
+4. **Fail fast on unknown.** If a dependency can't be found anywhere, we error immediately during discovery rather than building a partial graph and discovering the problem later during sort. This gives the user the clearest error — "package X depends on Y, which isn't found" — with full context of where in the tree the failure occurred.
 
 ### Phase 2: Topological Sort (Kahn's Algorithm)
 
@@ -507,6 +546,35 @@ all_deps: [
 ]
 repo_deps: ["zlib"]
 ```
+
+### Provider Redirect Example
+
+Consider `aurodle sync auracle --rebuild` where `auracle` is a virtual name provided by `auracle-git`:
+
+```
+Phase 1: Discovery
+──────────────────
+discover("auracle", depth=0)
+  ├─ registry.resolve("auracle") → { source=.satisfied_aur, provider="auracle-git" }
+  ├─ provider redirect: "auracle" ≠ "auracle-git" → transfer target flag
+  └─ discover("auracle-git", depth=0)
+      ├─ registry.resolve("auracle-git") → { source=.satisfied_aur, version="r427-1" }
+      ├─ target + satisfied_aur → fetch AUR metadata
+      ├─ resolveFromAur("auracle-git") → { aur_pkg with version="r427-1" }
+      ├─ --rebuild set → reclassify to .aur
+      ├─ graph.addNode("auracle-git", {aur, target, depth=0})
+      ├─ auracle-git.depends = ["pacman"]
+      │
+      ├─ discover("pacman", depth=1)
+      │   ├─ registry.resolve("pacman") → { source=.satisfied_repo }
+      │   └─ (satisfied_repo → don't recurse)
+      │
+      └─ graph.addEdge("auracle-git", "pacman")
+
+build_order: [{ name="auracle-git", pkgbase="auracle-git", is_target=true }]
+```
+
+Without the redirect, the build plan would show "auracle" (a virtual name that can't be cloned or built).
 
 ### pkgbase Deduplication Detail
 

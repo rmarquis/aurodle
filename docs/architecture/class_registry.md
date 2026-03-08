@@ -35,9 +35,10 @@ classDiagram
 
     class Source {
         <<enumeration>>
-        satisfied_repo
+        satisfied_repos
         satisfied_aur
         repos
+        repo_aur
         aur
         unknown
     }
@@ -72,7 +73,7 @@ classDiagram
 
 ### Internal Architecture
 
-The registry's core operation is a **three-tier cascade with deferred batching**:
+The registry's core operation is a **five-tier cascade with deferred batching**:
 
 ```
 resolve("libfoo>=2.0")
@@ -86,14 +87,23 @@ resolve("libfoo>=2.0")
   │     └─ hit? → return Resolution{ source=.satisfied_repo or .satisfied_aur }
   │
   ├─ 4. resolveSync("libfoo", {ge, "2.0"})
-  │     └─ pacman.isInSyncDb("libfoo") AND version satisfies constraint
+  │     └─ pacman.officialSyncVersion("libfoo") AND version satisfies constraint
   │     └─ hit? → return Resolution{ source=.repos }
   │
-  ├─ 5. resolveAur("libfoo")
-  │     └─ aur_client.info("libfoo")
+  ├─ 5. resolveProvider("libfoo")
+  │     └─ pacman.findProvider("libfoo") → provider_name, db_name
+  │     └─ hit? → return Resolution{ source=based on provider status, provider=provider_name }
+  │     └─ The solver uses the provider field to redirect discovery to the real package
+  │
+  ├─ 6. resolveAur("libfoo")
+  │     └─ aur_client.multiInfo(["libfoo"])
   │     └─ hit? → return Resolution{ source=.aur, aur_pkg=pkg }
   │
-  └─ 6. return Resolution{ source=.unknown }
+  ├─ 7. resolveAurProvider("libfoo")
+  │     └─ aur_client.search("libfoo", .provides)
+  │     └─ hit? → return Resolution{ name=provider_name, source=.aur, provider=provider_name }
+  │
+  └─ 8. return Resolution{ source=.unknown }
 ```
 
 Each tier short-circuits: if the package is found at a higher-priority source, lower sources are never queried.
@@ -164,15 +174,28 @@ pub fn resolve(self: *Registry, dep_string: []const u8) !Resolution {
         return res;
     }
 
-    // Tier 3: In AUR?
+    // Tier 3: Provided by installed/sync package?
+    // pacman.findProvider checks if any installed/sync package
+    // has a `provides` entry matching this dep string.
+    // The solver uses the provider field to redirect discovery
+    // to the real package name (e.g. "auracle" → "auracle-git").
+    if (self.resolveProvider(spec.name)) |res| {
+        try self.cacheResult(spec.name, res);
+        return res;
+    }
+
+    // Tier 4: In AUR by exact name?
     if (try self.resolveAur(spec.name)) |res| {
         try self.cacheResult(spec.name, res);
         return res;
     }
 
-    // Tier 4: Try provider resolution (Phase 2+)
-    // pacman.findProvider checks if any installed/sync package
-    // has a `provides` entry matching this dep string.
+    // Tier 5: Provided by an AUR package?
+    // Uses aur.search(name, .provides) — more expensive than direct lookup
+    if (try self.resolveAurProvider(spec.name)) |res| {
+        try self.cacheResult(spec.name, res);
+        return res;
+    }
 
     // Not found anywhere
     const res = Resolution{
@@ -349,14 +372,26 @@ A package name goes through the following states within a registry session:
                     found │  │ not found
                           ▼  ▼
                     ┌──────────┐
-                    │Query AUR │ (or batch via pending_aur)
+                    │Check     │
+                    │providers │ (pacman findProvider)
                     └───┬──┬───┘
                   found │  │ not found
                         ▼  ▼
                   ┌──────────┐
-                  │ Cached   │ (source = satisfied_repo|satisfied_aur|repos|aur|unknown)
-                  │ forever  │ (within this session)
-                  └──────────┘
+                  │Query AUR │ (or batch via pending_aur)
+                  └───┬──┬───┘
+                found │  │ not found
+                      ▼  ▼
+                ┌──────────┐
+                │Search AUR│ (provides search)
+                │providers │
+                └───┬──┬───┘
+              found │  │ not found
+                    ▼  ▼
+                ┌──────────┐
+                │ Cached   │ (source = satisfied_repos|satisfied_aur|repos|repo_aur|aur|unknown)
+                │ forever  │ (within this session)
+                └──────────┘
 ```
 
 Once cached, a resolution is immutable for the session. This is safe because:
@@ -380,29 +415,45 @@ pub fn invalidate(self: *Registry, names: []const []const u8) void {
 
 This is a surgical invalidation, not a full cache flush. Only the just-built packages are invalidated. Everything else (installed packages, repo packages, other AUR metadata) remains valid.
 
-### Provider Resolution (Phase 2)
+### Provider Resolution
 
-When a dependency like `java-runtime` isn't a real package name, it's a virtual dependency that other packages `provide`. Provider resolution adds a fourth tier before `.unknown`:
+When a dependency like `java-runtime` or `auracle` isn't a real package name, it's a virtual dependency that other packages `provide`. Two tiers handle providers:
 
+**Tier 3 — Pacman provider** (installed or sync database):
 ```zig
-// Tier 4: Check if any installed/sync package provides this
-if (self.pacman.findProvider(spec.name)) |provider_name| {
-    const res = Resolution{
+// Check if any installed/sync package provides this
+if (self.pacman.findProvider(spec.name)) |provider| {
+    const source = if (self.pacman.isInstalled(provider.provider_name))
+        if (self.pacman.isInOfficialSyncDb(provider.provider_name)) .satisfied_repos else .satisfied_aur
+    else if (std.mem.eql(u8, provider.db_name, "aurpkgs"))
+        .repo_aur
+    else
+        .repos;
+    return Resolution{
         .name = spec.name,
-        .source = .repos, // or .satisfied_repo/.satisfied_aur if the provider is installed
-        .version = null,
-        .aur_pkg = null,
-        .provider = provider_name,
+        .source = source,
+        .version = provider.provider_version,
+        .provider = provider.provider_name,  // "auracle-git"
     };
-    try self.cacheResult(spec.name, res);
-    return res;
 }
-
-// Tier 5: Search AUR for packages that provide this
-// Uses aur.search(spec.name, .provides) — more expensive
 ```
 
-The `provider` field in `Resolution` records which real package satisfies a virtual dependency. The solver uses this to ensure the provider is in the build plan if it's an AUR package.
+**Tier 5 — AUR provider** (search AUR for packages that provide this):
+```zig
+// Uses aur.search(spec.name, .provides) — more expensive than direct lookup
+const results = self.aur_client.search(name, .provides);
+if (results.len > 0) {
+    return Resolution{
+        .name = results[0].name,     // Use real package name
+        .source = .aur,
+        .version = results[0].version,
+        .aur_pkg = results[0],
+        .provider = results[0].name,
+    };
+}
+```
+
+The `provider` field in `Resolution` records which real package satisfies a virtual dependency. **The solver uses this to redirect discovery**: when `provider` differs from the requested name, the solver discovers the provider name instead, ensuring the build plan shows the actual package being built (e.g., `auracle-git` not `auracle`).
 
 ### Error Semantics
 

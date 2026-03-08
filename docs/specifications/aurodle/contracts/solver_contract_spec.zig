@@ -73,9 +73,13 @@ test "resolve classifies repo dependencies separately" {
 }
 
 test "resolve skips satisfied dependencies" {
-    // Contract: Dependencies already installed (Source.satisfied_repo or
-    // Source.satisfied_aur) do not appear in build_order or repo_deps.
+    // Contract: Non-target dependencies already installed (Source.satisfied_repo
+    // or Source.satisfied_aur) do not appear in build_order or repo_deps.
     // They appear in all_deps with their satisfied source for display.
+    //
+    // Exception: satisfied_aur *targets* may be reclassified to .aur when
+    // --rebuild is set or the AUR version is newer, in which case they DO
+    // appear in build_order.
     //
     // Mock: A.depends = ["installed-pkg"], registry classifies as .satisfied_repo
     //

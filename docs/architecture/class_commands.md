@@ -151,11 +151,28 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
     };
 
     if (plan.build_order.len == 0) {
-        // All targets already satisfied
-        std.io.getStdOut().writer().print(
-            " nothing to do — all targets are up to date\n",
-            .{},
-        ) catch {};
+        // Nothing to build — but targets in aurpkgs can be (re)installed.
+        // This handles two cases:
+        //   1. repo_aur targets: built but not yet installed
+        //   2. satisfied_aur targets in aurpkgs: reinstall like pacman -S
+        // The second case mirrors pacman's behavior for official repos —
+        // `pacman -S pkg` reinstalls even if already installed.
+        var aurpkgs_targets = ...;
+        for (plan.all_deps) |dep| {
+            if (!dep.is_target) continue;
+            if (dep.source == .repo_aur) {
+                aurpkgs_targets.append(dep.name);
+            } else if (dep.source == .satisfied_aur) {
+                if (pacman.syncDbFor(dep.name) == "aurpkgs") {
+                    aurpkgs_targets.append(dep.name);
+                }
+            }
+        }
+        if (aurpkgs_targets.items.len > 0) {
+            try self.installTargets(aurpkgs_targets.items);
+            return .success;
+        }
+        print(" nothing to do — all targets are up to date\n");
         return .success;
     }
 

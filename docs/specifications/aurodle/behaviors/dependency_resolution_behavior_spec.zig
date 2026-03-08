@@ -70,6 +70,22 @@ test "given virtual dependencies when resolving with provides then finds provide
     // Then: Resolves to "bash" through the provides mechanism
 }
 
+test "given virtual target when syncing then solver redirects to provider package" {
+    // Given: "auracle" is a virtual name provided by "auracle-git" (installed from AUR)
+    // When: `aurodle sync auracle --rebuild` is executed
+    // Then: Solver redirects discovery from "auracle" to "auracle-git"
+    //       Build plan shows "auracle-git" (the real package), not "auracle"
+    //       The target flag is transferred to the provider
+    //       Dependencies are resolved from auracle-git's AUR metadata
+}
+
+test "given installed AUR target when syncing without rebuild then reinstalls from aurpkgs" {
+    // Given: "auracle-git" is installed and available in aurpkgs repo
+    // When: `aurodle sync auracle` is executed (no --rebuild)
+    // Then: auracle-git is reinstalled via `pacman -S aurpkgs/auracle-git`
+    //       Mimics pacman -S behavior for official repos (reinstall even if installed)
+}
+
 test "given multiple packages when resolving then batches AUR requests" {
     // Given: Dependencies ["aur-a", "aur-b", "aur-c"] need AUR lookup
     // When: Resolution encounters these packages

@@ -573,20 +573,28 @@ sequenceDiagram
 ```mermaid
 flowchart TD
     A[Target packages] --> B[Registry: classify each]
-    B --> C{Source?}
+    B --> P{Provider redirect?}
+    P -->|Yes| PR[Redirect to provider name]
+    PR --> B
+    P -->|No| C{Source?}
     C -->|SATISFIED_REPO| D1[Skip - installed from repos]
-    C -->|SATISFIED_AUR| D2[Skip - installed from AUR]
+    C -->|SATISFIED_AUR| SA{Target?}
+    SA -->|No| D2[Skip - installed from AUR]
+    SA -->|Yes| SAT{--rebuild or AUR newer?}
+    SAT -->|Yes| F
+    SAT -->|No| SAR[Reinstall from aurpkgs if available]
     C -->|REPOS| E[Add to repo_deps list]
-    C -->|REPO_AUR| R[Skip - available in aurpkgs]
-    C -->|AUR| F[Fetch AUR metadata]
+    C -->|REPO_AUR| R{Target?}
+    R -->|Target: compare versions| V{AUR newer or --rebuild?}
+    R -->|Dep| D2b2[Skip - available in aurpkgs]
+    V -->|Yes| F[Fetch AUR metadata]
+    V -->|No| D2b[Skip - aurpkgs version current]
+    C -->|AUR| F
     C -->|UNKNOWN| G[Error: unresolvable]
     F --> H[Extract depends + makedepends]
     H --> I[Registry: classify each dependency]
     I --> B
     F --> J[Add to dependency graph]
-    R -->|Target: compare versions| V{AUR newer?}
-    V -->|Yes| F
-    V -->|No| D2b[Skip - aurpkgs version current]
     J --> K[Topological sort via Kahn's]
     K --> L{Remaining edges?}
     L -->|Yes| M[Error: circular dependency]
