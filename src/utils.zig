@@ -2,7 +2,6 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 /// Max output size we'll capture from a child process.
-/// 10MB is generous for git/repo-add output. makepkg uses the tee variant.
 const MAX_OUTPUT = 10 * 1024 * 1024;
 
 pub const ProcessResult = struct {
@@ -32,7 +31,6 @@ fn termToExitCode(term: std.process.Child.Term) u8 {
 ///
 /// Both stdout and stderr are fully captured into memory. This is appropriate
 /// for short-lived commands (git, repo-add) where output is small.
-/// For long-running commands with large output (makepkg), use runCommandWithLog.
 pub fn runCommand(
     allocator: Allocator,
     argv: []const []const u8,
@@ -62,73 +60,21 @@ pub fn runCommandIn(
     };
 }
 
-/// Spawn a process, tee its stdout to both the terminal and a log file,
-/// capture stderr, and return the result.
-///
-/// Used for makepkg builds where the user needs real-time feedback
-/// AND we need a log file for debugging failed builds.
-pub fn runCommandWithLog(
+/// Spawn a process with inherited stdio (stdin/stdout/stderr).
+/// Returns only the exit code. Use for long-running interactive commands
+/// like makepkg where the user needs real-time terminal output.
+pub fn runInteractive(
     allocator: Allocator,
     argv: []const []const u8,
     cwd: ?[]const u8,
-    log_path: []const u8,
-) !ProcessResult {
+) !u8 {
     if (argv.len == 0) return error.SpawnFailed;
 
-    // Ensure log directory exists
-    if (std.fs.path.dirname(log_path)) |log_dir| {
-        std.fs.cwd().makePath(log_dir) catch {};
-    }
-
-    // Open log file (truncate if exists — each build starts fresh)
-    const log_file = try std.fs.cwd().createFile(log_path, .{ .truncate = true });
-    defer log_file.close();
-
     var child = std.process.Child.init(argv, allocator);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
     child.cwd = cwd;
-
     try child.spawn();
-
-    // Tee stdout: read chunks, write to both terminal and log file
-    const stdout_file = child.stdout.?;
-    var stdout_buf: std.ArrayList(u8) = .empty;
-    defer stdout_buf.deinit(allocator);
-
-    var read_buf: [4096]u8 = undefined;
-    while (true) {
-        const n = stdout_file.read(&read_buf) catch break;
-        if (n == 0) break;
-
-        const chunk = read_buf[0..n];
-
-        // Write to terminal (real-time display)
-        const terminal: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
-        terminal.writeAll(chunk) catch {};
-
-        // Write to log file
-        log_file.writeAll(chunk) catch {};
-
-        // Accumulate in buffer (for ProcessResult.stdout)
-        stdout_buf.appendSlice(allocator, chunk) catch {};
-
-        // Guard against unbounded memory growth
-        if (stdout_buf.items.len > MAX_OUTPUT) {
-            stdout_buf.clearRetainingCapacity();
-        }
-    }
-
-    // Capture stderr (typically small for makepkg)
-    const stderr = try child.stderr.?.readToEndAlloc(allocator, MAX_OUTPUT);
-
     const term = try child.wait();
-
-    return .{
-        .exit_code = termToExitCode(term),
-        .stdout = try stdout_buf.toOwnedSlice(allocator),
-        .stderr = stderr,
-    };
+    return termToExitCode(term);
 }
 
 /// Run a command with privilege escalation (captured I/O).

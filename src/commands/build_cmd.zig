@@ -484,7 +484,7 @@ pub fn clean(self: *Commands) !ExitCode {
     const plan = try repository.clean(installed_names.items);
     defer repository.freeCleanResult(plan);
 
-    if (plan.removed_clones.len == 0 and plan.removed_logs.len == 0) {
+    if (plan.removed_clones.len == 0) {
         if (!self.flags.quiet) {
             getStdout().writeAll(" nothing to clean\n") catch {};
         }
@@ -497,13 +497,6 @@ pub fn clean(self: *Commands) !ExitCode {
         stdout.print(":: Stale clone directories ({d}):\n", .{plan.removed_clones.len}) catch {};
         for (plan.removed_clones) |name| {
             stdout.print("  {s}/\n", .{name}) catch {};
-        }
-    }
-
-    if (plan.removed_logs.len > 0) {
-        stdout.print(":: Stale build logs ({d}):\n", .{plan.removed_logs.len}) catch {};
-        for (plan.removed_logs) |name| {
-            stdout.print("  {s}\n", .{name}) catch {};
         }
     }
 
@@ -553,9 +546,6 @@ fn buildLoop(
         const clone_dir = try git.cloneDir(self.allocator, c_root, entry.pkgbase);
         defer self.allocator.free(clone_dir);
 
-        const log_path = try std.fs.path.join(self.allocator, &.{ repository.log_dir, entry.pkgbase });
-        defer self.allocator.free(log_path);
-
         getStdout().print(":: building {s} {s}...\n", .{ entry.name, entry.version }) catch {};
 
         // Run makepkg -s (--syncdeps installs missing deps as --asdeps)
@@ -563,21 +553,18 @@ fn buildLoop(
             &.{ "makepkg", "-sf", "--noconfirm" }
         else
             &.{ "makepkg", "-s", "--noconfirm" };
-        const makepkg_result = try utils.runCommandWithLog(
+        const exit_code = try utils.runInteractive(
             self.allocator,
             makepkg_args,
             clone_dir,
-            log_path,
         );
-        defer makepkg_result.deinit(self.allocator);
 
-        if (makepkg_result.exit_code != 0) {
+        if (exit_code != 0) {
             // Signal-killed (e.g., Ctrl+C -> SIGINT -> exit 130)
-            if (makepkg_result.exit_code >= 128) {
+            if (exit_code >= 128) {
                 try failed.append(self.allocator, .{
                     .pkgbase = entry.pkgbase,
-                    .exit_code = makepkg_result.exit_code,
-                    .log_path = log_path,
+                    .exit_code = exit_code,
                 });
                 return .{
                     .succeeded = try succeeded.toOwnedSlice(self.allocator),
@@ -586,16 +573,14 @@ fn buildLoop(
                 };
             }
 
-            getStderr().print("error: build failed for {s} (exit {d})\n  log: {s}\n", .{
+            getStderr().print("error: build failed for {s} (exit {d})\n", .{
                 entry.pkgbase,
-                makepkg_result.exit_code,
-                log_path,
+                exit_code,
             }) catch {};
 
             try failed.append(self.allocator, .{
                 .pkgbase = entry.pkgbase,
-                .exit_code = makepkg_result.exit_code,
-                .log_path = log_path,
+                .exit_code = exit_code,
             });
             try failed_bases.put(self.allocator, entry.pkgbase, {});
             continue;
@@ -607,7 +592,6 @@ fn buildLoop(
             try failed.append(self.allocator, .{
                 .pkgbase = entry.pkgbase,
                 .exit_code = 0,
-                .log_path = log_path,
             });
             try failed_bases.put(self.allocator, entry.pkgbase, {});
             continue;
@@ -782,10 +766,9 @@ fn printBuildSummary(result: BuildResult) void {
         result.failed.len,
     }) catch {};
     for (result.failed) |f| {
-        stderr.print("  FAILED: {s} (exit {d}) -- log: {s}\n", .{
+        stderr.print("  FAILED: {s} (exit {d})\n", .{
             f.pkgbase,
             f.exit_code,
-            f.log_path,
         }) catch {};
     }
 }

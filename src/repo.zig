@@ -18,7 +18,6 @@ pub const RepoPackage = struct {
 
 pub const CleanResult = struct {
     removed_clones: []const []const u8,
-    removed_logs: []const []const u8,
     bytes_freed: u64,
 };
 
@@ -39,7 +38,6 @@ pub const Repository = struct {
     allocator: Allocator,
     repo_dir: []const u8,
     db_path: []const u8,
-    log_dir: []const u8,
     cache_dir: []const u8,
     makepkg_conf: MakepkgConfig,
     skip_repo_add: bool,
@@ -76,14 +74,12 @@ pub const Repository = struct {
     fn initFromParts(allocator: Allocator, cache_dir: []const u8, repo_dir: []const u8, conf: MakepkgConfig) !Repository {
         const db_path = try std.fs.path.join(allocator, &.{ repo_dir, DB_FILENAME });
         errdefer allocator.free(db_path);
-        const log_dir = try std.fs.path.join(allocator, &.{ cache_dir, "logs" });
 
         return .{
             .allocator = allocator,
             .cache_dir = cache_dir,
             .repo_dir = repo_dir,
             .db_path = db_path,
-            .log_dir = log_dir,
             .makepkg_conf = conf,
             .skip_repo_add = false,
         };
@@ -91,7 +87,6 @@ pub const Repository = struct {
 
     pub fn deinit(self: *Repository) void {
         self.makepkg_conf.deinit(self.allocator);
-        self.allocator.free(self.log_dir);
         self.allocator.free(self.db_path);
         self.allocator.free(self.repo_dir);
         self.allocator.free(self.cache_dir);
@@ -103,7 +98,6 @@ pub const Repository = struct {
     /// Idempotent — safe to call multiple times.
     pub fn ensureExists(self: *const Repository) !void {
         try std.fs.cwd().makePath(self.repo_dir);
-        try std.fs.cwd().makePath(self.log_dir);
     }
 
     // ── Package Addition ─────────────────────────────────────────────────
@@ -264,7 +258,6 @@ pub const Repository = struct {
             while (try it.next()) |entry| {
                 if (entry.kind != .directory) continue;
                 if (std.mem.eql(u8, entry.name, REPO_NAME)) continue;
-                if (std.mem.eql(u8, entry.name, "logs")) continue;
 
                 if (!installed.contains(entry.name)) {
                     try stale_clones.append(self.allocator, try self.allocator.dupe(u8, entry.name));
@@ -272,30 +265,8 @@ pub const Repository = struct {
             }
         } else |_| {}
 
-        // Find stale logs
-        var stale_logs: std.ArrayList([]const u8) = .empty;
-        errdefer {
-            for (stale_logs.items) |s| self.allocator.free(s);
-            stale_logs.deinit(self.allocator);
-        }
-
-        if (std.fs.cwd().openDir(self.log_dir, .{ .iterate = true })) |dir_handle| {
-            var log_dir = dir_handle;
-            defer log_dir.close();
-
-            var log_it = log_dir.iterate();
-            while (try log_it.next()) |entry| {
-                if (entry.kind != .file) continue;
-                const stem = stripExtension(entry.name);
-                if (!installed.contains(stem)) {
-                    try stale_logs.append(self.allocator, try self.allocator.dupe(u8, entry.name));
-                }
-            }
-        } else |_| {}
-
         return .{
             .removed_clones = try stale_clones.toOwnedSlice(self.allocator),
-            .removed_logs = try stale_logs.toOwnedSlice(self.allocator),
             .bytes_freed = 0,
         };
     }
@@ -307,20 +278,12 @@ pub const Repository = struct {
             defer self.allocator.free(path);
             std.fs.cwd().deleteTree(path) catch {};
         }
-
-        for (plan.removed_logs) |name| {
-            const path = std.fs.path.join(self.allocator, &.{ self.log_dir, name }) catch continue;
-            defer self.allocator.free(path);
-            std.fs.cwd().deleteFile(path) catch {};
-        }
     }
 
     /// Free a CleanResult's allocated slices.
     pub fn freeCleanResult(self: *const Repository, result: CleanResult) void {
         for (result.removed_clones) |s| self.allocator.free(s);
         self.allocator.free(result.removed_clones);
-        for (result.removed_logs) |s| self.allocator.free(s);
-        self.allocator.free(result.removed_logs);
     }
 };
 
@@ -447,14 +410,6 @@ fn stripQuotes(val: []const u8) []const u8 {
         }
     }
     return val;
-}
-
-/// Strip the file extension (everything after the last dot).
-fn stripExtension(filename: []const u8) []const u8 {
-    if (std.mem.lastIndexOfScalar(u8, filename, '.')) |dot| {
-        return filename[0..dot];
-    }
-    return filename;
 }
 
 fn dirExists(path: []const u8) bool {
@@ -602,7 +557,6 @@ test "ensureExists creates directories" {
     try repo.ensureExists();
 
     try std.testing.expect(dirExists(repo.repo_dir));
-    try std.testing.expect(dirExists(repo.log_dir));
 }
 
 test "ensureExists is idempotent" {
@@ -794,7 +748,7 @@ test "listPackages skips database files" {
     try std.testing.expectEqualStrings("yay", pkgs[0].name);
 }
 
-test "clean identifies stale clones and logs" {
+test "clean identifies stale clones" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -814,13 +768,6 @@ test "clean identifies stale clones and logs" {
     defer std.testing.allocator.free(paru_path);
     try std.fs.cwd().makePath(paru_path);
 
-    // Create log files
-    var log_dir = try std.fs.cwd().openDir(repo.log_dir, .{});
-    defer log_dir.close();
-    try log_dir.writeFile(.{ .sub_path = "yay.log", .data = "log" });
-    try log_dir.writeFile(.{ .sub_path = "paru.log", .data = "log" });
-    try log_dir.writeFile(.{ .sub_path = "orphan.log", .data = "log" });
-
     // Only "yay" is installed
     const result = try repo.clean(&.{"yay"});
     defer repo.freeCleanResult(result);
@@ -828,12 +775,9 @@ test "clean identifies stale clones and logs" {
     // "paru" should be stale (not installed)
     try std.testing.expectEqual(@as(usize, 1), result.removed_clones.len);
     try std.testing.expectEqualStrings("paru", result.removed_clones[0]);
-
-    // "paru.log" and "orphan.log" should be stale
-    try std.testing.expectEqual(@as(usize, 2), result.removed_logs.len);
 }
 
-test "clean skips aurpkgs and logs directories" {
+test "clean skips aurpkgs directory" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -848,10 +792,9 @@ test "clean skips aurpkgs and logs directories" {
     const result = try repo.clean(&.{});
     defer repo.freeCleanResult(result);
 
-    // aurpkgs and logs should not appear as stale clones
+    // aurpkgs should not appear as stale clones
     for (result.removed_clones) |name| {
         try std.testing.expect(!std.mem.eql(u8, name, REPO_NAME));
-        try std.testing.expect(!std.mem.eql(u8, name, "logs"));
     }
 }
 
@@ -915,11 +858,4 @@ test "Repository paths are correct" {
 
     try std.testing.expect(std.mem.endsWith(u8, repo.repo_dir, "/aurpkgs"));
     try std.testing.expect(std.mem.endsWith(u8, repo.db_path, "/aurpkgs/aurpkgs.db.tar.xz"));
-    try std.testing.expect(std.mem.endsWith(u8, repo.log_dir, "/logs"));
-}
-
-test "stripExtension works correctly" {
-    try std.testing.expectEqualStrings("yay", stripExtension("yay.log"));
-    try std.testing.expectEqualStrings("yay.build", stripExtension("yay.build.log"));
-    try std.testing.expectEqualStrings("noext", stripExtension("noext"));
 }

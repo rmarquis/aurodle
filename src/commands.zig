@@ -62,7 +62,6 @@ pub const ReviewDecision = enum {
 pub const FailedBuild = struct {
     pkgbase: []const u8,
     exit_code: u32,
-    log_path: []const u8,
 };
 
 pub const BuildResult = struct {
