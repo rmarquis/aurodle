@@ -647,6 +647,7 @@ fn reviewPackages(
     c_root: []const u8,
 ) !cmds.ReviewDecision {
     const stdout = getStdout();
+    const editor = getEditor();
 
     for (entries) |entry| {
         stdout.print("\n:: Reviewing {s} {s}\n", .{ entry.pkgbase, entry.version }) catch {};
@@ -660,28 +661,18 @@ fn reviewPackages(
             }
         }
 
-        // List files
-        const files = git.listFiles(self.allocator, c_root, entry.pkgbase) catch {
-            stdout.writeAll("  (could not list files)\n") catch {};
+        // Open clone directory in editor for review
+        const clone_dir = try git.cloneDir(self.allocator, c_root, entry.pkgbase);
+        defer self.allocator.free(clone_dir);
+
+        const exit_code = utils.runInteractive(self.allocator, &.{ editor, clone_dir }, null) catch {
+            stdout.writeAll("  (could not open editor)\n") catch {};
             continue;
         };
-        defer {
-            for (files) |f| self.allocator.free(f.name);
-            self.allocator.free(files);
+
+        if (exit_code != 0) {
+            stdout.print("  editor exited with {d}\n", .{exit_code}) catch {};
         }
-
-        for (files) |file| {
-            stdout.print("  {s}\n", .{file.name}) catch {};
-        }
-
-        // Display PKGBUILD
-        const content = git.readFile(self.allocator, c_root, entry.pkgbase, "PKGBUILD") catch {
-            stdout.writeAll("  (could not read PKGBUILD)\n") catch {};
-            continue;
-        };
-        defer self.allocator.free(content);
-
-        stdout.print("--- PKGBUILD ---\n{s}\n--- end ---\n", .{content}) catch {};
 
         // Multi-option prompt
         stdout.writeAll("[p]roceed / [s]kip remaining reviews / [a]bort? ") catch {};
@@ -699,6 +690,12 @@ fn reviewPackages(
     }
 
     return .proceed;
+}
+
+fn getEditor() []const u8 {
+    if (std.posix.getenv("VISUAL")) |v| if (v.len > 0) return v;
+    if (std.posix.getenv("EDITOR")) |e| if (e.len > 0) return e;
+    return "vim";
 }
 
 // ── Install ──────────────────────────────────────────────────────────
