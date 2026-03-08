@@ -177,16 +177,25 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
     defer plan.deinit(self.allocator);
 
     if (plan.build_order.len == 0) {
-        // Check for repo_aur targets: available in aurpkgs but not installed.
-        var repo_aur_targets: std.ArrayListUnmanaged([]const u8) = .empty;
-        defer repo_aur_targets.deinit(self.allocator);
+        // Check for targets available in aurpkgs: either not installed (repo_aur)
+        // or already installed (satisfied_aur) — reinstall like pacman -S would.
+        var aurpkgs_targets: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer aurpkgs_targets.deinit(self.allocator);
         for (plan.all_deps) |dep| {
-            if (dep.is_target and dep.source == .repo_aur) {
-                try repo_aur_targets.append(self.allocator, dep.name);
+            if (!dep.is_target) continue;
+            if (dep.source == .repo_aur) {
+                try aurpkgs_targets.append(self.allocator, dep.name);
+            } else if (dep.source == .satisfied_aur) {
+                // Reinstall if available in aurpkgs repo
+                if (self.pacman) |pm| {
+                    if (std.mem.eql(u8, pm.syncDbFor(dep.name) orelse "", "aurpkgs")) {
+                        try aurpkgs_targets.append(self.allocator, dep.name);
+                    }
+                }
             }
         }
-        if (repo_aur_targets.items.len > 0) {
-            try installTargets(self, repo_aur_targets.items);
+        if (aurpkgs_targets.items.len > 0) {
+            try installTargets(self, aurpkgs_targets.items);
             return .success;
         }
         getStdout().writeAll(" nothing to do -- all targets are up to date\n") catch {};
