@@ -213,11 +213,7 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
 
     // Phase 4: Review (unless --noshow)
     if (!self.flags.noshow) {
-        const decision = try reviewPackages(self, plan.build_order, c_root);
-        switch (decision) {
-            .abort => return .success,
-            .skip, .proceed => {},
-        }
+        try reviewPackages(self, plan.build_order, c_root);
     }
 
     // Phase 5: Build
@@ -296,8 +292,7 @@ pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
 
     // Review
     if (!self.flags.noshow) {
-        const decision = try reviewPackages(self, plan.build_order, c_root);
-        if (decision == .abort) return .success;
+        try reviewPackages(self, plan.build_order, c_root);
     }
 
     // Build
@@ -645,51 +640,32 @@ fn reviewPackages(
     self: *Commands,
     entries: []const solver_mod.BuildEntry,
     c_root: []const u8,
-) !cmds.ReviewDecision {
+) !void {
     const stdout = getStdout();
     const editor = getEditor();
 
     for (entries) |entry| {
-        stdout.print("\n:: Reviewing {s} {s}\n", .{ entry.pkgbase, entry.version }) catch {};
+        const msg = try std.fmt.allocPrint(self.allocator, "Review {s} files?", .{entry.pkgbase});
+        defer self.allocator.free(msg);
+        const review = try utils.promptYesNo(msg);
 
-        // Check for changes since last build
-        const diff = git.diffSinceLastPull(self.allocator, c_root, entry.pkgbase) catch null;
-        if (diff) |d| {
-            defer self.allocator.free(d);
-            if (d.len == 0) {
-                stdout.writeAll("   (no changes since last build)\n") catch {};
+        if (review) {
+            const clone_dir = try git.cloneDir(self.allocator, c_root, entry.pkgbase);
+            defer self.allocator.free(clone_dir);
+
+            const exit_code = utils.runInteractive(self.allocator, &.{ editor, clone_dir }, null) catch {
+                stdout.writeAll("  (could not open editor)\n") catch {};
+                continue;
+            };
+
+            if (exit_code != 0) {
+                stdout.print("  editor exited with {d}\n", .{exit_code}) catch {};
             }
-        }
 
-        // Open clone directory in editor for review
-        const clone_dir = try git.cloneDir(self.allocator, c_root, entry.pkgbase);
-        defer self.allocator.free(clone_dir);
-
-        const exit_code = utils.runInteractive(self.allocator, &.{ editor, clone_dir }, null) catch {
-            stdout.writeAll("  (could not open editor)\n") catch {};
-            continue;
-        };
-
-        if (exit_code != 0) {
-            stdout.print("  editor exited with {d}\n", .{exit_code}) catch {};
-        }
-
-        // Multi-option prompt
-        stdout.writeAll("[p]roceed / [s]kip remaining reviews / [a]bort? ") catch {};
-        const stdin_file: std.fs.File = .{ .handle = std.posix.STDIN_FILENO };
-        const stdin_reader = stdin_file.deprecatedReader();
-        const byte = stdin_reader.readByte() catch return .proceed;
-        // Consume rest of line
-        stdin_reader.skipUntilDelimiterOrEof('\n') catch {};
-
-        switch (byte) {
-            'a', 'A' => return .abort,
-            's', 'S' => return .proceed,
-            else => continue,
+            stdout.print(":: {s} files reviewed\n", .{entry.pkgbase}) catch {};
         }
     }
 
-    return .proceed;
 }
 
 fn getEditor() []const u8 {

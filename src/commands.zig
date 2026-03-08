@@ -53,12 +53,6 @@ pub const SortField = enum {
     }
 };
 
-pub const ReviewDecision = enum {
-    proceed,
-    skip,
-    abort,
-};
-
 pub const FailedBuild = struct {
     pkgbase: []const u8,
     exit_code: u32,
