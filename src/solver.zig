@@ -149,9 +149,9 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                     if (node.meta.pkgbase == null) {
                         node.meta.pkgbase = pkg.pkgbase;
                     }
-                    // For targets in aurpkgs: compare versions or force rebuild.
+                    // For AUR targets: compare versions or force rebuild.
                     // Reclassify as .aur if AUR is newer or --rebuild is set.
-                    if (node.meta.source == .repo_aur and self.targets.contains(name)) {
+                    if ((node.meta.source == .repo_aur or node.meta.source == .satisfied_aur) and self.targets.contains(name)) {
                         const dominated = if (node.meta.version) |local_ver|
                             alpm.vercmp(pkg.version, local_ver) > 0
                         else
@@ -1085,6 +1085,28 @@ test "resolve keeps repo_aur target when aurpkgs version matches AUR" {
             try testing.expectEqual(registry_mod.Source.repo_aur, dep.source);
         }
     }
+}
+
+test "rebuild reclassifies satisfied_aur target into build plan" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // pacaur is installed (satisfied_aur) with same version as AUR
+    mock.addSatisfiedWithAurDeps("pacaur", "4.8.6-2", &.{"auracle-git"}, &.{});
+    mock.addAurPackage("auracle-git", &.{}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    s.rebuild = true;
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"pacaur"});
+    defer plan.deinit(testing.allocator);
+
+    // pacaur should be in build_order despite being up-to-date
+    var found_pacaur = false;
+    for (plan.build_order) |entry| {
+        if (std.mem.eql(u8, entry.name, "pacaur")) found_pacaur = true;
+    }
+    try testing.expect(found_pacaur);
 }
 
 test "resolve does not version-check repo_aur dependencies" {
