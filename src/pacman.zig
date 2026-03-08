@@ -55,6 +55,7 @@ pub const Pacman = struct {
     sync_dbs: []alpm.Database,
     aurpkgs_db: ?alpm.Database,
     owns_sync_dbs: bool,
+    verbose_pkg_lists: bool = false,
 
     /// Initialize by parsing /etc/pacman.conf and registering all
     /// discovered sync databases.
@@ -62,11 +63,11 @@ pub const Pacman = struct {
         var handle = try alpm.Handle.init("/", "/var/lib/pacman/");
         errdefer handle.deinit();
 
-        const sync_dbs = try registerSyncDbs(allocator, handle);
-        errdefer allocator.free(sync_dbs);
+        const conf = try registerSyncDbs(allocator, handle);
+        errdefer allocator.free(conf.sync_dbs);
 
         var aurpkgs_db: ?alpm.Database = null;
-        for (sync_dbs) |db| {
+        for (conf.sync_dbs) |db| {
             if (std.mem.eql(u8, db.getName(), "aurpkgs")) {
                 aurpkgs_db = db;
                 break;
@@ -77,9 +78,10 @@ pub const Pacman = struct {
             .allocator = allocator,
             .handle = handle,
             .local_db = handle.getLocalDb(),
-            .sync_dbs = sync_dbs,
+            .sync_dbs = conf.sync_dbs,
             .aurpkgs_db = aurpkgs_db,
             .owns_sync_dbs = true,
+            .verbose_pkg_lists = conf.verbose_pkg_lists,
         };
     }
 
@@ -325,9 +327,14 @@ fn findProviderInDb(db: alpm.Database, dep: []const u8) ?ProviderMatch {
     return null;
 }
 
+const PacmanConf = struct {
+    sync_dbs: []alpm.Database,
+    verbose_pkg_lists: bool,
+};
+
 /// Parse /etc/pacman.conf and register each [repo] section as a sync database.
 /// Handles Include directives for mirror server lists.
-fn registerSyncDbs(allocator: Allocator, handle: alpm.Handle) ![]alpm.Database {
+fn registerSyncDbs(allocator: Allocator, handle: alpm.Handle) !PacmanConf {
     var dbs: std.ArrayList(alpm.Database) = .empty;
     defer dbs.deinit(allocator);
 
@@ -341,6 +348,8 @@ fn registerSyncDbs(allocator: Allocator, handle: alpm.Handle) ![]alpm.Database {
     const content = buf[0..len];
 
     var current_repo: ?alpm.Database = null;
+    var in_options = false;
+    var verbose_pkg_lists = false;
     var lines = std.mem.splitScalar(u8, content, '\n');
 
     while (lines.next()) |line| {
@@ -354,8 +363,10 @@ fn registerSyncDbs(allocator: Allocator, handle: alpm.Handle) ![]alpm.Database {
             const name = trimmed[1 .. trimmed.len - 1];
             if (std.mem.eql(u8, name, "options")) {
                 current_repo = null;
+                in_options = true;
                 continue;
             }
+            in_options = false;
 
             const db = handle.registerSyncDb(name, .use_default) catch {
                 current_repo = null;
@@ -364,6 +375,11 @@ fn registerSyncDbs(allocator: Allocator, handle: alpm.Handle) ![]alpm.Database {
             try dbs.append(allocator, db);
             current_repo = db;
             continue;
+        }
+
+        // Options section directives
+        if (in_options and std.mem.eql(u8, trimmed, "VerbosePkgLists")) {
+            verbose_pkg_lists = true;
         }
 
         // Include directive: add servers from mirrorlist file
@@ -381,7 +397,10 @@ fn registerSyncDbs(allocator: Allocator, handle: alpm.Handle) ![]alpm.Database {
         }
     }
 
-    return try dbs.toOwnedSlice(allocator);
+    return .{
+        .sync_dbs = try dbs.toOwnedSlice(allocator),
+        .verbose_pkg_lists = verbose_pkg_lists,
+    };
 }
 
 /// Read a mirrorlist file and add each Server= URL to the database.

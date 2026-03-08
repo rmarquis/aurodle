@@ -180,9 +180,46 @@ pub const Commands = struct {
 
 pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman) void {
     const stdout = getStdout();
+    const verbose = if (pm) |p| p.verbose_pkg_lists else false;
 
     stdout.writeAll("resolving dependencies...\n") catch {};
 
+    if (verbose) {
+        displayPlanVerbose(plan, pm, stdout);
+    } else {
+        displayPlanCompact(plan, pm, stdout);
+    }
+
+    stdout.writeByte('\n') catch {};
+}
+
+fn displayPlanCompact(
+    plan: solver_mod.BuildPlan,
+    pm: ?*pacman_mod.Pacman,
+    stdout: anytype,
+) void {
+    if (plan.build_order.len > 0) {
+        stdout.print("\nAUR Packages ({d})", .{plan.build_order.len}) catch {};
+        for (plan.build_order) |entry| {
+            stdout.print("  {s}-{s}", .{ entry.name, entry.version }) catch {};
+        }
+        stdout.writeByte('\n') catch {};
+    }
+    if (plan.repo_deps.len > 0) {
+        stdout.print("\nRepo Packages ({d})", .{plan.repo_deps.len}) catch {};
+        for (plan.repo_deps) |dep| {
+            const ver = if (pm) |p| p.syncVersion(dep) orelse "?" else "?";
+            stdout.print("  {s}-{s}", .{ dep, ver }) catch {};
+        }
+        stdout.writeByte('\n') catch {};
+    }
+}
+
+fn displayPlanVerbose(
+    plan: solver_mod.BuildPlan,
+    pm: ?*pacman_mod.Pacman,
+    stdout: anytype,
+) void {
     // Compute column widths across both sections
     var name_col: usize = 0;
     var old_col: usize = 0;
@@ -257,8 +294,6 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman) void {
             stdout.print("{s}\n", .{ver}) catch {};
         }
     }
-
-    stdout.writeByte('\n') catch {};
 }
 
 fn pad(writer: anytype, current: usize, col: usize) void {
