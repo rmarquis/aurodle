@@ -239,24 +239,28 @@ fn displayPlanCompact(
     }
 }
 
+const hdr_aur = "AUR Package ()";
+const hdr_repo = "Repo Package ()";
+const hdr_old_ver = "Old Version";
+const hdr_new_ver = "New Version";
+
 fn displayPlanVerbose(
     plan: solver_mod.BuildPlan,
     pm: ?*pacman_mod.Pacman,
     stdout: anytype,
 ) void {
-    // Compute column widths across both sections
+    // Compute column widths across both sections, seeded from headers
     var name_col: usize = 0;
-    var old_col: usize = 0;
+    var old_col: usize = hdr_old_ver.len;
     var has_old_version = false;
 
-    // Include header widths: "AUR Package (N)" / "Repo Package (N)"
     if (plan.build_order.len > 0) {
-        const w = "AUR Package ()".len + countDigits(plan.build_order.len);
+        const w = hdr_aur.len + countDigits(plan.build_order.len);
         if (w > name_col) name_col = w;
     }
     const repo_count = plan.repo_deps.len + plan.repo_targets.len;
     if (repo_count > 0) {
-        const w = "Repo Package ()".len + countDigits(repo_count);
+        const w = hdr_repo.len + countDigits(repo_count);
         if (w > name_col) name_col = w;
     }
 
@@ -283,13 +287,13 @@ fn displayPlanVerbose(
     // AUR section
     if (plan.build_order.len > 0) {
         stdout.writeByte('\n') catch {};
-        stdout.print("AUR Package ({d})", .{plan.build_order.len}) catch {};
-        pad(stdout, countDigits(plan.build_order.len) + "AUR Package ()".len, name_col);
+        stdout.print(hdr_aur[0 .. hdr_aur.len - 1] ++ "{d})", .{plan.build_order.len}) catch {};
+        pad(stdout, countDigits(plan.build_order.len) + hdr_aur.len, name_col);
         if (has_old_version) {
-            stdout.writeAll("Old Version") catch {};
-            pad(stdout, "Old Version".len, old_col);
+            stdout.writeAll(hdr_old_ver) catch {};
+            pad(stdout, hdr_old_ver.len, old_col);
         }
-        stdout.writeAll("New Version\n\n") catch {};
+        stdout.writeAll(hdr_new_ver ++ "\n\n") catch {};
 
         for (plan.build_order) |entry| {
             stdout.writeAll(entry.name) catch {};
@@ -306,9 +310,9 @@ fn displayPlanVerbose(
     // Repo section (targets + deps combined)
     if (repo_count > 0) {
         stdout.writeByte('\n') catch {};
-        stdout.print("Repo Package ({d})", .{repo_count}) catch {};
-        pad(stdout, countDigits(repo_count) + "Repo Package ()".len, name_col);
-        stdout.writeAll("New Version\n\n") catch {};
+        stdout.print(hdr_repo[0 .. hdr_repo.len - 1] ++ "{d})", .{repo_count}) catch {};
+        pad(stdout, countDigits(repo_count) + hdr_repo.len, name_col);
+        stdout.writeAll(hdr_new_ver ++ "\n\n") catch {};
 
         const repo_lists = [_][]const []const u8{ plan.repo_targets, plan.repo_deps };
         for (repo_lists) |list| {
