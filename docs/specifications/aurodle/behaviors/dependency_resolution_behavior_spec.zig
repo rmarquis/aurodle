@@ -86,6 +86,23 @@ test "given installed AUR target when syncing without rebuild then reinstalls fr
     //       Mimics pacman -S behavior for official repos (reinstall even if installed)
 }
 
+test "given repo package as explicit target when resolving then classifies as repo_target" {
+    // Given: "expac" is an official repo package (installed or not)
+    // When: `aurodle sync expac` is executed (expac is a target, not a transitive dep)
+    // Then: "expac" appears in BuildPlan.repo_targets (not repo_deps)
+    //       Solver separates explicitly-targeted repo packages from transitive repo deps
+    //       This matches `pacman -S` semantics: naming a package reinstalls it
+}
+
+test "given mixed AUR and repo targets when resolving then separates repo_targets from repo_deps" {
+    // Given: User targets "aurpkg" (AUR) and "expac" (repos)
+    //        "aurpkg" depends on "zlib" (repos)
+    // When: solver.resolve(["aurpkg", "expac"]) is called
+    // Then: "aurpkg" is in build_order (AUR, needs building)
+    //       "zlib" is in repo_deps (transitive dependency)
+    //       "expac" is in repo_targets (explicitly targeted repo package)
+}
+
 test "given multiple packages when resolving then batches AUR requests" {
     // Given: Dependencies ["aur-a", "aur-b", "aur-c"] need AUR lookup
     // When: Resolution encounters these packages

@@ -281,8 +281,10 @@ graph TB
           build_order: []const BuildEntry,
           /// All classified dependencies (for display)
           all_deps: []const DependencyEntry,
-          /// Packages that need to be installed from repos first
+          /// Packages that need to be installed from repos first (transitive deps)
           repo_deps: []const []const u8,
+          /// Repo packages explicitly requested by the user (reinstalled via pacman -S)
+          repo_targets: []const []const u8,
       };
 
       pub const BuildEntry = struct {
@@ -300,7 +302,7 @@ graph TB
       };
   };
   ```
-- **Hidden Complexity**: Recursive dependency graph construction with cycle detection (via coloring: white/gray/black), pkgname-to-pkgbase deduplication (multiple pkgnames may share a pkgbase — only build once), topological sort using Kahn's algorithm, dependency type handling (depends vs makedepends vs checkdepends), the distinction between "needed for build order" and "needed for display".
+- **Hidden Complexity**: Recursive dependency graph construction with cycle detection (via coloring: white/gray/black), pkgname-to-pkgbase deduplication (multiple pkgnames may share a pkgbase — only build once), topological sort using Kahn's algorithm, dependency type handling (depends vs makedepends vs checkdepends), the distinction between "needed for build order" and "needed for display", and target-vs-dependency classification for repo packages (repo_targets vs repo_deps).
 - **Depth Score**: **Deep** — A single `resolve()` call hides the entire graph algorithm pipeline. The caller gets a ready-to-execute build plan.
 
 ---
@@ -564,7 +566,8 @@ sequenceDiagram
         C->>RE: addPackages(built_pkgs)
         C->>P: refreshDb("aurpkgs")
     end
-    Note over C: Install targets via pacman -S
+    Note over C: Install AUR targets via pacman -S aurpkgs/name
+    Note over C: Install repo targets via pacman -S repo/name
     C->>U: Done
 ```
 
@@ -577,13 +580,17 @@ flowchart TD
     P -->|Yes| PR[Redirect to provider name]
     PR --> B
     P -->|No| C{Source?}
-    C -->|SATISFIED_REPO| D1[Skip - installed from repos]
+    C -->|SATISFIED_REPO| SR{Target?}
+    SR -->|No| D1[Skip - installed from repos]
+    SR -->|Yes| SRT[Add to repo_targets list]
     C -->|SATISFIED_AUR| SA{Target?}
     SA -->|No| D2[Skip - installed from AUR]
     SA -->|Yes| SAT{--rebuild or AUR newer?}
     SAT -->|Yes| F
     SAT -->|No| SAR[Reinstall from aurpkgs if available]
-    C -->|REPOS| E[Add to repo_deps list]
+    C -->|REPOS| RE2{Target?}
+    RE2 -->|Yes| RT[Add to repo_targets list]
+    RE2 -->|No| E[Add to repo_deps list]
     C -->|REPO_AUR| R{Target?}
     R -->|Target: compare versions| V{AUR newer or --rebuild?}
     R -->|Dep| D2b2[Skip - available in aurpkgs]

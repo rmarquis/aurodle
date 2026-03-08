@@ -21,7 +21,8 @@ test "given aurodle sync <packages> when executed then runs full workflow" {
     //       3. Display build files (PKGBUILD) for review
     //       4. Single confirmation prompt
     //       5. Build packages in dependency order
-    //       6. Install target packages via pacman
+    //       6. Install AUR target packages via pacman -S aurpkgs/name
+    //       7. Install repo target packages via pacman -S repo/name
 }
 
 test "given sync when resolving dependencies then displays build order before proceeding" {
@@ -59,12 +60,14 @@ test "given sync when building then builds in dependency order" {
     //       makepkg --syncdeps handles dependency installation
 }
 
-test "given sync when installing then installs only user-requested targets" {
-    // Given: User requested A, which pulled in dependency B
+test "given sync when installing then installs AUR targets from aurpkgs and repo targets from their db" {
+    // Given: User requested AUR package A (which pulled in dep B)
+    //        and repo package "expac" (which is in extra/)
     // When: Install phase executes
-    // Then: Only A is installed via `pacman -S` from local repo
+    // Then: A is installed via `pacman -S aurpkgs/A`
     //       B was already installed by makepkg --syncdeps during build
-    //       A is installed as explicitly installed (not --asdeps)
+    //       "expac" is installed via `pacman -S extra/expac`
+    //       Repo targets match `pacman -S` semantics: always (re)install
 }
 
 test "given split packages when syncing then installs only requested sub-packages" {
@@ -73,6 +76,21 @@ test "given split packages when syncing then installs only requested sub-package
     // When: Build and install phases execute
     // Then: Both sub-a and sub-b are in the repository
     //       Only sub-a is installed via pacman -S
+}
+
+test "given repo package as sync target when already installed then reinstalls it" {
+    // Given: "expac" is installed from official repos (extra/)
+    // When: `aurodle sync expac` is executed
+    // Then: expac is classified as a repo_target (not skipped as "nothing to do")
+    //       expac is reinstalled via `pacman -S extra/expac`
+    //       This matches `pacman -S expac` behavior
+}
+
+test "given repo package as sync target when not installed then installs it" {
+    // Given: "expac" is in official repos but not installed
+    // When: `aurodle sync expac` is executed
+    // Then: expac is classified as a repo_target
+    //       expac is installed via `pacman -S extra/expac`
 }
 
 // ============================================================================

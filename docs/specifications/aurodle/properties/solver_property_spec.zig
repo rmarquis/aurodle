@@ -152,8 +152,9 @@ test "exclusion: repo and satisfied packages never appear in build_order (withou
     //     entry.source != .repos AND entry.source != .satisfied_repo
     //     AND entry.source != .satisfied_aur
     //
-    // Only AUR packages need building. Repo packages are installed
-    // by pacman, and satisfied packages are already installed.
+    // Only AUR packages need building. Repo packages are either in
+    // repo_deps (transitive dependencies) or repo_targets (explicitly
+    // targeted by the user). Satisfied packages are already installed.
     //
     // Exception: satisfied_aur and repo_aur *targets* may be reclassified
     // to .aur by the solver when --rebuild is set or the AUR version is
@@ -161,11 +162,15 @@ test "exclusion: repo and satisfied packages never appear in build_order (withou
     // Provider redirects may also cause the solver to discover the real
     // package name (e.g. "auracle" → "auracle-git") which then follows
     // the normal classification flow.
+    //
+    // Exception: repos and satisfied_repos *targets* are placed in
+    // repo_targets (not repo_deps or build_order). They are reinstalled
+    // via pacman -S, matching pacman -S semantics.
 
     // For 50 random DAGs with mixed sources:
     //   for (plan.build_order) |entry| {
     //       // All entries should be AUR packages
-    //       // (repo and satisfied_* are in repo_deps / all_deps only)
+    //       // (repo pkgs are in repo_deps or repo_targets, not build_order)
     //   }
 }
 

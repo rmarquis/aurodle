@@ -58,35 +58,47 @@ test "resolve orders dependencies before dependents" {
     // try testing.expectEqualStrings("A", plan.build_order[2].name);
 }
 
-test "resolve classifies repo dependencies separately" {
-    // Contract: Dependencies found in official repos appear in repo_deps,
-    // NOT in build_order. Only AUR packages need building.
+test "resolve classifies repo dependencies separately from repo targets" {
+    // Contract: Non-target dependencies found in official repos appear in
+    // repo_deps, NOT in build_order or repo_targets. Repo packages that
+    // were explicitly targeted by the user appear in repo_targets instead.
     //
-    // Mock: A.depends = ["repo-pkg"], registry classifies "repo-pkg" as Source.repos
+    // Mock: A.depends = ["repo-dep"], registry classifies "repo-dep" as Source.repos
+    //       User also targets "repo-target" which is Source.repos
     //
-    // const plan = try s.resolve(&.{"A"});
-    // // repo-pkg should be in repo_deps, not build_order
+    // const plan = try s.resolve(&.{ "A", "repo-target" });
+    // // repo-dep is a transitive dependency → repo_deps
     // try testing.expect(plan.repo_deps.len > 0);
+    // // repo-target is an explicit target → repo_targets
+    // try testing.expect(plan.repo_targets.len > 0);
     // for (plan.build_order) |entry| {
-    //     try testing.expect(!std.mem.eql(u8, entry.name, "repo-pkg"));
+    //     try testing.expect(!std.mem.eql(u8, entry.name, "repo-dep"));
+    //     try testing.expect(!std.mem.eql(u8, entry.name, "repo-target"));
     // }
 }
 
-test "resolve skips satisfied dependencies" {
+test "resolve skips satisfied dependencies but classifies satisfied targets" {
     // Contract: Non-target dependencies already installed (Source.satisfied_repo
     // or Source.satisfied_aur) do not appear in build_order or repo_deps.
     // They appear in all_deps with their satisfied source for display.
+    //
+    // Exception: satisfied_repo and repos *targets* are placed in repo_targets
+    // (reinstalled via pacman -S, matching pacman -S semantics).
     //
     // Exception: satisfied_aur *targets* may be reclassified to .aur when
     // --rebuild is set or the AUR version is newer, in which case they DO
     // appear in build_order.
     //
     // Mock: A.depends = ["installed-pkg"], registry classifies as .satisfied_repo
+    //       User also targets "installed-repo-pkg" classified as .satisfied_repos
     //
-    // const plan = try s.resolve(&.{"A"});
+    // const plan = try s.resolve(&.{ "A", "installed-repo-pkg" });
+    // // Dependency is skipped from build_order and repo_deps
     // for (plan.build_order) |entry| {
     //     try testing.expect(!std.mem.eql(u8, entry.name, "installed-pkg"));
     // }
+    // // Explicit target goes to repo_targets
+    // try testing.expectEqual(@as(usize, 1), plan.repo_targets.len);
 }
 
 test "resolve does not recurse into repo dependencies" {
@@ -175,6 +187,20 @@ test "resolve populates pkgbase field from AUR metadata" {
 test "BuildPlan.build_order contains only AUR packages" {
     // Contract: Every entry in build_order has source == .aur.
     // Repo packages and satisfied dependencies are excluded.
+}
+
+test "BuildPlan.repo_targets contains explicitly targeted repo packages" {
+    // Contract: Packages classified as Source.repos or Source.satisfied_repos
+    // that were explicitly passed as targets appear in repo_targets (not
+    // repo_deps). These are reinstalled via `pacman -S repo/name`, matching
+    // `pacman -S` semantics where explicitly naming a package always
+    // (re)installs it.
+    //
+    // const plan = try s.resolve(&.{"expac"}); // expac is in official repos
+    // try testing.expectEqual(@as(usize, 1), plan.repo_targets.len);
+    // try testing.expectEqualStrings("expac", plan.repo_targets[0]);
+    // try testing.expectEqual(@as(usize, 0), plan.repo_deps.len);
+    // try testing.expectEqual(@as(usize, 0), plan.build_order.len);
 }
 
 test "BuildPlan.all_deps contains every discovered dependency" {

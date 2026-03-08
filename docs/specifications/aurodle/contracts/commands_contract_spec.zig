@@ -43,10 +43,15 @@ test "sync refreshes aurpkgs database between builds" {
     // subsequent makepkg -s calls to find just-built AUR dependencies.
 }
 
-test "sync installs only target packages via pacman" {
-    // Contract: After all builds complete, only the user-requested
-    // target packages are installed via `pacman -S`. Intermediate
-    // AUR dependencies were installed by makepkg --syncdeps.
+test "sync installs AUR targets from aurpkgs and repo targets from their sync db" {
+    // Contract: After all builds complete:
+    //   - AUR target packages are installed via `pacman -S aurpkgs/name`
+    //   - Repo target packages (explicitly requested official repo packages)
+    //     are installed via `pacman -S repo/name` (e.g., `extra/expac`)
+    //   - Intermediate AUR dependencies were installed by makepkg --syncdeps
+    //
+    // This matches `pacman -S` semantics: explicitly naming a package
+    // always (re)installs it, regardless of whether it's already installed.
 }
 
 test "sync prompts for confirmation before building" {
