@@ -178,8 +178,10 @@ pub const Pacman = struct {
                     info.download += sync_pkg.getSize();
                     info.install += sync_pkg.getIsize();
                     if (self.local_db.getPackage(name)) |local_pkg| {
-                        info.net_upgrade += sync_pkg.getIsize() - local_pkg.getIsize();
-                        info.has_upgrades = true;
+                        if (alpm.vercmp(sync_pkg.getVersion(), local_pkg.getVersion()) != 0) {
+                            info.net_upgrade += sync_pkg.getIsize() - local_pkg.getIsize();
+                            info.has_upgrades = true;
+                        }
                     }
                     break;
                 }
@@ -631,7 +633,7 @@ test "repoDepSizes returns nonzero sizes for real packages" {
     const sizes = pm.repoDepSizes(names);
     try std.testing.expect(sizes.download > 0);
     try std.testing.expect(sizes.install > 0);
-    try std.testing.expect(sizes.has_upgrades); // glibc is installed
+    // has_upgrades is only true when versions differ (not for same-version reinstalls)
 }
 
 test "repoDepSizes returns zeros for unknown packages" {
