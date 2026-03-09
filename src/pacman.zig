@@ -283,6 +283,27 @@ pub const Pacman = struct {
         try self.handle.dbUpdate(&.{db}, false);
     }
 
+    // ── Aurpkgs Database Queries ────────────────────────────────────────
+
+    /// List all package names in the aurpkgs database that are NOT installed locally.
+    /// These are stale entries — built at some point but since removed.
+    pub fn uninstalledAurpkgs(self: Pacman) ![]const []const u8 {
+        const aurdb = self.aurpkgs_db orelse return error.AurDbNotConfigured;
+
+        var names: std.ArrayList([]const u8) = .empty;
+        errdefer names.deinit(self.allocator);
+
+        var it = aurdb.getPkgcache();
+        while (it.next()) |pkg| {
+            const name = pkg.getName();
+            if (!self.isInstalled(name)) {
+                try names.append(self.allocator, name);
+            }
+        }
+
+        return try names.toOwnedSlice(self.allocator);
+    }
+
     // ── Foreign Package Detection ────────────────────────────────────────
 
     /// List all installed packages that aren't in any official sync database.

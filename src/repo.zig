@@ -18,6 +18,7 @@ pub const RepoPackage = struct {
 
 pub const CleanResult = struct {
     removed_clones: []const []const u8,
+    removed_packages: []const []const u8,
     bytes_freed: u64,
 };
 
@@ -233,17 +234,18 @@ pub const Repository = struct {
 
     // ── Clean ────────────────────────────────────────────────────────────
 
-    /// Identify stale artifacts for removal.
+    /// Identify stale artifacts for removal given package names from the
+    /// aurpkgs database that are no longer installed locally.
     /// Returns a plan — actual deletion is done by cleanExecute().
-    pub fn clean(self: *const Repository, installed_names: []const []const u8) !CleanResult {
-        // Build set of installed names for O(1) lookup
-        var installed: std.StringHashMapUnmanaged(void) = .empty;
-        defer installed.deinit(self.allocator);
-        for (installed_names) |name| {
-            try installed.put(self.allocator, name, {});
+    pub fn clean(self: *const Repository, uninstalled_names: []const []const u8) !CleanResult {
+        // Build set of uninstalled names for O(1) lookup
+        var uninstalled: std.StringHashMapUnmanaged(void) = .empty;
+        defer uninstalled.deinit(self.allocator);
+        for (uninstalled_names) |name| {
+            try uninstalled.put(self.allocator, name, {});
         }
 
-        // Find stale clones: directories in cache_dir that aren't installed
+        // Find stale clones: directories in cache_dir matching uninstalled packages
         var stale_clones: std.ArrayList([]const u8) = .empty;
         errdefer {
             for (stale_clones.items) |s| self.allocator.free(s);
@@ -259,31 +261,104 @@ pub const Repository = struct {
                 if (entry.kind != .directory) continue;
                 if (std.mem.eql(u8, entry.name, REPO_NAME)) continue;
 
-                if (!installed.contains(entry.name)) {
+                if (uninstalled.contains(entry.name)) {
                     try stale_clones.append(self.allocator, try self.allocator.dupe(u8, entry.name));
+                }
+            }
+        } else |_| {}
+
+        // Find stale package files in repo_dir matching uninstalled packages
+        var stale_packages: std.ArrayList([]const u8) = .empty;
+        errdefer {
+            for (stale_packages.items) |s| self.allocator.free(s);
+            stale_packages.deinit(self.allocator);
+        }
+
+        if (std.fs.cwd().openDir(self.repo_dir, .{ .iterate = true })) |dir_handle| {
+            var repo_dir = dir_handle;
+            defer repo_dir.close();
+
+            var it = repo_dir.iterate();
+            while (try it.next()) |entry| {
+                if (entry.kind != .file) continue;
+                if (std.mem.indexOf(u8, entry.name, ".pkg.tar.") == null) continue;
+                if (std.mem.startsWith(u8, entry.name, "aurpkgs.")) continue;
+
+                if (parsePackageFilename(entry.name)) |parsed| {
+                    if (uninstalled.contains(parsed.name)) {
+                        try stale_packages.append(self.allocator, try self.allocator.dupe(u8, entry.name));
+                    }
                 }
             }
         } else |_| {}
 
         return .{
             .removed_clones = try stale_clones.toOwnedSlice(self.allocator),
+            .removed_packages = try stale_packages.toOwnedSlice(self.allocator),
             .bytes_freed = 0,
         };
     }
 
     /// Execute the actual deletion after user confirmation.
     pub fn cleanExecute(self: *const Repository, plan: CleanResult) void {
+        // Remove stale clone directories
         for (plan.removed_clones) |name| {
             const path = std.fs.path.join(self.allocator, &.{ self.cache_dir, name }) catch continue;
             defer self.allocator.free(path);
             std.fs.cwd().deleteTree(path) catch {};
         }
+
+        // Remove stale package files and their database entries
+        if (plan.removed_packages.len > 0) {
+            // Collect unique package names for repo-remove
+            var pkg_names: std.StringHashMapUnmanaged(void) = .empty;
+            defer pkg_names.deinit(self.allocator);
+
+            for (plan.removed_packages) |filename| {
+                // Delete the package file from disk
+                const path = std.fs.path.join(self.allocator, &.{ self.repo_dir, filename }) catch continue;
+                defer self.allocator.free(path);
+                std.fs.cwd().deleteFile(path) catch {};
+
+                // Collect the package name for repo-remove
+                if (parsePackageFilename(filename)) |parsed| {
+                    pkg_names.put(self.allocator, parsed.name, {}) catch {};
+                }
+            }
+
+            // Run repo-remove for each unique package name
+            self.runRepoRemove(pkg_names) catch {};
+        }
+    }
+
+    /// Run `repo-remove <db_path> <pkg1> <pkg2> ...`
+    fn runRepoRemove(self: *const Repository, names: std.StringHashMapUnmanaged(void)) !void {
+        if (self.skip_repo_add) return;
+        if (names.count() == 0) return;
+
+        var argv: std.ArrayList([]const u8) = .empty;
+        defer argv.deinit(self.allocator);
+        try argv.ensureTotalCapacity(self.allocator, names.count() + 2);
+
+        argv.appendAssumeCapacity("repo-remove");
+        argv.appendAssumeCapacity(self.db_path);
+
+        var it = names.keyIterator();
+        while (it.next()) |key| {
+            argv.appendAssumeCapacity(key.*);
+        }
+
+        const result = try utils.runCommand(self.allocator, argv.items);
+        defer result.deinit(self.allocator);
+        // Best-effort: don't fail the whole clean if repo-remove errors
     }
 
     /// Free a CleanResult's allocated slices.
     pub fn freeCleanResult(self: *const Repository, result: CleanResult) void {
         for (result.removed_clones) |s| self.allocator.free(s);
         self.allocator.free(result.removed_clones);
+        for (result.removed_packages) |s| self.allocator.free(s);
+        self.allocator.free(result.removed_packages);
     }
 };
 
@@ -768,11 +843,10 @@ test "clean identifies stale clones" {
     defer std.testing.allocator.free(paru_path);
     try std.fs.cwd().makePath(paru_path);
 
-    // Only "yay" is installed
-    const result = try repo.clean(&.{"yay"});
+    // "paru" is uninstalled — should be cleaned
+    const result = try repo.clean(&.{"paru"});
     defer repo.freeCleanResult(result);
 
-    // "paru" should be stale (not installed)
     try std.testing.expectEqual(@as(usize, 1), result.removed_clones.len);
     try std.testing.expectEqualStrings("paru", result.removed_clones[0]);
 }
@@ -789,13 +863,71 @@ test "clean skips aurpkgs directory" {
 
     try repo.ensureExists();
 
-    const result = try repo.clean(&.{});
+    // Even if "aurpkgs" were passed as uninstalled, the directory should be skipped
+    const result = try repo.clean(&.{REPO_NAME});
     defer repo.freeCleanResult(result);
 
     // aurpkgs should not appear as stale clones
     for (result.removed_clones) |name| {
         try std.testing.expect(!std.mem.eql(u8, name, REPO_NAME));
     }
+}
+
+test "clean identifies stale package files" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const tmp_path = try getTmpPath(tmp);
+    defer std.testing.allocator.free(tmp_path);
+
+    var repo = try Repository.initWithRoot(std.testing.allocator, tmp_path);
+    defer repo.deinit();
+    repo.skip_repo_add = true;
+
+    try repo.ensureExists();
+
+    // Create package files in repo dir
+    var repo_dir = try std.fs.cwd().openDir(repo.repo_dir, .{});
+    defer repo_dir.close();
+    try repo_dir.writeFile(.{ .sub_path = "yay-12.3.5-1-x86_64.pkg.tar.zst", .data = "pkg" });
+    try repo_dir.writeFile(.{ .sub_path = "paru-2.0.3-1-x86_64.pkg.tar.zst", .data = "pkg" });
+
+    // "paru" is uninstalled
+    const result = try repo.clean(&.{"paru"});
+    defer repo.freeCleanResult(result);
+
+    try std.testing.expectEqual(@as(usize, 1), result.removed_packages.len);
+    try std.testing.expectEqualStrings("paru-2.0.3-1-x86_64.pkg.tar.zst", result.removed_packages[0]);
+    try std.testing.expectEqual(@as(usize, 0), result.removed_clones.len);
+}
+
+test "clean with no uninstalled packages finds nothing" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const tmp_path = try getTmpPath(tmp);
+    defer std.testing.allocator.free(tmp_path);
+
+    var repo = try Repository.initWithRoot(std.testing.allocator, tmp_path);
+    defer repo.deinit();
+
+    try repo.ensureExists();
+
+    // Create a clone dir and a package file
+    const yay_path = try std.fs.path.join(std.testing.allocator, &.{ tmp_path, "yay" });
+    defer std.testing.allocator.free(yay_path);
+    try std.fs.cwd().makePath(yay_path);
+
+    var repo_dir = try std.fs.cwd().openDir(repo.repo_dir, .{});
+    defer repo_dir.close();
+    try repo_dir.writeFile(.{ .sub_path = "yay-12.3.5-1-x86_64.pkg.tar.zst", .data = "pkg" });
+
+    // Empty uninstalled list — everything is still installed
+    const result = try repo.clean(&.{});
+    defer repo.freeCleanResult(result);
+
+    try std.testing.expectEqual(@as(usize, 0), result.removed_clones.len);
+    try std.testing.expectEqual(@as(usize, 0), result.removed_packages.len);
 }
 
 test "parseMakepkgConfFromFile reads PKGDEST and PKGEXT" {

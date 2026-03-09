@@ -472,8 +472,9 @@ fn checkDevelUpgrades(
 
 // ── Clean Command ────────────────────────────────────────────────────
 
-/// Remove stale cache artifacts after user confirmation.
-/// Uses repo.zig's two-phase approach: compute plan, display, confirm, execute.
+/// Remove stale aurpkgs artifacts after user confirmation.
+/// Checks the aurpkgs database for packages no longer installed locally,
+/// then removes their clone directories, package files, and database entries.
 pub fn clean(self: *Commands) !ExitCode {
     const pm = self.pacman orelse {
         printErr("error: pacman not initialized\n");
@@ -484,18 +485,20 @@ pub fn clean(self: *Commands) !ExitCode {
         return .general_error;
     };
 
-    // Get installed foreign package names for staleness check
-    const foreign = try pm.allForeignPackages();
-    defer self.allocator.free(foreign);
+    // Find aurpkgs packages that are no longer installed
+    const uninstalled = pm.uninstalledAurpkgs() catch |err| switch (err) {
+        error.AurDbNotConfigured => {
+            printErr("error: aurpkgs repository not configured in pacman.conf\n");
+            return .general_error;
+        },
+        else => return err,
+    };
+    defer self.allocator.free(uninstalled);
 
-    var installed_names: std.ArrayListUnmanaged([]const u8) = .empty;
-    defer installed_names.deinit(self.allocator);
-    for (foreign) |pkg| try installed_names.append(self.allocator, pkg.name);
-
-    const plan = try repository.clean(installed_names.items);
+    const plan = try repository.clean(uninstalled);
     defer repository.freeCleanResult(plan);
 
-    if (plan.removed_clones.len == 0) {
+    if (plan.removed_clones.len == 0 and plan.removed_packages.len == 0) {
         if (!self.flags.quiet) {
             getStdout().writeAll(" nothing to clean\n") catch {};
         }
@@ -504,23 +507,18 @@ pub fn clean(self: *Commands) !ExitCode {
 
     const stdout = getStdout();
 
+    if (plan.removed_packages.len > 0) {
+        stdout.print(":: Stale packages ({d}):\n", .{plan.removed_packages.len}) catch {};
+        for (plan.removed_packages) |filename| {
+            stdout.print("  {s}\n", .{filename}) catch {};
+        }
+    }
+
     if (plan.removed_clones.len > 0) {
         stdout.print(":: Stale clone directories ({d}):\n", .{plan.removed_clones.len}) catch {};
         for (plan.removed_clones) |name| {
             stdout.print("  {s}/\n", .{name}) catch {};
         }
-    }
-
-    if (plan.bytes_freed >= 1024 * 1024) {
-        stdout.print("\nTotal space to free: {d:.1} MiB\n", .{
-            @as(f64, @floatFromInt(plan.bytes_freed)) / (1024.0 * 1024.0),
-        }) catch {};
-    } else if (plan.bytes_freed >= 1024) {
-        stdout.print("\nTotal space to free: {d:.1} KiB\n", .{
-            @as(f64, @floatFromInt(plan.bytes_freed)) / 1024.0,
-        }) catch {};
-    } else {
-        stdout.print("\nTotal space to free: {d} B\n", .{plan.bytes_freed}) catch {};
     }
 
     if (!self.flags.noconfirm) {
