@@ -175,6 +175,27 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman) void {
     const stdout = getStdout();
     const verbose = if (pm) |p| p.verbose_pkg_lists else false;
 
+    // Warn about targets being reinstalled with the same version
+    if (pm) |p| {
+        const stderr = getStderr();
+        for (plan.build_order) |entry| {
+            if (!entry.is_target) continue;
+            if (p.installedVersion(entry.name)) |old| {
+                if (std.mem.eql(u8, old, entry.version)) {
+                    stderr.print("warning: {s}-{s} is up to date -- reinstalling\n", .{ entry.name, old }) catch {};
+                }
+            }
+        }
+        for (plan.repo_targets) |name| {
+            if (p.installedVersion(name)) |old| {
+                const new = p.syncVersion(name) orelse continue;
+                if (std.mem.eql(u8, old, new)) {
+                    stderr.print("warning: {s}-{s} is up to date -- reinstalling\n", .{ name, old }) catch {};
+                }
+            }
+        }
+    }
+
     stdout.writeAll("resolving dependencies...\n") catch {};
 
     if (verbose) {
