@@ -528,6 +528,12 @@ pub fn clean(self: *Commands) !ExitCode {
     }
 
     repository.cleanExecute(plan);
+
+    // Refresh libalpm's aurpkgs db to reflect the removals
+    if (plan.removed_packages.len > 0) {
+        pm.refreshAurDb() catch {};
+    }
+
     return .success;
 }
 
