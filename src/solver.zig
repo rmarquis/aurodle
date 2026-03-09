@@ -272,23 +272,29 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                 return alloc.alloc([]const u8, 0);
             }
 
-            // Compute in-degrees: for each AUR node, count how many AUR
-            // dependencies it has. Our edges point dependent → dependency,
-            // so in_degree[src] += 1 for each AUR dep in src's edge list.
+            // Build reverse edges (dependency → dependents) and in-degrees.
+            // Forward edges point dependent → dependency; we invert them
+            // so Kahn's BFS can efficiently find who to unblock.
             var in_degree = std.StringHashMapUnmanaged(u32){};
             defer in_degree.deinit(alloc);
+            var reverse = std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)){};
+            defer {
+                var it = reverse.valueIterator();
+                while (it.next()) |list| list.deinit(alloc);
+                reverse.deinit(alloc);
+            }
 
             for (aur_nodes.items) |name| {
                 try in_degree.put(alloc, name, 0);
+                try reverse.put(alloc, name, .empty);
             }
 
             for (aur_nodes.items) |src_name| {
                 const node = self.graph.getNode(src_name).?;
                 for (node.edges.keys()) |dep_name| {
-                    if (in_degree.contains(dep_name)) {
-                        if (in_degree.getPtr(src_name)) |deg| {
-                            deg.* += 1;
-                        }
+                    if (reverse.getPtr(dep_name)) |dependents| {
+                        try dependents.append(alloc, src_name);
+                        in_degree.getPtr(src_name).?.* += 1;
                     }
                 }
             }
@@ -305,7 +311,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
 
             var result: std.ArrayListUnmanaged([]const u8) = .empty;
 
-            // BFS
+            // BFS: dequeue node, decrement in-degree of its dependents
             var head: usize = 0;
             while (head < queue.items.len) {
                 const current = queue.items[head];
@@ -313,16 +319,11 @@ pub fn SolverImpl(comptime RegistryT: type) type {
 
                 try result.append(alloc, current);
 
-                // For each AUR node that depends on `current`, decrement in-degree
-                for (aur_nodes.items) |name| {
-                    if (std.mem.eql(u8, name, current)) continue;
-                    const node = self.graph.getNode(name).?;
-                    if (node.edges.contains(current)) {
-                        const deg = in_degree.getPtr(name).?;
-                        deg.* -= 1;
-                        if (deg.* == 0) {
-                            try queue.append(alloc, name);
-                        }
+                for (reverse.get(current).?.items) |dependent| {
+                    const deg = in_degree.getPtr(dependent).?;
+                    deg.* -= 1;
+                    if (deg.* == 0) {
+                        try queue.append(alloc, dependent);
                     }
                 }
             }
