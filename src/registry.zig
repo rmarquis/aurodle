@@ -184,6 +184,15 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
             }
         }
 
+        /// Warm the AUR client cache for the given names via a single
+        /// batched multiInfo call. Subsequent info() calls for these
+        /// names become cache hits with no HTTP round-trip.
+        pub fn prefetchAur(self: *Self, names: []const []const u8) !void {
+            if (names.len == 0) return;
+            const results = try self.aur_client.multiInfo(names);
+            self.allocator.free(results);
+        }
+
         /// Resolve a package directly from AUR, bypassing local/sync tiers.
         /// Used by the solver for target packages that need dependency info
         /// even when the package is already installed or in sync repos.

@@ -112,6 +112,20 @@ pub fn SolverImpl(comptime RegistryT: type) type {
 
                 var next_frontier: std.ArrayListUnmanaged([]const u8) = .empty;
 
+                // Prefetch AUR metadata for targets resolved locally that
+                // still need dependency info. One batched multiInfo call
+                // replaces N individual info() calls.
+                {
+                    var prefetch: std.ArrayListUnmanaged([]const u8) = .empty;
+                    defer prefetch.deinit(self.allocator);
+                    for (frontier.items, resolutions) |name, res| {
+                        if (res.aur_pkg == null and self.targets.contains(name) and !visited.contains(name)) {
+                            try prefetch.append(self.allocator, name);
+                        }
+                    }
+                    try self.registry.prefetchAur(prefetch.items);
+                }
+
                 for (frontier.items, resolutions) |name, resolution| {
                     // Skip if already fully processed (diamond deps)
                     if (visited.contains(name)) {
@@ -693,6 +707,8 @@ const MockRegistry = struct {
     }
 
     // ── Interface matching PackageRegistry ────────────────────────────
+
+    pub fn prefetchAur(_: *MockRegistry, _: []const []const u8) !void {}
 
     pub fn resolveMany(self: *MockRegistry, dep_strings: []const []const u8) ![]registry_mod.Resolution {
         var results: std.ArrayListUnmanaged(registry_mod.Resolution) = .empty;
