@@ -6,12 +6,6 @@ const alpm = @import("alpm.zig");
 
 // ── Public Types ─────────────────────────────────────────────────────────
 
-pub const DepType = enum {
-    target,
-    depends,
-    makedepends,
-};
-
 pub const BuildEntry = struct {
     name: []const u8,
     pkgbase: []const u8,
@@ -158,32 +152,23 @@ pub fn SolverImpl(comptime RegistryT: type) type {
 
                     try visited.put(self.allocator, actual_name, {});
 
-                    // Classify and add node to graph
-                    const meta = NodeMeta{
-                        .source = actual_resolution.source,
-                        .version = actual_resolution.version,
-                        .pkgbase = if (actual_resolution.aur_pkg) |p| p.pkgbase else null,
-                        .aur_pkg = actual_resolution.aur_pkg,
-                        .depth = depth,
-                        .dep_type = if (self.targets.contains(actual_name)) .target else .depends,
-                    };
-                    try self.graph.addNode(actual_name, meta);
-
-                    // Fail fast on unknown
+                    // Resolve unknown via full cascade before adding to graph
                     if (actual_resolution.source == .unknown) {
-                        // Try individual resolve as last resort (AUR provider search)
                         const full_res = try self.registry.resolve(actual_name);
                         if (full_res.source == .unknown) {
                             return error.UnresolvableDependency;
                         }
                         actual_resolution = full_res;
-                        if (self.graph.getNode(actual_name)) |node| {
-                            node.meta.source = full_res.source;
-                            node.meta.version = full_res.version;
-                            node.meta.aur_pkg = full_res.aur_pkg;
-                            if (full_res.aur_pkg) |p| node.meta.pkgbase = p.pkgbase;
-                        }
                     }
+
+                    // Add node to graph
+                    const node = try self.graph.addNode(actual_name, .{
+                        .source = actual_resolution.source,
+                        .version = actual_resolution.version,
+                        .pkgbase = if (actual_resolution.aur_pkg) |p| p.pkgbase else null,
+                        .aur_pkg = actual_resolution.aur_pkg,
+                        .depth = depth,
+                    });
 
                     // Determine AUR package info for dependency traversal.
                     // For targets that are satisfied/in repos, fetch from AUR
@@ -197,20 +182,18 @@ pub fn SolverImpl(comptime RegistryT: type) type {
 
                     // Update node metadata if we fetched AUR info after initial creation
                     if (aur_pkg) |pkg| {
-                        if (self.graph.getNode(actual_name)) |node| {
-                            if (node.meta.pkgbase == null) {
-                                node.meta.pkgbase = pkg.pkgbase;
-                            }
-                            if ((node.meta.source == .repo_aur or node.meta.source == .satisfied_aur) and self.targets.contains(actual_name)) {
-                                const dominated = if (node.meta.version) |local_ver|
-                                    alpm.vercmp(pkg.version, local_ver) > 0
-                                else
-                                    false;
-                                if (dominated or self.rebuild) {
-                                    node.meta.source = .aur;
-                                    node.meta.version = pkg.version;
-                                    node.meta.aur_pkg = pkg;
-                                }
+                        if (node.meta.pkgbase == null) {
+                            node.meta.pkgbase = pkg.pkgbase;
+                        }
+                        if ((node.meta.source == .repo_aur or node.meta.source == .satisfied_aur) and self.targets.contains(actual_name)) {
+                            const dominated = if (node.meta.version) |local_ver|
+                                alpm.vercmp(pkg.version, local_ver) > 0
+                            else
+                                false;
+                            if (dominated or self.rebuild) {
+                                node.meta.source = .aur;
+                                node.meta.version = pkg.version;
+                                node.meta.aur_pkg = pkg;
                             }
                         }
                     }
@@ -364,26 +347,19 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                 }
             }
 
-            // All deps: every node in the graph
+            // Single pass: collect all deps + classify repo deps/targets
+            var repo_targets: std.ArrayListUnmanaged([]const u8) = .empty;
             var node_it = self.graph.nodes.iterator();
             while (node_it.next()) |entry| {
                 const node = entry.value_ptr;
+                const is_target = self.targets.contains(node.meta.name);
                 try all_deps.append(alloc, .{
                     .name = node.meta.name,
                     .pkgbase = node.meta.pkgbase,
                     .source = node.meta.source,
-                    .is_target = self.targets.contains(node.meta.name),
+                    .is_target = is_target,
                     .depth = node.meta.depth,
                 });
-            }
-
-            // Repo deps: packages from sync DBs (dependencies, not targets)
-            // Repo targets: targets explicitly requested that live in official repos
-            var repo_targets: std.ArrayListUnmanaged([]const u8) = .empty;
-            var repo_it = self.graph.nodes.iterator();
-            while (repo_it.next()) |entry| {
-                const node = entry.value_ptr;
-                const is_target = self.targets.contains(node.meta.name);
                 if (is_target and (node.meta.source == .repos or node.meta.source == .satisfied_repos)) {
                     try repo_targets.append(alloc, node.meta.name);
                 } else if (node.meta.source == .repos) {
@@ -410,7 +386,6 @@ const NodeMeta = struct {
     pkgbase: ?[]const u8 = null,
     aur_pkg: ?*aur.Package = null,
     depth: u32 = 0,
-    dep_type: DepType = .depends,
 };
 
 const DepGraph = struct {
@@ -421,7 +396,6 @@ const DepGraph = struct {
         meta: NodeMeta,
         /// Outgoing edges: packages this node depends on.
         edges: std.StringArrayHashMapUnmanaged(void),
-        fully_resolved: bool,
     };
 
     fn init(allocator: Allocator) DepGraph {
@@ -439,7 +413,7 @@ const DepGraph = struct {
         self.nodes.deinit(self.allocator);
     }
 
-    fn addNode(self: *DepGraph, name: []const u8, meta: NodeMeta) !void {
+    fn addNode(self: *DepGraph, name: []const u8, meta: NodeMeta) !*Node {
         const result = try self.nodes.getOrPut(self.allocator, name);
         if (!result.found_existing) {
             var m = meta;
@@ -447,9 +421,9 @@ const DepGraph = struct {
             result.value_ptr.* = .{
                 .meta = m,
                 .edges = .empty,
-                .fully_resolved = false,
             };
         }
+        return result.value_ptr;
     }
 
     fn addEdge(self: *DepGraph, from: []const u8, to: []const u8) !void {
