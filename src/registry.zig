@@ -147,6 +147,12 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
                     continue;
                 }
 
+                if (self.resolveProvider(spec.name)) |res| {
+                    try self.cacheResult(spec.name, res);
+                    results.appendAssumeCapacity(res);
+                    continue;
+                }
+
                 // Defer to AUR batch
                 try self.pending_aur.put(self.allocator, spec.name, {});
                 results.appendAssumeCapacity(.{ .name = spec.name, .source = .unknown });

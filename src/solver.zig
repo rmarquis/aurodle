@@ -55,7 +55,6 @@ pub fn SolverImpl(comptime RegistryT: type) type {
         registry: *RegistryT,
         graph: DepGraph,
         targets: std.StringHashMapUnmanaged(void),
-        visiting: std.StringHashMapUnmanaged(void),
         rebuild: bool = false,
 
         pub fn init(allocator: Allocator, reg: *RegistryT) Self {
@@ -64,14 +63,12 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                 .registry = reg,
                 .graph = DepGraph.init(allocator),
                 .targets = .empty,
-                .visiting = .empty,
             };
         }
 
         pub fn deinit(self: *Self) void {
             self.graph.deinit();
             self.targets.deinit(self.allocator);
-            self.visiting.deinit(self.allocator);
         }
 
         /// Resolve a set of target packages into a BuildPlan.
@@ -82,10 +79,8 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                 try self.targets.put(self.allocator, name, {});
             }
 
-            // Phase 1: Discovery — recursive DFS with cycle detection
-            for (target_names) |name| {
-                try self.discover(name, 0);
-            }
+            // Phase 1: Discovery — BFS with batched AUR resolution
+            try self.discover(target_names);
 
             // Phase 2: Topological sort — Kahn's algorithm on AUR nodes
             const order = try self.topoSort();
@@ -95,111 +90,151 @@ pub fn SolverImpl(comptime RegistryT: type) type {
             return self.assemblePlan(order);
         }
 
-        // ── Phase 1: Discovery ───────────────────────────────────────────
+        // ── Phase 1: Discovery (BFS with batched AUR resolution) ────────
 
-        fn discover(self: *Self, name: []const u8, depth: u32) !void {
-            // Cycle detection: on current DFS path?
-            if (self.visiting.contains(name)) {
-                return error.CircularDependency;
+        fn discover(self: *Self, target_names: []const []const u8) !void {
+            var visited = std.StringHashMapUnmanaged(void){};
+            defer visited.deinit(self.allocator);
+
+            // Build initial frontier from targets
+            var frontier: std.ArrayListUnmanaged([]const u8) = .empty;
+            defer frontier.deinit(self.allocator);
+            for (target_names) |name| {
+                try frontier.append(self.allocator, name);
             }
 
-            // Already fully processed? Update depth to max (diamond deps).
-            if (self.graph.getNode(name)) |node| {
-                if (node.fully_resolved) {
-                    if (depth > node.meta.depth) node.meta.depth = depth;
-                    return;
-                }
-            }
+            var depth: u32 = 0;
 
-            // Mark as visiting (gray)
-            try self.visiting.put(self.allocator, name, {});
-            defer _ = self.visiting.remove(name);
+            while (frontier.items.len > 0) {
+                // Batch resolve current frontier
+                const resolutions = try self.registry.resolveMany(frontier.items);
+                defer self.allocator.free(resolutions);
 
-            // Classify via registry
-            const resolution = try self.registry.resolve(name);
+                var next_frontier: std.ArrayListUnmanaged([]const u8) = .empty;
 
-            // If resolved via provider (e.g. "auracle" → "auracle-git"),
-            // redirect discovery to the actual package name.
-            if (resolution.provider) |provider_name| {
-                if (!std.mem.eql(u8, provider_name, name)) {
-                    if (self.targets.contains(name)) {
-                        try self.targets.put(self.allocator, provider_name, {});
+                for (frontier.items, resolutions) |name, resolution| {
+                    // Skip if already fully processed (diamond deps)
+                    if (visited.contains(name)) {
+                        if (self.graph.getNode(name)) |node| {
+                            if (depth > node.meta.depth) node.meta.depth = depth;
+                        }
+                        continue;
                     }
-                    return self.discover(provider_name, depth);
-                }
-            }
 
-            const meta = NodeMeta{
-                .source = resolution.source,
-                .version = resolution.version,
-                .pkgbase = if (resolution.aur_pkg) |p| p.pkgbase else null,
-                .aur_pkg = resolution.aur_pkg,
-                .depth = depth,
-                .dep_type = if (self.targets.contains(name)) .target else .depends,
-            };
+                    var actual_name = name;
+                    var actual_resolution = resolution;
 
-            try self.graph.addNode(name, meta);
-
-            // Fail fast on unknown
-            if (resolution.source == .unknown) {
-                return error.UnresolvableDependency;
-            }
-
-            // Determine AUR package info for recursion.
-            // For AUR packages resolved directly, we already have it.
-            // For targets that are satisfied/in repos, fetch from AUR
-            // so we can resolve their build dependencies.
-            const aur_pkg: ?*aur.Package = if (resolution.aur_pkg) |pkg|
-                pkg
-            else if (self.targets.contains(name))
-                if (try self.registry.resolveFromAur(name)) |aur_res| aur_res.aur_pkg else null
-            else
-                null;
-
-            // Update node metadata if we fetched AUR info after initial creation
-            if (aur_pkg) |pkg| {
-                if (self.graph.getNode(name)) |node| {
-                    if (node.meta.pkgbase == null) {
-                        node.meta.pkgbase = pkg.pkgbase;
-                    }
-                    // For AUR targets: compare versions or force rebuild.
-                    // Reclassify as .aur if AUR is newer or --rebuild is set.
-                    if ((node.meta.source == .repo_aur or node.meta.source == .satisfied_aur) and self.targets.contains(name)) {
-                        const dominated = if (node.meta.version) |local_ver|
-                            alpm.vercmp(pkg.version, local_ver) > 0
-                        else
-                            false;
-                        if (dominated or self.rebuild) {
-                            node.meta.source = .aur;
-                            node.meta.version = pkg.version;
-                            node.meta.aur_pkg = pkg;
+                    // Handle provider redirect (e.g. "auracle" → "auracle-git")
+                    if (resolution.provider) |provider_name| {
+                        if (!std.mem.eql(u8, provider_name, name)) {
+                            if (self.targets.contains(name)) {
+                                try self.targets.put(self.allocator, provider_name, {});
+                            }
+                            actual_name = provider_name;
+                            if (visited.contains(provider_name)) {
+                                if (self.graph.getNode(provider_name)) |node| {
+                                    if (depth > node.meta.depth) node.meta.depth = depth;
+                                }
+                                continue;
+                            }
+                            // Resolve the provider individually (typically cached or local)
+                            actual_resolution = try self.registry.resolve(provider_name);
                         }
                     }
+
+                    try visited.put(self.allocator, actual_name, {});
+
+                    // Classify and add node to graph
+                    const meta = NodeMeta{
+                        .source = actual_resolution.source,
+                        .version = actual_resolution.version,
+                        .pkgbase = if (actual_resolution.aur_pkg) |p| p.pkgbase else null,
+                        .aur_pkg = actual_resolution.aur_pkg,
+                        .depth = depth,
+                        .dep_type = if (self.targets.contains(actual_name)) .target else .depends,
+                    };
+                    try self.graph.addNode(actual_name, meta);
+
+                    // Fail fast on unknown
+                    if (actual_resolution.source == .unknown) {
+                        // Try individual resolve as last resort (AUR provider search)
+                        const full_res = try self.registry.resolve(actual_name);
+                        if (full_res.source == .unknown) {
+                            return error.UnresolvableDependency;
+                        }
+                        actual_resolution = full_res;
+                        if (self.graph.getNode(actual_name)) |node| {
+                            node.meta.source = full_res.source;
+                            node.meta.version = full_res.version;
+                            node.meta.aur_pkg = full_res.aur_pkg;
+                            if (full_res.aur_pkg) |p| node.meta.pkgbase = p.pkgbase;
+                        }
+                    }
+
+                    // Determine AUR package info for dependency traversal.
+                    // For targets that are satisfied/in repos, fetch from AUR
+                    // so we can resolve their build dependencies.
+                    var aur_pkg = actual_resolution.aur_pkg;
+                    if (aur_pkg == null and self.targets.contains(actual_name)) {
+                        if (try self.registry.resolveFromAur(actual_name)) |aur_res| {
+                            aur_pkg = aur_res.aur_pkg;
+                        }
+                    }
+
+                    // Update node metadata if we fetched AUR info after initial creation
+                    if (aur_pkg) |pkg| {
+                        if (self.graph.getNode(actual_name)) |node| {
+                            if (node.meta.pkgbase == null) {
+                                node.meta.pkgbase = pkg.pkgbase;
+                            }
+                            if ((node.meta.source == .repo_aur or node.meta.source == .satisfied_aur) and self.targets.contains(actual_name)) {
+                                const dominated = if (node.meta.version) |local_ver|
+                                    alpm.vercmp(pkg.version, local_ver) > 0
+                                else
+                                    false;
+                                if (dominated or self.rebuild) {
+                                    node.meta.source = .aur;
+                                    node.meta.version = pkg.version;
+                                    node.meta.aur_pkg = pkg;
+                                }
+                            }
+                        }
+                    }
+
+                    // Collect deps for next frontier
+                    if (aur_pkg) |pkg| {
+                        try self.collectDeps(&next_frontier, &visited, actual_name, pkg.depends, depth);
+                        try self.collectDeps(&next_frontier, &visited, actual_name, pkg.makedepends, depth);
+                    }
                 }
+
+                // Swap frontiers
+                frontier.deinit(self.allocator);
+                frontier = next_frontier;
+                depth += 1;
             }
+        }
 
-            // Recurse into dependencies if we have AUR package info.
-            // For non-target deps, repo/satisfied packages are handled
-            // transitively by pacman and won't have aur_pkg set.
-            if (aur_pkg) |pkg| {
-                // Follow depends
-                for (pkg.depends) |dep| {
-                    const dep_name = registry_mod.parseDep(dep).name;
-                    try self.discover(dep_name, depth + 1);
-                    try self.graph.addEdge(name, dep_name);
+        /// Collect dependencies: add edges and queue unseen names for next frontier.
+        fn collectDeps(
+            self: *Self,
+            next_frontier: *std.ArrayListUnmanaged([]const u8),
+            visited: *const std.StringHashMapUnmanaged(void),
+            parent: []const u8,
+            deps: []const []const u8,
+            depth: u32,
+        ) !void {
+            for (deps) |dep| {
+                const dep_name = registry_mod.parseDep(dep).name;
+                try self.graph.addEdge(parent, dep_name);
+                if (!visited.contains(dep_name)) {
+                    try next_frontier.append(self.allocator, dep_name);
+                } else {
+                    // Update depth for already-visited nodes (diamond deps)
+                    if (self.graph.getNode(dep_name)) |node| {
+                        if (depth + 1 > node.meta.depth) node.meta.depth = depth + 1;
+                    }
                 }
-
-                // Follow makedepends
-                for (pkg.makedepends) |dep| {
-                    const dep_name = registry_mod.parseDep(dep).name;
-                    try self.discover(dep_name, depth + 1);
-                    try self.graph.addEdge(name, dep_name);
-                }
-            }
-
-            // Mark fully resolved (black)
-            if (self.graph.getNode(name)) |node| {
-                node.fully_resolved = true;
             }
         }
 
@@ -658,6 +693,16 @@ const MockRegistry = struct {
     }
 
     // ── Interface matching PackageRegistry ────────────────────────────
+
+    pub fn resolveMany(self: *MockRegistry, dep_strings: []const []const u8) ![]registry_mod.Resolution {
+        var results: std.ArrayListUnmanaged(registry_mod.Resolution) = .empty;
+        errdefer results.deinit(testing.allocator);
+        try results.ensureTotalCapacity(testing.allocator, dep_strings.len);
+        for (dep_strings) |dep_str| {
+            results.appendAssumeCapacity(try self.resolve(dep_str));
+        }
+        return try results.toOwnedSlice(testing.allocator);
+    }
 
     pub fn resolve(self: *MockRegistry, dep_string: []const u8) !registry_mod.Resolution {
         const spec = registry_mod.parseDep(dep_string);
