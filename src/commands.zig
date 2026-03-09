@@ -273,15 +273,19 @@ fn displayPlanVerbose(
             }
         }
     }
-    for (plan.repo_targets) |name| {
-        const repo = if (pm) |p| p.syncDbFor(name) else null;
-        const w = if (repo) |r| r.len + 1 + name.len else name.len;
-        if (w > name_col) name_col = w;
-    }
-    for (plan.repo_deps) |dep| {
-        const repo = if (pm) |p| p.syncDbFor(dep) else null;
-        const w = if (repo) |r| r.len + 1 + dep.len else dep.len;
-        if (w > name_col) name_col = w;
+    const repo_lists = [_][]const []const u8{ plan.repo_targets, plan.repo_deps };
+    for (repo_lists) |list| {
+        for (list) |name| {
+            const repo = if (pm) |p| p.syncDbFor(name) else null;
+            const w = if (repo) |r| r.len + 1 + name.len else name.len;
+            if (w > name_col) name_col = w;
+            if (pm) |p| {
+                if (p.installedVersion(name)) |v| {
+                    has_old_version = true;
+                    if (v.len > old_col) old_col = v.len;
+                }
+            }
+        }
     }
 
     // AUR section
@@ -312,9 +316,12 @@ fn displayPlanVerbose(
         stdout.writeByte('\n') catch {};
         stdout.print(hdr_repo[0 .. hdr_repo.len - 1] ++ "{d})", .{repo_count}) catch {};
         pad(stdout, countDigits(repo_count) + hdr_repo.len, name_col);
+        if (has_old_version) {
+            stdout.writeAll(hdr_old_ver) catch {};
+            pad(stdout, hdr_old_ver.len, old_col);
+        }
         stdout.writeAll(hdr_new_ver ++ "\n\n") catch {};
 
-        const repo_lists = [_][]const []const u8{ plan.repo_targets, plan.repo_deps };
         for (repo_lists) |list| {
             for (list) |name| {
                 const repo = if (pm) |p| p.syncDbFor(name) else null;
@@ -327,6 +334,11 @@ fn displayPlanVerbose(
                     break :blk name.len;
                 };
                 pad(stdout, w, name_col);
+                if (has_old_version) {
+                    const old_ver = if (pm) |p| p.installedVersion(name) orelse "-" else "-";
+                    stdout.writeAll(old_ver) catch {};
+                    pad(stdout, old_ver.len, old_col);
+                }
                 stdout.print("{s}\n", .{ver}) catch {};
             }
         }
