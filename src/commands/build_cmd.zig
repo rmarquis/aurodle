@@ -236,11 +236,17 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
     }
 
     // Phase 6: Install targets (AUR from aurpkgs + repo targets in one transaction)
+    var aur_targets: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer aur_targets.deinit(self.allocator);
+    for (plan.build_order) |entry| {
+        if (entry.is_target) try aur_targets.append(self.allocator, entry.name);
+    }
+
     if (build_result.failed.len == 0) {
-        try installAllTargets(self, targets, plan.repo_targets);
+        try installAllTargets(self, aur_targets.items, plan.repo_targets);
     } else {
         // Install only targets whose builds succeeded
-        const installable = try filterInstallable(self, targets, build_result);
+        const installable = try filterInstallable(self, aur_targets.items, build_result);
         defer self.allocator.free(installable);
         if (installable.len > 0 or plan.repo_targets.len > 0) {
             try installAllTargets(self, installable, plan.repo_targets);
