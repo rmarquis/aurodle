@@ -200,8 +200,8 @@ pub fn SolverImpl(comptime RegistryT: type) type {
 
                     // Collect deps for next frontier
                     if (aur_pkg) |pkg| {
-                        try self.collectDeps(&next_frontier, &visited, actual_name, pkg.depends, depth);
-                        try self.collectDeps(&next_frontier, &visited, actual_name, pkg.makedepends, depth);
+                        try self.collectDeps(&next_frontier, &visited, node, pkg.depends, depth);
+                        try self.collectDeps(&next_frontier, &visited, node, pkg.makedepends, depth);
                     }
                 }
 
@@ -217,19 +217,19 @@ pub fn SolverImpl(comptime RegistryT: type) type {
             self: *Self,
             next_frontier: *std.ArrayListUnmanaged([]const u8),
             visited: *const std.StringHashMapUnmanaged(void),
-            parent: []const u8,
+            parent_node: *DepGraph.Node,
             deps: []const []const u8,
             depth: u32,
         ) !void {
             for (deps) |dep| {
                 const dep_name = registry_mod.parseDep(dep).name;
-                try self.graph.addEdge(parent, dep_name);
+                try parent_node.edges.put(self.allocator, dep_name, {});
                 if (!visited.contains(dep_name)) {
                     try next_frontier.append(self.allocator, dep_name);
                 } else {
                     // Update depth for already-visited nodes (diamond deps)
-                    if (self.graph.getNode(dep_name)) |node| {
-                        if (depth + 1 > node.meta.depth) node.meta.depth = depth + 1;
+                    if (self.graph.getNode(dep_name)) |dep_node| {
+                        if (depth + 1 > dep_node.meta.depth) dep_node.meta.depth = depth + 1;
                     }
                 }
             }
@@ -282,41 +282,36 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                 }
             }
 
-            // Seed queue with zero in-degree nodes (no AUR prerequisites)
-            var queue: std.ArrayListUnmanaged([]const u8) = .empty;
-            defer queue.deinit(alloc);
+            // Seed with zero in-degree nodes, then BFS: the queue doubles
+            // as the result since every dequeued node is in topological order.
+            var order: std.ArrayListUnmanaged([]const u8) = .empty;
 
             for (aur_nodes.items) |name| {
                 if (in_degree.get(name).? == 0) {
-                    try queue.append(alloc, name);
+                    try order.append(alloc, name);
                 }
             }
 
-            var result: std.ArrayListUnmanaged([]const u8) = .empty;
-
-            // BFS: dequeue node, decrement in-degree of its dependents
             var head: usize = 0;
-            while (head < queue.items.len) {
-                const current = queue.items[head];
+            while (head < order.items.len) {
+                const current = order.items[head];
                 head += 1;
-
-                try result.append(alloc, current);
 
                 for (reverse.get(current).?.items) |dependent| {
                     const deg = in_degree.getPtr(dependent).?;
                     deg.* -= 1;
                     if (deg.* == 0) {
-                        try queue.append(alloc, dependent);
+                        try order.append(alloc, dependent);
                     }
                 }
             }
 
             // Cycle detection
-            if (result.items.len != aur_nodes.items.len) {
+            if (order.items.len != aur_nodes.items.len) {
                 return error.CircularDependency;
             }
 
-            return try result.toOwnedSlice(alloc);
+            return try order.toOwnedSlice(alloc);
         }
 
         // ── Phase 3: Plan Assembly ───────────────────────────────────────
@@ -424,12 +419,6 @@ const DepGraph = struct {
             };
         }
         return result.value_ptr;
-    }
-
-    fn addEdge(self: *DepGraph, from: []const u8, to: []const u8) !void {
-        if (self.nodes.getPtr(from)) |node| {
-            try node.edges.put(self.allocator, to, {});
-        }
     }
 
     fn getNode(self: *DepGraph, name: []const u8) ?*Node {
