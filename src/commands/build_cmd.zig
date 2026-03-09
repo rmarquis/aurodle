@@ -529,9 +529,13 @@ pub fn clean(self: *Commands) !ExitCode {
 
     repository.cleanExecute(plan);
 
-    // Refresh libalpm's aurpkgs db to reflect the removals
+    // Refresh pacman's sync copy of the aurpkgs database.
+    // repo-remove modified the db in repo_dir, but pacman reads from
+    // /var/lib/pacman/sync/ which is a separate root-owned copy.
     if (plan.removed_packages.len > 0) {
-        pm.refreshAurDb() catch {};
+        refreshAurpkgsSyncDb(self.allocator, repository) catch |err| {
+            getStderr().print("warning: failed to refresh aurpkgs sync db: {}\n", .{err}) catch {};
+        };
     }
 
     return .success;
