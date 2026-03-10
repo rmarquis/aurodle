@@ -176,12 +176,14 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
     defer plan.deinit(self.allocator);
 
     // Phase 1.5: Resolve conflicts interactively
+    var removals: []const []const u8 = &.{};
     if (plan.conflicts.len > 0 and !self.flags.noconfirm) {
-        if (!try resolveConflicts(plan.conflicts)) {
+        removals = try resolveConflicts(self.allocator, plan.conflicts) orelse {
             printErr(":: unresolvable package conflicts detected\n");
             return .general_error;
-        }
+        };
     }
+    defer self.allocator.free(removals);
 
     if (plan.build_order.len == 0) {
         // Check for targets available in aurpkgs: either not installed (repo_aur)
@@ -211,7 +213,7 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
     }
 
     // Phase 2: Display and confirm
-    displayPlan(plan, self.pacman);
+    displayPlan(plan, self.pacman, removals);
 
     if (!self.flags.noconfirm) {
         if (!try utils.promptYesNo("Proceed with installation?")) {
@@ -292,19 +294,21 @@ pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
     defer plan.deinit(self.allocator);
 
     // Resolve conflicts interactively
+    var removals: []const []const u8 = &.{};
     if (plan.conflicts.len > 0 and !self.flags.noconfirm) {
-        if (!try resolveConflicts(plan.conflicts)) {
+        removals = try resolveConflicts(self.allocator, plan.conflicts) orelse {
             printErr(":: unresolvable package conflicts detected\n");
             return .general_error;
-        }
+        };
     }
+    defer self.allocator.free(removals);
 
     if (plan.build_order.len == 0) {
         getStdout().writeAll(" nothing to do -- all targets are up to date\n") catch {};
         return .success;
     }
 
-    displayPlan(plan, self.pacman);
+    displayPlan(plan, self.pacman, removals);
 
     if (!self.flags.noconfirm) {
         if (!try utils.promptYesNo("Proceed with build?")) {
@@ -836,13 +840,14 @@ fn refreshAurpkgsSyncDb(allocator: Allocator, repository: *repo_mod.Repository) 
 }
 
 /// Prompt the user to resolve each detected conflict.
-/// Returns true if all conflicts were accepted, false if any was rejected.
-fn resolveConflicts(conflicts: []const solver_mod.Conflict) !bool {
+/// Returns the list of packages accepted for removal, or null if any conflict was rejected.
+fn resolveConflicts(allocator: Allocator, conflicts: []const solver_mod.Conflict) !?[]const []const u8 {
     const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
     const stdin: std.fs.File = .{ .handle = std.posix.STDIN_FILENO };
-    if (!std.posix.isatty(stdin.handle)) return false;
+    if (!std.posix.isatty(stdin.handle)) return null;
 
     const w = stdout.deprecatedWriter();
+    var removals: std.ArrayListUnmanaged([]const u8) = .empty;
 
     for (conflicts) |conflict| {
         switch (conflict.kind) {
@@ -857,13 +862,26 @@ fn resolveConflicts(conflicts: []const solver_mod.Conflict) !bool {
         }
 
         var buf: [16]u8 = undefined;
-        const n = stdin.read(&buf) catch return false;
-        if (n == 0) return false;
+        const n = stdin.read(&buf) catch {
+            removals.deinit(allocator);
+            return null;
+        };
+        if (n == 0) {
+            removals.deinit(allocator);
+            return null;
+        }
         const response = std.mem.trim(u8, buf[0..n], " \t\n\r");
-        if (response.len == 0) return false;
-        if (response[0] != 'y' and response[0] != 'Y') return false;
+        if (response.len == 0 or (response[0] != 'y' and response[0] != 'Y')) {
+            removals.deinit(allocator);
+            return null;
+        }
+
+        // Track packages accepted for removal (installed conflicts only)
+        if (conflict.kind == .aur_installed or conflict.kind == .repo_installed) {
+            try removals.append(allocator, conflict.conflicts_with);
+        }
     }
-    return true;
+    return try removals.toOwnedSlice(allocator);
 }
 
 // ── Tests ────────────────────────────────────────────────────────────

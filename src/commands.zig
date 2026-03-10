@@ -171,7 +171,7 @@ pub const Commands = struct {
 
 // ── Shared Helpers (used by sub-modules) ─────────────────────────────
 
-pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman) void {
+pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman, removals: []const []const u8) void {
     const stdout = getStdout();
     const verbose = if (pm) |p| p.verbose_pkg_lists else false;
 
@@ -221,7 +221,7 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman) void {
     stdout.writeAll("resolving dependencies...\n") catch {};
 
     if (verbose) {
-        displayPlanVerbose(plan, pm, stdout);
+        displayPlanVerbose(plan, pm, removals, stdout);
     } else {
         displayPlanCompact(plan, pm, stdout);
     }
@@ -290,6 +290,7 @@ const hdr_new_ver = "New Version";
 fn displayPlanVerbose(
     plan: solver_mod.BuildPlan,
     pm: ?*pacman_mod.Pacman,
+    removals: []const []const u8,
     stdout: anytype,
 ) void {
     // Compute column widths across both sections, seeded from headers
@@ -297,8 +298,9 @@ fn displayPlanVerbose(
     var old_col: usize = hdr_old_ver.len;
     var has_old_version = false;
 
-    if (plan.build_order.len > 0) {
-        const w = hdr_aur.len + countDigits(plan.build_order.len);
+    const aur_count = plan.build_order.len + removals.len;
+    if (aur_count > 0) {
+        const w = hdr_aur.len + countDigits(aur_count);
         if (w > name_col) name_col = w;
     }
     const repo_count = plan.repo_deps.len + plan.repo_targets.len;
@@ -317,6 +319,18 @@ fn displayPlanVerbose(
             }
         }
     }
+    // Account for removals in column widths
+    for (removals) |name| {
+        if (name.len > name_col) name_col = name.len;
+        if (pm) |p| {
+            if (p.installedVersion(name)) |v| {
+                has_old_version = true;
+                if (v.len > old_col) old_col = v.len;
+            }
+        }
+    }
+    if (removals.len > 0) has_old_version = true;
+
     const repo_lists = [_][]const []const u8{ plan.repo_targets, plan.repo_deps };
     for (repo_lists) |list| {
         for (list) |name| {
@@ -332,24 +346,41 @@ fn displayPlanVerbose(
         }
     }
 
-    // AUR section
-    if (plan.build_order.len > 0) {
+    // AUR section (includes removals)
+    if (aur_count > 0) {
         stdout.writeByte('\n') catch {};
-        stdout.print(hdr_aur[0 .. hdr_aur.len - 1] ++ "{d})", .{plan.build_order.len}) catch {};
-        pad(stdout, countDigits(plan.build_order.len) + hdr_aur.len, name_col);
+        stdout.print(hdr_aur[0 .. hdr_aur.len - 1] ++ "{d})", .{aur_count}) catch {};
+        pad(stdout, countDigits(aur_count) + hdr_aur.len, name_col);
         if (has_old_version) {
             stdout.writeAll(hdr_old_ver) catch {};
             pad(stdout, hdr_old_ver.len, old_col);
         }
         stdout.writeAll(hdr_new_ver ++ "\n\n") catch {};
 
+        // Packages being removed (old version, no new version)
+        for (removals) |name| {
+            stdout.writeAll(name) catch {};
+            pad(stdout, name.len, name_col);
+            if (has_old_version) {
+                const old_ver = if (pm) |p| p.installedVersion(name) orelse "?" else "?";
+                stdout.writeAll(old_ver) catch {};
+                pad(stdout, old_ver.len, old_col);
+            }
+            stdout.writeByte('\n') catch {};
+        }
+
+        // Packages being built/installed
         for (plan.build_order) |entry| {
             stdout.print("{s}{s}", .{ aur_prefix, entry.name }) catch {};
             pad(stdout, aur_prefix.len + entry.name.len, name_col);
             if (has_old_version) {
-                const old_ver = if (pm) |p| p.installedVersion(entry.name) orelse "-" else "-";
-                stdout.writeAll(old_ver) catch {};
-                pad(stdout, old_ver.len, old_col);
+                const old_ver = if (pm) |p| p.installedVersion(entry.name) orelse "" else "";
+                if (old_ver.len > 0) {
+                    stdout.writeAll(old_ver) catch {};
+                    pad(stdout, old_ver.len, old_col);
+                } else {
+                    pad(stdout, 0, old_col);
+                }
             }
             stdout.print("{s}\n", .{entry.version}) catch {};
         }
