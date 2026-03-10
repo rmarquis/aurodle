@@ -196,6 +196,23 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman) void {
         }
     }
 
+    // Warn about detected conflicts
+    if (plan.conflicts.len > 0) {
+        const stderr = getStderr();
+        for (plan.conflicts) |conflict| {
+            switch (conflict.kind) {
+                .aur_aur => stderr.print(
+                    "warning: {s} and {s} are in conflict\n",
+                    .{ conflict.package, conflict.conflicts_with },
+                ) catch {},
+                .aur_installed => stderr.print(
+                    "warning: {s} conflicts with installed package {s}\n",
+                    .{ conflict.package, conflict.conflicts_with },
+                ) catch {},
+            }
+        }
+    }
+
     stdout.writeAll("resolving dependencies...\n") catch {};
 
     if (verbose) {

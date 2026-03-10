@@ -23,11 +23,25 @@ pub const DependencyEntry = struct {
     depth: u32,
 };
 
+pub const Conflict = struct {
+    package: []const u8,
+    conflicts_with: []const u8,
+    kind: Kind,
+
+    pub const Kind = enum {
+        /// Two packages in the build plan conflict with each other.
+        aur_aur,
+        /// An AUR package conflicts with an already-installed package.
+        aur_installed,
+    };
+};
+
 pub const BuildPlan = struct {
     build_order: []BuildEntry,
     all_deps: []DependencyEntry,
     repo_deps: [][]const u8,
     repo_targets: [][]const u8,
+    conflicts: []Conflict = &.{},
 
     pub fn deinit(self: BuildPlan, allocator: Allocator) void {
         for (self.build_order) |entry| allocator.free(entry.aur_dep_bases);
@@ -35,6 +49,7 @@ pub const BuildPlan = struct {
         allocator.free(self.all_deps);
         allocator.free(self.repo_deps);
         allocator.free(self.repo_targets);
+        allocator.free(self.conflicts);
     }
 };
 
@@ -69,7 +84,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
         }
 
         /// Resolve a set of target packages into a BuildPlan.
-        /// Three-phase pipeline: discovery → topological sort → plan assembly.
+        /// Pipeline: discovery → conflict detection → topological sort → plan assembly.
         pub fn resolve(self: *Self, target_names: []const []const u8) !BuildPlan {
             // Record targets
             for (target_names) |name| {
@@ -79,12 +94,17 @@ pub fn SolverImpl(comptime RegistryT: type) type {
             // Phase 1: Discovery — BFS with batched AUR resolution
             try self.discover(target_names);
 
+            // Phase 1.5: Conflict detection — check conflicts metadata
+            const conflicts = try self.detectConflicts();
+
             // Phase 2: Topological sort — Kahn's algorithm on AUR nodes
             const order = try self.topoSort();
             defer self.allocator.free(order);
 
             // Phase 3: Plan assembly — pkgbase dedup + classification
-            return self.assemblePlan(order);
+            var plan = try self.assemblePlan(order);
+            plan.conflicts = conflicts;
+            return plan;
         }
 
         // ── Phase 1: Discovery (BFS with batched AUR resolution) ────────
@@ -236,6 +256,76 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                     }
                 }
             }
+        }
+
+        // ── Phase 1.5: Conflict Detection ────────────────────────────────
+
+        /// Scan AUR nodes for declared conflicts against other graph nodes
+        /// and installed packages. Returns warnings (does not block the build).
+        fn detectConflicts(self: *Self) ![]Conflict {
+            var conflicts: std.ArrayListUnmanaged(Conflict) = .empty;
+
+            // Track seen AUR↔AUR pairs to deduplicate bidirectional conflicts.
+            // Key: (smaller_name, larger_name) canonicalized as "smaller\x00larger".
+            var seen_pairs = std.StringHashMapUnmanaged(void){};
+            defer {
+                var it = seen_pairs.keyIterator();
+                while (it.next()) |key| self.allocator.free(key.*);
+                seen_pairs.deinit(self.allocator);
+            }
+
+            var graph_it = self.graph.nodes.iterator();
+            while (graph_it.next()) |entry| {
+                const node = entry.value_ptr;
+                const pkg = node.meta.aur_pkg orelse continue;
+
+                for (pkg.conflicts) |conflict_dep| {
+                    const conflict_name = registry_mod.parseDep(conflict_dep).name;
+
+                    // Skip self-conflicts (package conflicts with its own name,
+                    // common pattern for -git packages conflicting with stable)
+                    if (std.mem.eql(u8, conflict_name, node.meta.name)) continue;
+
+                    // AUR↔AUR: conflict target is another node in the graph
+                    if (self.graph.getNode(conflict_name)) |conflict_node| {
+                        if (conflict_node.meta.aur_pkg != null) {
+                            // Deduplicate: A↔B and B↔A produce the same conflict.
+                            // Canonical key: "smaller\x00larger"
+                            const a = if (std.mem.order(u8, node.meta.name, conflict_name) == .lt)
+                                node.meta.name
+                            else
+                                conflict_name;
+                            const b = if (std.mem.order(u8, node.meta.name, conflict_name) == .lt)
+                                conflict_name
+                            else
+                                node.meta.name;
+                            const pair_key = try std.mem.concat(self.allocator, u8, &.{ a, "\x00", b });
+                            const gop = try seen_pairs.getOrPut(self.allocator, pair_key);
+                            if (gop.found_existing) {
+                                self.allocator.free(pair_key);
+                            } else {
+                                try conflicts.append(self.allocator, .{
+                                    .package = node.meta.name,
+                                    .conflicts_with = conflict_name,
+                                    .kind = .aur_aur,
+                                });
+                            }
+                            continue;
+                        }
+                    }
+
+                    // AUR↔installed: conflict target is currently installed
+                    if (self.registry.pacman.isInstalled(conflict_name)) {
+                        try conflicts.append(self.allocator, .{
+                            .package = node.meta.name,
+                            .conflicts_with = conflict_name,
+                            .kind = .aur_installed,
+                        });
+                    }
+                }
+            }
+
+            return try conflicts.toOwnedSlice(self.allocator);
         }
 
         // ── Phase 2: Topological Sort (Kahn's Algorithm) ────────────────
@@ -447,10 +537,27 @@ const testing = std.testing;
 
 // ── Mock Registry ────────────────────────────────────────────────────────
 
+const MockInstalledSet = struct {
+    installed: std.StringHashMapUnmanaged(void) = .empty,
+
+    fn addInstalled(self: *MockInstalledSet, name: []const u8) void {
+        self.installed.put(testing.allocator, name, {}) catch unreachable;
+    }
+
+    pub fn isInstalled(self: MockInstalledSet, name: []const u8) bool {
+        return self.installed.contains(name);
+    }
+
+    fn deinit(self: *MockInstalledSet) void {
+        self.installed.deinit(testing.allocator);
+    }
+};
+
 const MockRegistry = struct {
     packages: std.StringHashMapUnmanaged(MockPackageInfo),
     aur_overrides: std.StringHashMapUnmanaged(MockPackageInfo),
     arena: std.heap.ArenaAllocator,
+    pacman: MockInstalledSet = .{},
 
     const MockPackageInfo = struct {
         source: registry_mod.Source,
@@ -473,11 +580,53 @@ const MockRegistry = struct {
     fn deinitMock(self: *MockRegistry) void {
         self.packages.deinit(testing.allocator);
         self.aur_overrides.deinit(testing.allocator);
+        self.pacman.deinit();
         self.arena.deinit();
     }
 
     fn addAurPackage(self: *MockRegistry, name: []const u8, depends: []const []const u8, makedepends: []const []const u8) void {
         self.addAurPackageWithBase(name, name, depends, makedepends);
+    }
+
+    fn addAurPackageWithConflicts(self: *MockRegistry, name: []const u8, depends: []const []const u8, conflicts: []const []const u8) void {
+        const alloc = self.arena.allocator();
+        const pkg = alloc.create(aur.Package) catch unreachable;
+        pkg.* = .{
+            .id = 0,
+            .name = name,
+            .pkgbase = name,
+            .pkgbase_id = 0,
+            .version = "1.0-1",
+            .description = null,
+            .url = null,
+            .url_path = null,
+            .maintainer = null,
+            .submitter = null,
+            .votes = 0,
+            .popularity = 0,
+            .first_submitted = 0,
+            .last_modified = 0,
+            .out_of_date = null,
+            .depends = depends,
+            .makedepends = &.{},
+            .checkdepends = &.{},
+            .optdepends = &.{},
+            .provides = &.{},
+            .conflicts = conflicts,
+            .replaces = &.{},
+            .groups = &.{},
+            .keywords = &.{},
+            .licenses = &.{},
+            .comaintainers = &.{},
+        };
+        self.packages.put(testing.allocator, name, .{
+            .source = .aur,
+            .version = "1.0-1",
+            .pkgbase = name,
+            .depends = depends,
+            .makedepends = &.{},
+            .aur_pkg = pkg,
+        }) catch unreachable;
     }
 
     fn addAurPackageWithBase(self: *MockRegistry, name: []const u8, pkgbase: []const u8, depends: []const []const u8, makedepends: []const []const u8) void {
@@ -1293,4 +1442,125 @@ test "resolve does not version-check repo_aur dependencies" {
             try testing.expectEqual(registry_mod.Source.repo_aur, d.source);
         }
     }
+}
+
+// ── Conflict Detection Tests ─────────────────────────────────────────────
+
+test "detectConflicts finds AUR↔AUR conflict" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    mock.addAurPackageWithConflicts("foo", &.{}, &.{"bar"});
+    mock.addAurPackage("bar", &.{}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{ "foo", "bar" });
+    defer plan.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), plan.conflicts.len);
+    try testing.expectEqual(Conflict.Kind.aur_aur, plan.conflicts[0].kind);
+    try testing.expectEqualStrings("foo", plan.conflicts[0].package);
+    try testing.expectEqualStrings("bar", plan.conflicts[0].conflicts_with);
+}
+
+test "detectConflicts finds AUR↔installed conflict" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // foo conflicts with "old-pkg" which is installed but not in the graph
+    mock.addAurPackageWithConflicts("foo", &.{}, &.{"old-pkg"});
+    mock.pacman.addInstalled("old-pkg");
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"foo"});
+    defer plan.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), plan.conflicts.len);
+    try testing.expectEqual(Conflict.Kind.aur_installed, plan.conflicts[0].kind);
+    try testing.expectEqualStrings("foo", plan.conflicts[0].package);
+    try testing.expectEqualStrings("old-pkg", plan.conflicts[0].conflicts_with);
+}
+
+test "detectConflicts ignores self-conflicts" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // -git package conflicting with its own name (common pattern)
+    mock.addAurPackageWithConflicts("foo-git", &.{}, &.{"foo-git"});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"foo-git"});
+    defer plan.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), plan.conflicts.len);
+}
+
+test "detectConflicts deduplicates bidirectional conflicts" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // Both packages declare conflict with each other
+    mock.addAurPackageWithConflicts("foo", &.{}, &.{"bar"});
+    mock.addAurPackageWithConflicts("bar", &.{}, &.{"foo"});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{ "foo", "bar" });
+    defer plan.deinit(testing.allocator);
+
+    // Should produce exactly one conflict, not two
+    try testing.expectEqual(@as(usize, 1), plan.conflicts.len);
+    try testing.expectEqual(Conflict.Kind.aur_aur, plan.conflicts[0].kind);
+}
+
+test "detectConflicts returns empty when no conflicts" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    mock.addAurPackage("foo", &.{}, &.{});
+    mock.addAurPackage("bar", &.{}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{ "foo", "bar" });
+    defer plan.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), plan.conflicts.len);
+}
+
+test "detectConflicts handles multiple conflicts from same package" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // foo conflicts with both bar and baz
+    mock.addAurPackageWithConflicts("foo", &.{}, &.{ "bar", "baz" });
+    mock.addAurPackage("bar", &.{}, &.{});
+    mock.addAurPackage("baz", &.{}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{ "foo", "bar", "baz" });
+    defer plan.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 2), plan.conflicts.len);
+}
+
+test "detectConflicts parses version constraints from conflict entries" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // conflict declared as "bar>=1.0" — should still match node "bar"
+    mock.addAurPackageWithConflicts("foo", &.{}, &.{"bar>=1.0"});
+    mock.addAurPackage("bar", &.{}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{ "foo", "bar" });
+    defer plan.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), plan.conflicts.len);
+    try testing.expectEqualStrings("bar", plan.conflicts[0].conflicts_with);
 }
