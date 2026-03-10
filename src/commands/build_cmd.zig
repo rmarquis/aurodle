@@ -555,7 +555,7 @@ fn buildLoop(
     var failed_bases: std.StringHashMapUnmanaged(void) = .empty;
     defer failed_bases.deinit(self.allocator);
 
-    for (plan.build_order) |entry| {
+    for (plan.build_order, 0..) |entry, i| {
         // Skip if a dependency failed, propagating failure to downstream entries
         if (hasFailedDep(entry, &failed_bases)) {
             getStderr().print(":: skipping {s} -- a dependency failed to build\n", .{entry.name}) catch {};
@@ -621,12 +621,14 @@ fn buildLoop(
             self.allocator.free(added);
         }
 
-        // Refresh aurpkgs sync DB so next makepkg -s can find just-built deps.
-        // repo-add updates the repo dir DB, but pacman's sync cache
-        // (/var/lib/pacman/sync/aurpkgs.db) is stale and root-owned.
-        refreshAurpkgsSyncDb(self.allocator, repository) catch |err| {
-            getStderr().print("warning: failed to refresh aurpkgs sync db: {}\n", .{err}) catch {};
-        };
+        // Refresh aurpkgs sync DB only when a subsequent build needs this package.
+        // repo-add updated the repo dir DB, but pacman's sync cache
+        // (/var/lib/pacman/sync/aurpkgs.db) is root-owned and separate.
+        if (anySubsequentEntryNeeds(plan.build_order[i + 1 ..], entry.pkgbase)) {
+            refreshAurpkgsSyncDb(self.allocator, repository) catch |err| {
+                getStderr().print("warning: failed to refresh aurpkgs sync db: {}\n", .{err}) catch {};
+            };
+        }
 
         // Invalidate registry cache so next resolve can find just-built deps
         reg.invalidate(&.{entry.name});
@@ -647,6 +649,16 @@ pub fn hasFailedDep(
 ) bool {
     for (entry.aur_dep_bases) |dep_base| {
         if (failed_bases.contains(dep_base)) return true;
+    }
+    return false;
+}
+
+/// Check whether any entry in `remaining` has `pkgbase` in its aur_dep_bases.
+fn anySubsequentEntryNeeds(remaining: []const solver_mod.BuildEntry, pkgbase: []const u8) bool {
+    for (remaining) |future| {
+        for (future.aur_dep_bases) |dep_base| {
+            if (std.mem.eql(u8, dep_base, pkgbase)) return true;
+        }
     }
     return false;
 }
@@ -854,6 +866,26 @@ test "hasFailedDep returns false when unrelated pkgbase is failed" {
     defer failed.deinit(testing.allocator);
     try failed.put(testing.allocator, "baz", {});
     try testing.expect(!hasFailedDep(entry, &failed));
+}
+
+test "anySubsequentEntryNeeds returns true when future entry depends on pkgbase" {
+    const entries = [_]solver_mod.BuildEntry{
+        .{ .name = "B", .pkgbase = "B", .version = "1.0", .is_target = false, .aur_dep_bases = &.{"A"} },
+        .{ .name = "C", .pkgbase = "C", .version = "1.0", .is_target = true, .aur_dep_bases = &.{"B"} },
+    };
+    try testing.expect(anySubsequentEntryNeeds(&entries, "A"));
+    try testing.expect(anySubsequentEntryNeeds(entries[1..], "B"));
+}
+
+test "anySubsequentEntryNeeds returns false when no future entry depends on pkgbase" {
+    const entries = [_]solver_mod.BuildEntry{
+        .{ .name = "B", .pkgbase = "B", .version = "1.0", .is_target = false, .aur_dep_bases = &.{"A"} },
+        .{ .name = "C", .pkgbase = "C", .version = "1.0", .is_target = true, .aur_dep_bases = &.{} },
+    };
+    // Nothing depends on "B"
+    try testing.expect(!anySubsequentEntryNeeds(&entries, "B"));
+    // Empty remaining slice
+    try testing.expect(!anySubsequentEntryNeeds(entries[2..], "A"));
 }
 
 test "upgrade returns general_error when pacman not initialized" {
