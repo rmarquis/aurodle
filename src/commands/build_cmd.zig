@@ -4,7 +4,6 @@ const aur = @import("../aur.zig");
 const alpm = @import("../alpm.zig");
 const git = @import("../git.zig");
 const devel = @import("../devel.zig");
-const registry_mod = @import("../registry.zig");
 const solver_mod = @import("../solver.zig");
 const repo_mod = @import("../repo.zig");
 const pacman_mod = @import("../pacman.zig");
@@ -228,7 +227,7 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
 
     // Phase 5: Build
     try repository.ensureExists();
-    const build_result = try buildLoop(self, plan, repository, reg, c_root);
+    const build_result = try buildLoop(self, plan, repository, c_root);
     defer build_result.deinit(self.allocator);
 
     if (build_result.signal_aborted) {
@@ -313,7 +312,7 @@ pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
 
     // Build
     try repository.ensureExists();
-    const result = try buildLoop(self, plan, repository, reg, c_root);
+    const result = try buildLoop(self, plan, repository, c_root);
     defer result.deinit(self.allocator);
 
     if (result.signal_aborted) return .signal_killed;
@@ -547,7 +546,6 @@ fn buildLoop(
     self: *Commands,
     plan: solver_mod.BuildPlan,
     repository: *repo_mod.Repository,
-    reg: *registry_mod.PackageRegistry,
     c_root: []const u8,
 ) !BuildResult {
     var succeeded: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -629,9 +627,6 @@ fn buildLoop(
                 getStderr().print("warning: failed to refresh aurpkgs sync db: {}\n", .{err}) catch {};
             };
         }
-
-        // Invalidate registry cache so next resolve can find just-built deps
-        reg.invalidate(&.{entry.name});
 
         try succeeded.append(self.allocator, entry.pkgbase);
     }
