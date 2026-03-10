@@ -614,13 +614,18 @@ flowchart TD
     F --> J[Add to dependency graph]
     J --> CD[Conflict detection]
     CD --> CD1[Build provides map from AUR nodes]
-    CD1 --> CD2{For each conflicts entry}
-    CD2 -->|Target in graph or provides map| CD3[AUR↔AUR conflict warning]
-    CD2 -->|Target installed| CD4[AUR↔installed conflict warning]
+    CD1 --> CD2{For each AUR node's conflicts}
+    CD2 -->|Name or provider in graph| CD3[AUR↔AUR warning]
+    CD2 -->|Installed by name or provider| CD4[AUR↔installed warning]
     CD2 -->|No match| CD5[Skip]
-    CD3 --> K
-    CD4 --> K
-    CD5 --> K
+    CD3 --> CD6
+    CD4 --> CD6
+    CD5 --> CD6
+    CD6{For each new repo dep}
+    CD6 -->|Sync pkg conflicts with installed| CD7[Repo↔installed warning]
+    CD6 -->|No conflict| CD8[Skip]
+    CD7 --> K
+    CD8 --> K
     K[Topological sort via Kahn's]
     K --> L{Remaining edges?}
     L -->|Yes| M[Error: circular dependency]
