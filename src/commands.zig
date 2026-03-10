@@ -241,7 +241,7 @@ fn displayPlanCompact(
         stdout.print("\nAUR Packages ({d})", .{plan.build_order.len}) catch {};
         stdout.writeByteNTimes(' ', hdr_width - aur_hdr) catch {};
         for (plan.build_order) |entry| {
-            stdout.print(" {s}-{s}", .{ entry.name, entry.version }) catch {};
+            stdout.print(" aur/{s}-{s}", .{ entry.name, entry.version }) catch {};
         }
         stdout.writeByte('\n') catch {};
     }
@@ -285,8 +285,9 @@ fn displayPlanVerbose(
         if (w > name_col) name_col = w;
     }
 
+    const aur_prefix = "aur/";
     for (plan.build_order) |entry| {
-        if (entry.name.len > name_col) name_col = entry.name.len;
+        if (aur_prefix.len + entry.name.len > name_col) name_col = aur_prefix.len + entry.name.len;
         if (pm) |p| {
             if (p.installedVersion(entry.name)) |v| {
                 has_old_version = true;
@@ -321,8 +322,8 @@ fn displayPlanVerbose(
         stdout.writeAll(hdr_new_ver ++ "\n\n") catch {};
 
         for (plan.build_order) |entry| {
-            stdout.writeAll(entry.name) catch {};
-            pad(stdout, entry.name.len, name_col);
+            stdout.print("{s}{s}", .{ aur_prefix, entry.name }) catch {};
+            pad(stdout, aur_prefix.len + entry.name.len, name_col);
             if (has_old_version) {
                 const old_ver = if (pm) |p| p.installedVersion(entry.name) orelse "-" else "-";
                 stdout.writeAll(old_ver) catch {};
