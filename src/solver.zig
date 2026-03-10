@@ -210,6 +210,11 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                         if (node.meta.pkgbase == null) {
                             node.meta.pkgbase = pkg.pkgbase;
                         }
+                        // Always store aur_pkg for conflict/provides detection,
+                        // even if the node isn't reclassified to .aur
+                        if (node.meta.aur_pkg == null) {
+                            node.meta.aur_pkg = pkg;
+                        }
                         if ((node.meta.source == .repo_aur or node.meta.source == .satisfied_aur) and self.targets.contains(actual_name)) {
                             const dominated = if (node.meta.version) |local_ver|
                                 alpm.vercmp(pkg.version, local_ver) > 0
@@ -218,7 +223,6 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                             if (dominated or self.rebuild) {
                                 node.meta.source = .aur;
                                 node.meta.version = pkg.version;
-                                node.meta.aur_pkg = pkg;
                             }
                         }
                     }
@@ -312,19 +316,20 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                     else
                         conflict_name;
 
-                    // Skip self-conflicts via provides (e.g. foo-git provides "foo"
-                    // and conflicts with "foo")
-                    if (std.mem.eql(u8, resolved_name, node.meta.name)) continue;
-
-                    // AUR↔AUR: conflict target (or its provider) is in the graph
-                    if (self.graph.getNode(resolved_name)) |conflict_node| {
-                        if (conflict_node.meta.aur_pkg != null) {
-                            _ = try self.addConflictPair(&seen_pairs, &conflicts, node.meta.name, resolved_name);
-                            continue;
+                    // AUR↔AUR: conflict target (or its provider) is a different node in the graph
+                    if (!std.mem.eql(u8, resolved_name, node.meta.name)) {
+                        if (self.graph.getNode(resolved_name)) |conflict_node| {
+                            if (conflict_node.meta.aur_pkg != null) {
+                                _ = try self.addConflictPair(&seen_pairs, &conflicts, node.meta.name, resolved_name);
+                                continue;
+                            }
                         }
                     }
 
-                    // AUR↔installed: conflict target is installed (by name or provider)
+                    // AUR↔installed: conflict target is installed (by name or provider).
+                    // This catches cases like foo-git provides+conflicts "foo" when
+                    // "foo" is actually installed — the provides self-reference doesn't
+                    // suppress the installed conflict check.
                     if (self.registry.pacman.isInstalled(conflict_name)) {
                         try conflicts.append(self.allocator, .{
                             .package = node.meta.name,
@@ -1679,6 +1684,26 @@ test "detectConflicts skips self-conflict via provides" {
     defer plan.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 0), plan.conflicts.len);
+}
+
+test "detectConflicts finds installed conflict even when provides resolves to self" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // foo-git provides "foo" and conflicts with "foo", and "foo" IS installed
+    mock.addAurPackageFull("foo-git", &.{}, &.{"foo"}, &.{"foo"});
+    mock.pacman.addInstalled("foo");
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"foo-git"});
+    defer plan.deinit(testing.allocator);
+
+    // Should detect AUR↔installed conflict (foo-git conflicts with installed "foo")
+    try testing.expectEqual(@as(usize, 1), plan.conflicts.len);
+    try testing.expectEqual(Conflict.Kind.aur_installed, plan.conflicts[0].kind);
+    try testing.expectEqualStrings("foo-git", plan.conflicts[0].package);
+    try testing.expectEqualStrings("foo", plan.conflicts[0].conflicts_with);
 }
 
 test "detectConflicts provides with versioned provides string" {
