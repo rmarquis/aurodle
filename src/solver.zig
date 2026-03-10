@@ -33,6 +33,8 @@ pub const Conflict = struct {
         aur_aur,
         /// An AUR package conflicts with an already-installed package.
         aur_installed,
+        /// A new repo dependency conflicts with an already-installed package.
+        repo_installed,
     };
 };
 
@@ -339,6 +341,29 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                                 });
                             }
                         }
+                    }
+                }
+            }
+
+            // Repo↔installed: new repo dependencies that conflict with installed packages.
+            // Only checked when pacman has syncPkgConflictsWithInstalled (production, not mock).
+            if (@hasDecl(@TypeOf(self.registry.pacman.*), "syncPkgConflictsWithInstalled")) {
+                var repo_it = self.graph.nodes.iterator();
+                while (repo_it.next()) |entry| {
+                    const node = entry.value_ptr;
+                    // Only check new repo deps (not already installed)
+                    if (node.meta.source != .repos) continue;
+
+                    if (self.registry.pacman.syncPkgConflictsWithInstalled(node.meta.name)) |installed_name| {
+                        // Don't warn if the conflicting installed package is also being
+                        // replaced/upgraded as part of this transaction
+                        if (self.graph.getNode(installed_name) != null) continue;
+
+                        try conflicts.append(self.allocator, .{
+                            .package = node.meta.name,
+                            .conflicts_with = installed_name,
+                            .kind = .repo_installed,
+                        });
                     }
                 }
             }

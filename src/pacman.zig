@@ -219,6 +219,37 @@ pub const Pacman = struct {
         return null;
     }
 
+    // ── Sync Package Conflict Queries ─────────────────────────────────────
+
+    /// Check if a sync db package conflicts with any installed package.
+    /// Returns the name of the first installed package that conflicts, or null.
+    /// Only checks official repos (skips aurpkgs).
+    pub fn syncPkgConflictsWithInstalled(self: Pacman, name: []const u8) ?[]const u8 {
+        // Find the package in official sync dbs
+        var pkg: ?alpm.AlpmPackage = null;
+        for (self.sync_dbs) |db| {
+            if (std.mem.eql(u8, db.getName(), self.aur_repo_name)) continue;
+            if (db.getPackage(name)) |p| {
+                pkg = p;
+                break;
+            }
+        }
+        const sync_pkg = pkg orelse return null;
+
+        // Check each declared conflict against installed packages
+        var conflicts = sync_pkg.getConflicts();
+        while (conflicts.next()) |dep| {
+            // Direct name check
+            if (self.isInstalled(dep.name)) return dep.name;
+            // Provider check: is the conflict target provided by something installed?
+            const local_pkgs = self.local_db.getPkgcache();
+            if (alpm.findSatisfier(local_pkgs, dep.name)) |satisfier| {
+                return satisfier.getName();
+            }
+        }
+        return null;
+    }
+
     // ── Version Satisfaction ─────────────────────────────────────────────
 
     /// Does the installed version of `name` satisfy `constraint`?

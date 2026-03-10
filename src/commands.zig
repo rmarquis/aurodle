@@ -209,6 +209,10 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman) void {
                     "warning: {s} conflicts with installed package {s}\n",
                     .{ conflict.package, conflict.conflicts_with },
                 ) catch {},
+                .repo_installed => stderr.print(
+                    "warning: new dependency {s} conflicts with installed package {s}\n",
+                    .{ conflict.package, conflict.conflicts_with },
+                ) catch {},
             }
         }
     }
