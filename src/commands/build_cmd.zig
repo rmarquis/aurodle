@@ -556,9 +556,10 @@ fn buildLoop(
     defer failed_bases.deinit(self.allocator);
 
     for (plan.build_order) |entry| {
-        // Skip if a dependency failed
-        if (hasFailedDep(entry, plan, &failed_bases)) {
+        // Skip if a dependency failed, propagating failure to downstream entries
+        if (hasFailedDep(entry, &failed_bases)) {
             getStderr().print(":: skipping {s} -- a dependency failed to build\n", .{entry.name}) catch {};
+            try failed_bases.put(self.allocator, entry.pkgbase, {});
             continue;
         }
 
@@ -642,19 +643,11 @@ fn buildLoop(
 
 pub fn hasFailedDep(
     entry: solver_mod.BuildEntry,
-    plan: solver_mod.BuildPlan,
     failed_bases: *const std.StringHashMapUnmanaged(void),
 ) bool {
-    _ = plan;
-    // Direct check: is this pkgbase itself failed?
-    if (failed_bases.contains(entry.pkgbase)) return true;
-
-    // Because build_order is topologically sorted, any dependency
-    // that was going to be built already ran. If it failed, it's in
-    // failed_bases. We check if any of this package's transitive
-    // AUR dependencies are in the failed set by checking all failed
-    // bases against the entry — a simple approach that works because
-    // later entries depend on earlier ones.
+    for (entry.aur_dep_bases) |dep_base| {
+        if (failed_bases.contains(dep_base)) return true;
+    }
     return false;
 }
 
@@ -829,34 +822,38 @@ test "hasFailedDep returns false for empty failed set" {
         .pkgbase = "foo",
         .version = "1.0",
         .is_target = true,
-    };
-    const plan = solver_mod.BuildPlan{
-        .build_order = &.{},
-        .all_deps = &.{},
-        .repo_deps = &.{},
-        .repo_targets = &.{},
+        .aur_dep_bases = &.{},
     };
     var failed: std.StringHashMapUnmanaged(void) = .empty;
-    try testing.expect(!hasFailedDep(entry, plan, &failed));
+    try testing.expect(!hasFailedDep(entry, &failed));
 }
 
-test "hasFailedDep returns true when own pkgbase is failed" {
+test "hasFailedDep returns true when aur dep pkgbase is failed" {
     const entry = solver_mod.BuildEntry{
         .name = "foo",
         .pkgbase = "foo",
         .version = "1.0",
         .is_target = true,
-    };
-    const plan = solver_mod.BuildPlan{
-        .build_order = &.{},
-        .all_deps = &.{},
-        .repo_deps = &.{},
-        .repo_targets = &.{},
+        .aur_dep_bases = &.{"bar"},
     };
     var failed: std.StringHashMapUnmanaged(void) = .empty;
     defer failed.deinit(testing.allocator);
-    try failed.put(testing.allocator, "foo", {});
-    try testing.expect(hasFailedDep(entry, plan, &failed));
+    try failed.put(testing.allocator, "bar", {});
+    try testing.expect(hasFailedDep(entry, &failed));
+}
+
+test "hasFailedDep returns false when unrelated pkgbase is failed" {
+    const entry = solver_mod.BuildEntry{
+        .name = "foo",
+        .pkgbase = "foo",
+        .version = "1.0",
+        .is_target = true,
+        .aur_dep_bases = &.{"bar"},
+    };
+    var failed: std.StringHashMapUnmanaged(void) = .empty;
+    defer failed.deinit(testing.allocator);
+    try failed.put(testing.allocator, "baz", {});
+    try testing.expect(!hasFailedDep(entry, &failed));
 }
 
 test "upgrade returns general_error when pacman not initialized" {

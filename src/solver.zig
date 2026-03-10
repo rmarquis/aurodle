@@ -11,6 +11,8 @@ pub const BuildEntry = struct {
     pkgbase: []const u8,
     version: []const u8,
     is_target: bool,
+    /// Pkgbases of AUR dependencies (for build failure propagation and sync DB refresh).
+    aur_dep_bases: []const []const u8 = &.{},
 };
 
 pub const DependencyEntry = struct {
@@ -28,6 +30,7 @@ pub const BuildPlan = struct {
     repo_targets: [][]const u8,
 
     pub fn deinit(self: BuildPlan, allocator: Allocator) void {
+        for (self.build_order) |entry| allocator.free(entry.aur_dep_bases);
         allocator.free(self.build_order);
         allocator.free(self.all_deps);
         allocator.free(self.repo_deps);
@@ -333,11 +336,23 @@ pub fn SolverImpl(comptime RegistryT: type) type {
 
                 if (!seen_pkgbase.contains(pkgbase)) {
                     try seen_pkgbase.put(alloc, pkgbase, {});
+
+                    // Collect pkgbases of AUR deps (deduplicated)
+                    var dep_bases: std.StringArrayHashMapUnmanaged(void) = .empty;
+                    defer dep_bases.deinit(alloc);
+                    for (node.edges.keys()) |dep_name| {
+                        const dep_node = self.graph.getNode(dep_name) orelse continue;
+                        if (dep_node.meta.source != .aur) continue;
+                        const dep_pkgbase = dep_node.meta.pkgbase orelse dep_name;
+                        try dep_bases.put(alloc, dep_pkgbase, {});
+                    }
+
                     try build_order.append(alloc, .{
                         .name = name,
                         .pkgbase = pkgbase,
                         .version = node.meta.version orelse "unknown",
                         .is_target = self.targets.contains(name),
+                        .aur_dep_bases = try alloc.dupe([]const u8, dep_bases.keys()),
                     });
                 }
             }
