@@ -284,6 +284,10 @@ fn runWithFullStack(
         const w = stderr.deprecatedWriter();
         if (err == error.PkgdestNotSet) {
             w.writeAll("error: PKGDEST is not set in /etc/makepkg.conf\n") catch {};
+        } else if (err == error.RepoNotInPacmanConf) {
+            w.writeAll("error: no pacman.conf repo has a Server = file:// matching PKGDEST\n") catch {};
+            w.writeAll(repo_mod.Repository.configInstructions()) catch {};
+            w.writeByte('\n') catch {};
         } else {
             w.print("error: failed to initialize repository: {}\n", .{err}) catch {};
         }

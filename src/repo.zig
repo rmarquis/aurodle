@@ -61,7 +61,8 @@ pub const Repository = struct {
 
         // Derive the repo name from pacman.conf by finding which section
         // has a Server = file:// URL pointing to PKGDEST.
-        const derived_name = try deriveRepoNameFromPacmanConf(allocator, repo_dir);
+        const derived_name = try deriveRepoNameFromPacmanConf(allocator, repo_dir) orelse
+            return error.RepoNotInPacmanConf;
 
         return initFromParts(allocator, cache_dir, repo_dir, conf, derived_name);
     }
