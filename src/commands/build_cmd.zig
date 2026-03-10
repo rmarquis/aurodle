@@ -188,7 +188,7 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
             } else if (dep.source == .satisfied_aur) {
                 // Reinstall if available in aurpkgs repo
                 if (self.pacman) |pm| {
-                    if (std.mem.eql(u8, pm.syncDbFor(dep.name) orelse "", "aurpkgs")) {
+                    if (pm.isAurRepo(pm.syncDbFor(dep.name) orelse "")) {
                         try aurpkgs_targets.append(self.allocator, dep.name);
                     }
                 }
@@ -488,7 +488,7 @@ pub fn clean(self: *Commands) !ExitCode {
     // Find aurpkgs packages that are no longer installed
     const uninstalled = pm.uninstalledAurpkgs() catch |err| switch (err) {
         error.AurDbNotConfigured => {
-            printErr("error: aurpkgs repository not configured in pacman.conf\n");
+            printErr("error: local AUR repository not configured in pacman.conf\n");
             return .general_error;
         },
         else => return err,
@@ -747,9 +747,10 @@ fn installAllTargets(self: *Commands, aurpkgs_names: []const []const u8, repo_na
         qualified_names.deinit(self.allocator);
     }
 
-    // AUR targets qualified with aurpkgs/
+    // AUR targets qualified with the local AUR repo name (e.g., aurpkgs/pkgname)
+    const aur_repo_name = if (self.repo) |r| r.repo_name else repo_mod.DEFAULT_REPO_NAME;
     for (aurpkgs_names) |name| {
-        const qualified = try std.fmt.allocPrint(self.allocator, "aurpkgs/{s}", .{name});
+        const qualified = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ aur_repo_name, name });
         try qualified_names.append(self.allocator, qualified);
         try argv.append(self.allocator, qualified);
     }
@@ -807,11 +808,12 @@ fn printBuildSummary(result: BuildResult) void {
     }
 }
 
-/// Copy the aurpkgs repo DB to pacman's sync cache so that subsequent
+/// Copy the local AUR repo DB to pacman's sync cache so that subsequent
 /// makepkg -s calls (which spawn their own pacman) see just-built packages.
-/// Only touches the aurpkgs entry — official repo DBs are left untouched.
+/// Only touches the local AUR repo entry — official repo DBs are left untouched.
 fn refreshAurpkgsSyncDb(allocator: Allocator, repository: *repo_mod.Repository) !void {
-    const sync_db_path = "/var/lib/pacman/sync/" ++ repo_mod.REPO_NAME ++ ".db";
+    const sync_db_path = try std.fmt.allocPrint(allocator, "/var/lib/pacman/sync/{s}.db", .{repository.repo_name});
+    defer allocator.free(sync_db_path);
     const result = try utils.runSudo(allocator, &.{ "cp", repository.db_path, sync_db_path });
     defer result.deinit(allocator);
     if (!result.success()) return error.SyncDbRefreshFailed;

@@ -278,20 +278,7 @@ fn runWithFullStack(
     aur_client: *aur.Client,
     parsed: ParsedCommand,
 ) !ExitCode {
-    // Initialize pacman (libalpm)
-    var pm = pacman_mod.Pacman.init(allocator) catch |err| {
-        const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
-        const w = stderr.deprecatedWriter();
-        w.print("error: failed to initialize pacman: {}\n", .{err}) catch {};
-        return .general_error;
-    };
-    defer pm.deinit();
-
-    // Initialize registry (cascade lookup: installed -> sync -> AUR -> provider)
-    var reg = registry_mod.PackageRegistry.init(allocator, &pm, aur_client);
-    defer reg.deinit();
-
-    // Initialize local repository
+    // Initialize local repository first (derives repo name from pacman.conf + PKGDEST)
     var repository = repo_mod.Repository.init(allocator) catch |err| {
         const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
         const w = stderr.deprecatedWriter();
@@ -303,6 +290,19 @@ fn runWithFullStack(
         return .general_error;
     };
     defer repository.deinit();
+
+    // Initialize pacman (libalpm) with the derived repo name
+    var pm = pacman_mod.Pacman.init(allocator, repository.repo_name) catch |err| {
+        const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
+        const w = stderr.deprecatedWriter();
+        w.print("error: failed to initialize pacman: {}\n", .{err}) catch {};
+        return .general_error;
+    };
+    defer pm.deinit();
+
+    // Initialize registry (cascade lookup: installed -> sync -> AUR -> provider)
+    var reg = registry_mod.PackageRegistry.init(allocator, &pm, aur_client);
+    defer reg.deinit();
 
     // Get cache root for git operations
     const cache_root = git.defaultCacheRoot(allocator) catch {

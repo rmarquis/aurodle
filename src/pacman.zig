@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const alpm = @import("alpm.zig");
+const repo_mod = @import("repo.zig");
 
 // ── Public Types ─────────────────────────────────────────────────────────
 
@@ -54,12 +55,14 @@ pub const Pacman = struct {
     local_db: alpm.Database,
     sync_dbs: []alpm.Database,
     aurpkgs_db: ?alpm.Database,
+    aur_repo_name: []const u8,
     owns_sync_dbs: bool,
     verbose_pkg_lists: bool = false,
 
     /// Initialize by parsing /etc/pacman.conf and registering all
     /// discovered sync databases.
-    pub fn init(allocator: Allocator) !Pacman {
+    /// `aur_repo_name` identifies the local AUR repository section in pacman.conf.
+    pub fn init(allocator: Allocator, aur_repo_name: []const u8) !Pacman {
         var handle = try alpm.Handle.init("/", "/var/lib/pacman/");
         errdefer handle.deinit();
 
@@ -68,7 +71,7 @@ pub const Pacman = struct {
 
         var aurpkgs_db: ?alpm.Database = null;
         for (conf.sync_dbs) |db| {
-            if (std.mem.eql(u8, db.getName(), "aurpkgs")) {
+            if (std.mem.eql(u8, db.getName(), aur_repo_name)) {
                 aurpkgs_db = db;
                 break;
             }
@@ -80,6 +83,7 @@ pub const Pacman = struct {
             .local_db = handle.getLocalDb(),
             .sync_dbs = conf.sync_dbs,
             .aurpkgs_db = aurpkgs_db,
+            .aur_repo_name = aur_repo_name,
             .owns_sync_dbs = true,
             .verbose_pkg_lists = conf.verbose_pkg_lists,
         };
@@ -92,9 +96,19 @@ pub const Pacman = struct {
         handle: alpm.Handle,
         sync_dbs: []alpm.Database,
     ) Pacman {
+        return initWithHandleAndName(allocator, handle, sync_dbs, repo_mod.DEFAULT_REPO_NAME);
+    }
+
+    /// Initialize with a pre-configured handle and custom AUR repo name.
+    pub fn initWithHandleAndName(
+        allocator: Allocator,
+        handle: alpm.Handle,
+        sync_dbs: []alpm.Database,
+        aur_repo_name: []const u8,
+    ) Pacman {
         var aurpkgs_db: ?alpm.Database = null;
         for (sync_dbs) |db| {
-            if (std.mem.eql(u8, db.getName(), "aurpkgs")) {
+            if (std.mem.eql(u8, db.getName(), aur_repo_name)) {
                 aurpkgs_db = db;
                 break;
             }
@@ -106,6 +120,7 @@ pub const Pacman = struct {
             .local_db = handle.getLocalDb(),
             .sync_dbs = sync_dbs,
             .aurpkgs_db = aurpkgs_db,
+            .aur_repo_name = aur_repo_name,
             .owns_sync_dbs = false,
         };
     }
@@ -113,6 +128,11 @@ pub const Pacman = struct {
     pub fn deinit(self: *Pacman) void {
         if (self.owns_sync_dbs) self.allocator.free(self.sync_dbs);
         self.handle.deinit();
+    }
+
+    /// Is this the name of the local AUR repository?
+    pub fn isAurRepo(self: Pacman, db_name: []const u8) bool {
+        return std.mem.eql(u8, db_name, self.aur_repo_name);
     }
 
     // ── Package Queries ──────────────────────────────────────────────────
@@ -139,7 +159,7 @@ pub const Pacman = struct {
     /// Is this package available in an official sync database (excludes aurpkgs)?
     pub fn isInOfficialSyncDb(self: Pacman, name: []const u8) bool {
         for (self.sync_dbs) |db| {
-            if (std.mem.eql(u8, db.getName(), "aurpkgs")) continue;
+            if (std.mem.eql(u8, db.getName(), self.aur_repo_name)) continue;
             if (db.getPackage(name) != null) return true;
         }
         return false;
@@ -193,7 +213,7 @@ pub const Pacman = struct {
     /// What version is available in official sync databases (excludes aurpkgs)?
     pub fn officialSyncVersion(self: Pacman, name: []const u8) ?[]const u8 {
         for (self.sync_dbs) |db| {
-            if (std.mem.eql(u8, db.getName(), "aurpkgs")) continue;
+            if (std.mem.eql(u8, db.getName(), self.aur_repo_name)) continue;
             if (db.getPackage(name)) |pkg| return pkg.getVersion();
         }
         return null;
@@ -224,7 +244,7 @@ pub const Pacman = struct {
     pub fn findProvider(self: Pacman, dep: []const u8) ?ProviderMatch {
         // Check official repos first (skip aurpkgs)
         for (self.sync_dbs) |db| {
-            if (std.mem.eql(u8, db.getName(), "aurpkgs")) continue;
+            if (std.mem.eql(u8, db.getName(), self.aur_repo_name)) continue;
 
             if (findProviderInDb(db, dep)) |match| return match;
         }
@@ -244,7 +264,7 @@ pub const Pacman = struct {
             .official_only => blk: {
                 // Filter out aurpkgs — iterate sync_dbs checking names
                 for (self.sync_dbs) |db| {
-                    if (std.mem.eql(u8, db.getName(), "aurpkgs")) continue;
+                    if (std.mem.eql(u8, db.getName(), self.aur_repo_name)) continue;
                     const pkgcache = db.getPkgcache();
                     if (alpm.findSatisfier(pkgcache, depstring)) |pkg| {
                         return pkg.getName();
@@ -317,7 +337,7 @@ pub const Pacman = struct {
             const name = pkg.getName();
             const in_official = blk: {
                 for (self.sync_dbs) |db| {
-                    if (std.mem.eql(u8, db.getName(), "aurpkgs")) continue;
+                    if (std.mem.eql(u8, db.getName(), self.aur_repo_name)) continue;
                     if (db.getPackage(name) != null) break :blk true;
                 }
                 break :blk false;
@@ -523,7 +543,7 @@ test "checkVersion: with epochs and pkgrel" {
 test "Pacman.init and deinit on Arch system" {
     if (!isArchLinux()) return error.SkipZigTest;
 
-    var pm = try Pacman.init(std.testing.allocator);
+    var pm = try Pacman.init(std.testing.allocator, repo_mod.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
     // Should have at least one sync db (core/extra)
@@ -533,7 +553,7 @@ test "Pacman.init and deinit on Arch system" {
 test "isInstalled returns true for pacman itself" {
     if (!isArchLinux()) return error.SkipZigTest;
 
-    var pm = try Pacman.init(std.testing.allocator);
+    var pm = try Pacman.init(std.testing.allocator, repo_mod.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
     try std.testing.expect(pm.isInstalled("pacman"));
@@ -543,7 +563,7 @@ test "isInstalled returns true for pacman itself" {
 test "installedVersion returns version for installed package" {
     if (!isArchLinux()) return error.SkipZigTest;
 
-    var pm = try Pacman.init(std.testing.allocator);
+    var pm = try Pacman.init(std.testing.allocator, repo_mod.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
     const version = pm.installedVersion("pacman");
@@ -556,7 +576,7 @@ test "installedVersion returns version for installed package" {
 test "isInSyncDb finds official packages" {
     if (!isArchLinux()) return error.SkipZigTest;
 
-    var pm = try Pacman.init(std.testing.allocator);
+    var pm = try Pacman.init(std.testing.allocator, repo_mod.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
     // glibc is always in an official sync db
@@ -567,7 +587,7 @@ test "isInSyncDb finds official packages" {
 test "syncDbFor returns correct repository name" {
     if (!isArchLinux()) return error.SkipZigTest;
 
-    var pm = try Pacman.init(std.testing.allocator);
+    var pm = try Pacman.init(std.testing.allocator, repo_mod.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
     // glibc is in core
@@ -581,7 +601,7 @@ test "syncDbFor returns correct repository name" {
 test "satisfies checks installed version against constraint" {
     if (!isArchLinux()) return error.SkipZigTest;
 
-    var pm = try Pacman.init(std.testing.allocator);
+    var pm = try Pacman.init(std.testing.allocator, repo_mod.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
     // pacman is definitely installed with version >= 1.0
@@ -595,7 +615,7 @@ test "satisfies checks installed version against constraint" {
 test "satisfiesDep checks dependency string against installed packages" {
     if (!isArchLinux()) return error.SkipZigTest;
 
-    var pm = try Pacman.init(std.testing.allocator);
+    var pm = try Pacman.init(std.testing.allocator, repo_mod.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
     try std.testing.expect(pm.satisfiesDep("glibc"));
@@ -605,7 +625,7 @@ test "satisfiesDep checks dependency string against installed packages" {
 test "findProvider finds package providing dependency" {
     if (!isArchLinux()) return error.SkipZigTest;
 
-    var pm = try Pacman.init(std.testing.allocator);
+    var pm = try Pacman.init(std.testing.allocator, repo_mod.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
     // glibc is a direct package name — should be found
@@ -620,7 +640,7 @@ test "findProvider finds package providing dependency" {
 test "allForeignPackages returns packages not in official repos" {
     if (!isArchLinux()) return error.SkipZigTest;
 
-    var pm = try Pacman.init(std.testing.allocator);
+    var pm = try Pacman.init(std.testing.allocator, repo_mod.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
     const foreign = try pm.allForeignPackages();
@@ -634,7 +654,7 @@ test "allForeignPackages returns packages not in official repos" {
         // Check it's truly not in official repos
         const in_official = blk: {
             for (pm.sync_dbs) |db| {
-                if (std.mem.eql(u8, db.getName(), "aurpkgs")) continue;
+                if (std.mem.eql(u8, db.getName(), pm.aur_repo_name)) continue;
                 if (db.getPackage(pkg.name) != null) break :blk true;
             }
             break :blk false;
@@ -646,7 +666,7 @@ test "allForeignPackages returns packages not in official repos" {
 test "repoDepSizes returns nonzero sizes for real packages" {
     if (!isArchLinux()) return error.SkipZigTest;
 
-    var pm = try Pacman.init(std.testing.allocator);
+    var pm = try Pacman.init(std.testing.allocator, repo_mod.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
     // glibc is always in sync dbs and installed
@@ -660,7 +680,7 @@ test "repoDepSizes returns nonzero sizes for real packages" {
 test "repoDepSizes returns zeros for unknown packages" {
     if (!isArchLinux()) return error.SkipZigTest;
 
-    var pm = try Pacman.init(std.testing.allocator);
+    var pm = try Pacman.init(std.testing.allocator, repo_mod.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
     const names = &[_][]const u8{"zzz-nonexistent-pkg-99999"};

@@ -4,8 +4,7 @@ const utils = @import("utils.zig");
 
 // ── Constants ────────────────────────────────────────────────────────────
 
-pub const REPO_NAME = "aurpkgs";
-pub const DB_FILENAME = "aurpkgs.db.tar.xz";
+pub const DEFAULT_REPO_NAME = "aurpkgs";
 pub const DEFAULT_PKGEXT = ".pkg.tar.zst";
 
 // ── Types ────────────────────────────────────────────────────────────────
@@ -37,15 +36,18 @@ pub const MakepkgConfig = struct {
 
 pub const Repository = struct {
     allocator: Allocator,
+    repo_name: []const u8,
     repo_dir: []const u8,
     db_path: []const u8,
     cache_dir: []const u8,
     makepkg_conf: MakepkgConfig,
     skip_repo_add: bool,
+    owns_repo_name: bool,
 
     /// Create a Repository using paths derived from makepkg.conf:
     /// - repo_dir: PKGDEST from makepkg.conf (required)
     /// - cache_dir: ~/.cache/aurodle (user-owned clones and logs)
+    /// - repo_name: derived from pacman.conf by matching PKGDEST to a Server directive
     /// Parses makepkg.conf for PKGDEST and PKGEXT.
     pub fn init(allocator: Allocator) !Repository {
         const home = std.posix.getenv("HOME") orelse return error.NoHomeDirectory;
@@ -57,7 +59,11 @@ pub const Repository = struct {
         const repo_dir = try allocator.dupe(u8, conf.pkgdest orelse return error.PkgdestNotSet);
         errdefer allocator.free(repo_dir);
 
-        return initFromParts(allocator, cache_dir, repo_dir, conf);
+        // Derive the repo name from pacman.conf by finding which section
+        // has a Server = file:// URL pointing to PKGDEST.
+        const derived_name = try deriveRepoNameFromPacmanConf(allocator, repo_dir);
+
+        return initFromParts(allocator, cache_dir, repo_dir, conf, derived_name);
     }
 
     /// Create a Repository with an explicit cache root (for testing).
@@ -67,27 +73,36 @@ pub const Repository = struct {
         const cache_dir = try allocator.dupe(u8, cache_root);
         errdefer allocator.free(cache_dir);
 
-        const repo_dir = try std.fs.path.join(allocator, &.{ cache_root, REPO_NAME });
+        const repo_dir = try std.fs.path.join(allocator, &.{ cache_root, DEFAULT_REPO_NAME });
 
-        return initFromParts(allocator, cache_dir, repo_dir, .{});
+        return initFromParts(allocator, cache_dir, repo_dir, .{}, null);
     }
 
-    fn initFromParts(allocator: Allocator, cache_dir: []const u8, repo_dir: []const u8, conf: MakepkgConfig) !Repository {
-        const db_path = try std.fs.path.join(allocator, &.{ repo_dir, DB_FILENAME });
+    fn initFromParts(allocator: Allocator, cache_dir: []const u8, repo_dir: []const u8, conf: MakepkgConfig, derived_name: ?[]const u8) !Repository {
+        const repo_name = derived_name orelse DEFAULT_REPO_NAME;
+        const owns_name = derived_name != null;
+
+        const db_filename = try std.fmt.allocPrint(allocator, "{s}.db.tar.xz", .{repo_name});
+        defer allocator.free(db_filename);
+
+        const db_path = try std.fs.path.join(allocator, &.{ repo_dir, db_filename });
         errdefer allocator.free(db_path);
 
         return .{
             .allocator = allocator,
+            .repo_name = repo_name,
             .cache_dir = cache_dir,
             .repo_dir = repo_dir,
             .db_path = db_path,
             .makepkg_conf = conf,
             .skip_repo_add = false,
+            .owns_repo_name = owns_name,
         };
     }
 
     pub fn deinit(self: *Repository) void {
         self.makepkg_conf.deinit(self.allocator);
+        if (self.owns_repo_name) self.allocator.free(self.repo_name);
         self.allocator.free(self.db_path);
         self.allocator.free(self.repo_dir);
         self.allocator.free(self.cache_dir);
@@ -190,8 +205,8 @@ pub const Repository = struct {
             if (entry.kind != .file) continue;
             // Skip non-package files
             if (std.mem.indexOf(u8, entry.name, ".pkg.tar.") == null) continue;
-            // Skip database files
-            if (std.mem.startsWith(u8, entry.name, "aurpkgs.")) continue;
+            // Skip database files (e.g., reponame.db.tar.xz, reponame.files.tar.xz)
+            if (self.isDbFile(entry.name)) continue;
 
             if (parsePackageFilename(entry.name)) |parsed| {
                 try packages.append(self.allocator, .{
@@ -207,22 +222,21 @@ pub const Repository = struct {
 
     // ── Configuration Check ──────────────────────────────────────────────
 
-    /// Check if [aurpkgs] repository is configured in pacman.conf.
+    /// Check if the local AUR repository is configured in pacman.conf.
     pub fn isConfigured(self: *const Repository) !bool {
-        _ = self;
-        return isConfiguredFromPath("/etc/pacman.conf");
+        return isConfiguredFromPathWithName("/etc/pacman.conf", self.repo_name);
     }
 
-    /// Copy-pasteable pacman.conf configuration for the aurpkgs repository.
+    /// Copy-pasteable pacman.conf configuration for the local AUR repository.
     pub fn configInstructions() []const u8 {
         return
-            \\Add the following to /etc/pacman.conf:
+            \\Add the following to /etc/pacman.conf (name can be customized):
             \\
             \\[aurpkgs]
             \\SigLevel = Optional TrustAll
             \\Server = file:///var/lib/aurodle/aurpkgs
             \\
-            \\Set PKGDEST in /etc/makepkg.conf:
+            \\Set PKGDEST in /etc/makepkg.conf to match the Server path:
             \\
             \\PKGDEST=/var/lib/aurodle/aurpkgs
             \\
@@ -259,7 +273,7 @@ pub const Repository = struct {
             var it = cache.iterate();
             while (try it.next()) |entry| {
                 if (entry.kind != .directory) continue;
-                if (std.mem.eql(u8, entry.name, REPO_NAME)) continue;
+                if (std.mem.eql(u8, entry.name, self.repo_name)) continue;
 
                 if (uninstalled.contains(entry.name)) {
                     try stale_clones.append(self.allocator, try self.allocator.dupe(u8, entry.name));
@@ -282,7 +296,7 @@ pub const Repository = struct {
             while (try it.next()) |entry| {
                 if (entry.kind != .file) continue;
                 if (std.mem.indexOf(u8, entry.name, ".pkg.tar.") == null) continue;
-                if (std.mem.startsWith(u8, entry.name, "aurpkgs.")) continue;
+                if (self.isDbFile(entry.name)) continue;
 
                 if (parsePackageFilename(entry.name)) |parsed| {
                     if (uninstalled.contains(parsed.name)) {
@@ -329,6 +343,13 @@ pub const Repository = struct {
             // Run repo-remove for each unique package name
             self.runRepoRemove(pkg_names) catch {};
         }
+    }
+
+    /// Check if a filename is a database file (e.g., reponame.db.tar.xz, reponame.files.tar.xz).
+    fn isDbFile(self: *const Repository, filename: []const u8) bool {
+        if (filename.len <= self.repo_name.len) return false;
+        if (!std.mem.startsWith(u8, filename, self.repo_name)) return false;
+        return filename[self.repo_name.len] == '.';
     }
 
     /// Run `repo-remove <db_path> <pkg1> <pkg2> ...`
@@ -391,8 +412,13 @@ pub fn parsePackageFilename(filename: []const u8) ?struct { name: []const u8, ve
     };
 }
 
-/// Check if [aurpkgs] is configured in a pacman.conf file.
+/// Check if [repo_name] is configured in a pacman.conf file.
 pub fn isConfiguredFromPath(path: []const u8) bool {
+    return isConfiguredFromPathWithName(path, DEFAULT_REPO_NAME);
+}
+
+/// Check if [name] is configured in a pacman.conf file.
+fn isConfiguredFromPathWithName(path: []const u8, name: []const u8) bool {
     const file = std.fs.cwd().openFile(path, .{}) catch return false;
     defer file.close();
 
@@ -404,9 +430,63 @@ pub fn isConfiguredFromPath(path: []const u8) bool {
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {
         const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (std.mem.eql(u8, trimmed, "[aurpkgs]")) return true;
+        // Match [name] section header
+        if (trimmed.len < 3 or trimmed[0] != '[' or trimmed[trimmed.len - 1] != ']') continue;
+        if (std.mem.eql(u8, trimmed[1 .. trimmed.len - 1], name)) return true;
     }
     return false;
+}
+
+/// Derive the local AUR repository name from pacman.conf by finding a section
+/// whose `Server = file://` URL matches the given PKGDEST path.
+///
+/// For example, if PKGDEST is `/var/lib/aurodle/mypkgs` and pacman.conf contains:
+///   [mypkgs]
+///   Server = file:///var/lib/aurodle/mypkgs
+///
+/// This returns "mypkgs".
+fn deriveRepoNameFromPacmanConf(allocator: Allocator, pkgdest: []const u8) !?[]const u8 {
+    const file = std.fs.cwd().openFile("/etc/pacman.conf", .{}) catch return null;
+    defer file.close();
+
+    var buf: [64 * 1024]u8 = undefined;
+    const len = file.readAll(&buf) catch return null;
+    const content = buf[0..len];
+
+    var current_section: ?[]const u8 = null;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+
+        // Section header: [reponame]
+        if (trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']') {
+            const name = trimmed[1 .. trimmed.len - 1];
+            if (std.mem.eql(u8, name, "options")) {
+                current_section = null;
+            } else {
+                current_section = name;
+            }
+            continue;
+        }
+
+        // Server directive with file:// protocol
+        if (current_section != null and std.mem.startsWith(u8, trimmed, "Server")) {
+            const eq_pos = std.mem.indexOfScalar(u8, trimmed, '=') orelse continue;
+            const url = std.mem.trim(u8, trimmed[eq_pos + 1 ..], " \t");
+
+            // Match "file:///path" against pkgdest
+            if (std.mem.startsWith(u8, url, "file://")) {
+                const server_path = url["file://".len..];
+                if (std.mem.eql(u8, server_path, pkgdest)) {
+                    return try allocator.dupe(u8, current_section.?);
+                }
+            }
+        }
+    }
+
+    return null;
 }
 
 // ── makepkg.conf Parsing ─────────────────────────────────────────────────
@@ -564,7 +644,6 @@ test "stripQuotes: mismatched quotes" {
 
 test "configInstructions contains required elements" {
     const instructions = Repository.configInstructions();
-    try std.testing.expect(std.mem.indexOf(u8, instructions, "[aurpkgs]") != null);
     try std.testing.expect(std.mem.indexOf(u8, instructions, "SigLevel") != null);
     try std.testing.expect(std.mem.indexOf(u8, instructions, "Server = file://") != null);
     try std.testing.expect(std.mem.indexOf(u8, instructions, "PKGDEST=") != null);
@@ -617,6 +696,32 @@ test "isConfiguredFromPath returns false when missing" {
 
 test "isConfiguredFromPath returns false for nonexistent file" {
     try std.testing.expect(!isConfiguredFromPath("/tmp/nonexistent-aurodle-test-pacman.conf"));
+}
+
+test "isConfiguredFromPathWithName detects custom repo name" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "pacman.conf",
+        .data =
+        \\[options]
+        \\HoldPkg = pacman glibc
+        \\
+        \\[core]
+        \\Include = /etc/pacman.d/mirrorlist
+        \\
+        \\[myaur]
+        \\SigLevel = Optional TrustAll
+        \\Server = file:///var/lib/aurodle/myaur
+        ,
+    });
+
+    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "pacman.conf");
+    defer std.testing.allocator.free(path);
+
+    try std.testing.expect(isConfiguredFromPathWithName(path, "myaur"));
+    try std.testing.expect(!isConfiguredFromPathWithName(path, "aurpkgs"));
 }
 
 test "ensureExists creates directories" {
@@ -805,8 +910,8 @@ test "listPackages skips database files" {
 
     var repo_dir = try std.fs.cwd().openDir(repo.repo_dir, .{});
     defer repo_dir.close();
-    try repo_dir.writeFile(.{ .sub_path = "aurpkgs.db.tar.xz", .data = "db" });
-    try repo_dir.writeFile(.{ .sub_path = "aurpkgs.files.tar.xz", .data = "files" });
+    try repo_dir.writeFile(.{ .sub_path = DEFAULT_REPO_NAME ++ ".db.tar.xz", .data = "db" });
+    try repo_dir.writeFile(.{ .sub_path = DEFAULT_REPO_NAME ++ ".files.tar.xz", .data = "files" });
     try repo_dir.writeFile(.{ .sub_path = "yay-12.3.5-1-x86_64.pkg.tar.zst", .data = "pkg" });
 
     const pkgs = try repo.listPackages();
@@ -851,7 +956,7 @@ test "clean identifies stale clones" {
     try std.testing.expectEqualStrings("paru", result.removed_clones[0]);
 }
 
-test "clean skips aurpkgs directory" {
+test "clean skips repo directory" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -863,13 +968,13 @@ test "clean skips aurpkgs directory" {
 
     try repo.ensureExists();
 
-    // Even if "aurpkgs" were passed as uninstalled, the directory should be skipped
-    const result = try repo.clean(&.{REPO_NAME});
+    // Even if the repo name were passed as uninstalled, the directory should be skipped
+    const result = try repo.clean(&.{DEFAULT_REPO_NAME});
     defer repo.freeCleanResult(result);
 
-    // aurpkgs should not appear as stale clones
+    // repo dir should not appear as stale clones
     for (result.removed_clones) |name| {
-        try std.testing.expect(!std.mem.eql(u8, name, REPO_NAME));
+        try std.testing.expect(!std.mem.eql(u8, name, DEFAULT_REPO_NAME));
     }
 }
 
@@ -988,6 +1093,6 @@ test "Repository paths are correct" {
     var repo = try Repository.initWithRoot(std.testing.allocator, tmp_path);
     defer repo.deinit();
 
-    try std.testing.expect(std.mem.endsWith(u8, repo.repo_dir, "/aurpkgs"));
-    try std.testing.expect(std.mem.endsWith(u8, repo.db_path, "/aurpkgs/aurpkgs.db.tar.xz"));
+    try std.testing.expect(std.mem.endsWith(u8, repo.repo_dir, "/" ++ DEFAULT_REPO_NAME));
+    try std.testing.expect(std.mem.endsWith(u8, repo.db_path, "/" ++ DEFAULT_REPO_NAME ++ "/" ++ DEFAULT_REPO_NAME ++ ".db.tar.xz"));
 }

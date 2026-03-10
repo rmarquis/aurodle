@@ -244,7 +244,7 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
 
         fn resolveProvider(self: *Self, name: []const u8) ?Resolution {
             const provider = self.pacman.findProvider(name) orelse return null;
-            const from_aurpkgs = std.mem.eql(u8, provider.db_name, "aurpkgs");
+            const from_aurpkgs = self.pacman.isAurRepo(provider.db_name);
             const source: Source = if (self.pacman.isInstalled(provider.provider_name))
                 if (self.pacman.isInOfficialSyncDb(provider.provider_name)) .satisfied_repos else .satisfied_aur
             else if (from_aurpkgs)
@@ -341,6 +341,7 @@ const MockPacman = struct {
     installed: std.StringHashMapUnmanaged([]const u8), // name → version
     sync: std.StringHashMapUnmanaged(SyncEntry), // name → {version, db_name}
     providers: std.StringHashMapUnmanaged(pacman_mod.ProviderMatch),
+    aur_repo_name: []const u8 = "aurpkgs",
 
     const SyncEntry = struct {
         version: []const u8,
@@ -375,6 +376,10 @@ const MockPacman = struct {
 
     // ── Methods matching Pacman interface ────────────────────────────
 
+    pub fn isAurRepo(self: MockPacman, db_name: []const u8) bool {
+        return std.mem.eql(u8, db_name, self.aur_repo_name);
+    }
+
     pub fn isInstalled(self: MockPacman, name: []const u8) bool {
         return self.installed.contains(name);
     }
@@ -389,7 +394,7 @@ const MockPacman = struct {
 
     pub fn isInOfficialSyncDb(self: MockPacman, name: []const u8) bool {
         const entry = self.sync.get(name) orelse return false;
-        return !std.mem.eql(u8, entry.db_name, "aurpkgs");
+        return !self.isAurRepo(entry.db_name);
     }
 
     pub fn syncDbFor(self: MockPacman, name: []const u8) ?[]const u8 {
@@ -404,7 +409,7 @@ const MockPacman = struct {
 
     pub fn officialSyncVersion(self: MockPacman, name: []const u8) ?[]const u8 {
         const entry = self.sync.get(name) orelse return null;
-        if (std.mem.eql(u8, entry.db_name, "aurpkgs")) return null;
+        if (self.isAurRepo(entry.db_name)) return null;
         return entry.version;
     }
 
