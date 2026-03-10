@@ -285,6 +285,8 @@ graph TB
           repo_deps: []const []const u8,
           /// Repo packages explicitly requested by the user (reinstalled via pacman -S)
           repo_targets: []const []const u8,
+          /// Detected package conflicts (warnings, does not block the build)
+          conflicts: []const Conflict,
       };
 
       pub const BuildEntry = struct {
@@ -292,6 +294,14 @@ graph TB
           pkgbase: []const u8,
           version: []const u8,
           is_target: bool,
+          /// Pkgbases of AUR deps (for build failure propagation + sync DB refresh)
+          aur_dep_bases: []const []const u8,
+      };
+
+      pub const Conflict = struct {
+          package: []const u8,
+          conflicts_with: []const u8,
+          kind: Kind, // aur_aur | aur_installed
       };
 
       pub const DependencyEntry = struct {
@@ -302,7 +312,7 @@ graph TB
       };
   };
   ```
-- **Hidden Complexity**: Recursive dependency graph construction with cycle detection (via coloring: white/gray/black), pkgname-to-pkgbase deduplication (multiple pkgnames may share a pkgbase — only build once), topological sort using Kahn's algorithm, dependency type handling (depends vs makedepends vs checkdepends), the distinction between "needed for build order" and "needed for display", and target-vs-dependency classification for repo packages (repo_targets vs repo_deps).
+- **Hidden Complexity**: BFS dependency discovery with batched AUR resolution (`resolveMany()` per frontier level), provides-aware conflict detection (Phase 1.5: builds reverse provides map, checks AUR↔AUR and AUR↔installed conflicts with bidirectional deduplication), pkgname-to-pkgbase deduplication (multiple pkgnames may share a pkgbase — only build once), topological sort using Kahn's algorithm with cycle detection, dependency type handling (depends vs makedepends), build failure propagation via `aur_dep_bases`, and target-vs-dependency classification for repo packages (repo_targets vs repo_deps).
 - **Depth Score**: **Deep** — A single `resolve()` call hides the entire graph algorithm pipeline. The caller gets a ready-to-execute build plan.
 
 ---
@@ -512,7 +522,7 @@ src/
 | C pointer management, linked list traversal | `alpm.zig` | Every module that queries packages |
 | HTTP lifecycle, JSON parsing, response caching | `aur.zig` | Resolver and commands |
 | Multi-source lookup priority, batch optimization | `registry.zig` | Resolver |
-| Cycle detection, topological sort, pkgbase dedup | `solver.zig` | Command orchestration |
+| BFS discovery, conflict detection, topological sort, pkgbase dedup, failure propagation | `solver.zig` | Command orchestration |
 | `$PKGDEST` resolution, `repo-add` invocation, split package handling | `repo.zig` | Build commands |
 | makepkg output tee, process pipe management | `utils.zig` | Every module that runs external commands |
 
@@ -602,10 +612,19 @@ flowchart TD
     H --> I[Registry: classify each dependency]
     I --> B
     F --> J[Add to dependency graph]
-    J --> K[Topological sort via Kahn's]
+    J --> CD[Conflict detection]
+    CD --> CD1[Build provides map from AUR nodes]
+    CD1 --> CD2{For each conflicts entry}
+    CD2 -->|Target in graph or provides map| CD3[AUR↔AUR conflict warning]
+    CD2 -->|Target installed| CD4[AUR↔installed conflict warning]
+    CD2 -->|No match| CD5[Skip]
+    CD3 --> K
+    CD4 --> K
+    CD5 --> K
+    K[Topological sort via Kahn's]
     K --> L{Remaining edges?}
     L -->|Yes| M[Error: circular dependency]
-    L -->|No| N[BuildPlan with ordered entries]
+    L -->|No| N[BuildPlan with ordered entries + conflicts]
 ```
 
 **Buildorder display prefixes** combine `is_target` with `Source`:
