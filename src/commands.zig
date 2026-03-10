@@ -196,7 +196,8 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman) void {
         }
     }
 
-    // Warn about detected conflicts
+    // Warn about detected conflicts (informational for resolve/buildorder commands;
+    // sync/build handle these interactively before reaching displayPlan)
     if (plan.conflicts.len > 0) {
         const stderr = getStderr();
         for (plan.conflicts) |conflict| {

@@ -175,6 +175,14 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
     };
     defer plan.deinit(self.allocator);
 
+    // Phase 1.5: Resolve conflicts interactively
+    if (plan.conflicts.len > 0 and !self.flags.noconfirm) {
+        if (!try resolveConflicts(plan.conflicts)) {
+            printErr(":: unresolvable package conflicts detected\n");
+            return .general_error;
+        }
+    }
+
     if (plan.build_order.len == 0) {
         // Check for targets available in aurpkgs: either not installed (repo_aur)
         // or already installed (satisfied_aur) — reinstall like pacman -S would.
@@ -282,6 +290,14 @@ pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
         return handleResolveError(err);
     };
     defer plan.deinit(self.allocator);
+
+    // Resolve conflicts interactively
+    if (plan.conflicts.len > 0 and !self.flags.noconfirm) {
+        if (!try resolveConflicts(plan.conflicts)) {
+            printErr(":: unresolvable package conflicts detected\n");
+            return .general_error;
+        }
+    }
 
     if (plan.build_order.len == 0) {
         getStdout().writeAll(" nothing to do -- all targets are up to date\n") catch {};
@@ -817,6 +833,37 @@ fn refreshAurpkgsSyncDb(allocator: Allocator, repository: *repo_mod.Repository) 
     const result = try utils.runSudo(allocator, &.{ "cp", repository.db_path, sync_db_path });
     defer result.deinit(allocator);
     if (!result.success()) return error.SyncDbRefreshFailed;
+}
+
+/// Prompt the user to resolve each detected conflict.
+/// Returns true if all conflicts were accepted, false if any was rejected.
+fn resolveConflicts(conflicts: []const solver_mod.Conflict) !bool {
+    const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
+    const stdin: std.fs.File = .{ .handle = std.posix.STDIN_FILENO };
+    if (!std.posix.isatty(stdin.handle)) return false;
+
+    const w = stdout.deprecatedWriter();
+
+    for (conflicts) |conflict| {
+        switch (conflict.kind) {
+            .aur_aur => w.print(
+                ":: {s} and {s} are in conflict. Continue anyway? [y/N] ",
+                .{ conflict.package, conflict.conflicts_with },
+            ) catch {},
+            .aur_installed, .repo_installed => w.print(
+                ":: {s} and {s} are in conflict ({s}). Remove {s}? [y/N] ",
+                .{ conflict.package, conflict.conflicts_with, conflict.conflicts_with, conflict.conflicts_with },
+            ) catch {},
+        }
+
+        var buf: [16]u8 = undefined;
+        const n = stdin.read(&buf) catch return false;
+        if (n == 0) return false;
+        const response = std.mem.trim(u8, buf[0..n], " \t\n\r");
+        if (response.len == 0) return false;
+        if (response[0] != 'y' and response[0] != 'Y') return false;
+    }
+    return true;
 }
 
 // ── Tests ────────────────────────────────────────────────────────────

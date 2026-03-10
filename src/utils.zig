@@ -141,6 +141,27 @@ pub fn promptYesNo(message: []const u8) !bool {
     return response[0] != 'n' and response[0] != 'N';
 }
 
+/// Prompt the user with [y/N] (default No). Returns true only if 'y' or 'Y'.
+pub fn promptNoYes(message: []const u8) !bool {
+    const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
+    const stdin: std.fs.File = .{ .handle = std.posix.STDIN_FILENO };
+
+    if (!std.posix.isatty(stdin.handle)) {
+        return false;
+    }
+
+    const w = stdout.deprecatedWriter();
+    try w.print(":: {s} [y/N] ", .{message});
+
+    var buf: [16]u8 = undefined;
+    const n = stdin.read(&buf) catch return false;
+    if (n == 0) return false;
+
+    const response = std.mem.trim(u8, buf[0..n], " \t\n\r");
+    if (response.len == 0) return false;
+    return response[0] == 'y' or response[0] == 'Y';
+}
+
 /// Expand ~ at the start of a path to $HOME.
 /// Does NOT handle ~user syntax — only ~/path.
 /// Returns a newly allocated string.
