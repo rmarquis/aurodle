@@ -599,7 +599,8 @@ fn buildLoop(
         const clone_dir = try git.cloneDir(self.allocator, c_root, entry.pkgbase);
         defer self.allocator.free(clone_dir);
 
-        getStdout().print(":: building {s} {s}...\n", .{ entry.name, entry.version }) catch {};
+        const ver = if (devel.isVcsPackage(entry.name)) "latest" else entry.version;
+        getStdout().print(":: building {s} {s}...\n", .{ entry.name, ver }) catch {};
 
         // Run makepkg -s (--syncdeps installs missing deps as --asdeps)
         const makepkg_args: []const []const u8 = if (self.flags.rebuild)

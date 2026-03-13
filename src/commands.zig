@@ -5,6 +5,7 @@ const registry_mod = @import("registry.zig");
 const solver_mod = @import("solver.zig");
 const repo_mod = @import("repo.zig");
 const pacman_mod = @import("pacman.zig");
+const devel = @import("devel.zig");
 
 // Sub-modules (pub for test discovery via refAllDecls)
 pub const query = @import("commands/query.zig");
@@ -180,6 +181,7 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman, removals
         const stderr = getStderr();
         for (plan.build_order) |entry| {
             if (!entry.is_target) continue;
+            if (devel.isVcsPackage(entry.name)) continue;
             if (p.installedVersion(entry.name)) |old| {
                 if (std.mem.eql(u8, old, entry.version)) {
                     stderr.print("warning: {s}-{s} is up to date -- reinstalling\n", .{ entry.name, old }) catch {};
@@ -263,7 +265,7 @@ fn displayPlanCompact(
         stdout.print("\nAUR Packages ({d})", .{plan.build_order.len}) catch {};
         stdout.writeByteNTimes(' ', hdr_width - aur_hdr) catch {};
         for (plan.build_order) |entry| {
-            stdout.print(" aur/{s}-{s}", .{ entry.name, entry.version }) catch {};
+            stdout.print(" aur/{s}-{s}", .{ entry.name, displayVersion(entry) }) catch {};
         }
         stdout.writeByte('\n') catch {};
     }
@@ -382,7 +384,7 @@ fn displayPlanVerbose(
                     pad(stdout, 0, old_col);
                 }
             }
-            stdout.print("{s}\n", .{entry.version}) catch {};
+            stdout.print("{s}\n", .{displayVersion(entry)}) catch {};
         }
     }
 
@@ -423,6 +425,11 @@ fn displayPlanVerbose(
 fn pad(writer: anytype, current: usize, col: usize) void {
     const spaces = (col + 2) -| current;
     writer.writeByteNTimes(' ', if (spaces < 2) 2 else spaces) catch {};
+}
+
+/// Return "latest" for VCS packages whose version will be determined at build time.
+fn displayVersion(entry: solver_mod.BuildEntry) []const u8 {
+    return if (devel.isVcsPackage(entry.name)) "latest" else entry.version;
 }
 
 fn countDigits(n: usize) usize {
