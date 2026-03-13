@@ -11,6 +11,8 @@ pub const BuildEntry = struct {
     pkgbase: []const u8,
     version: []const u8,
     is_target: bool,
+    /// Unix timestamp when flagged out-of-date on AUR, or null.
+    out_of_date: ?i64 = null,
     /// Pkgbases of AUR dependencies (for build failure propagation and sync DB refresh).
     aur_dep_bases: []const []const u8 = &.{},
 };
@@ -521,6 +523,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                         .pkgbase = pkgbase,
                         .version = node.meta.version orelse "unknown",
                         .is_target = self.targets.contains(name),
+                        .out_of_date = if (node.meta.aur_pkg) |pkg| pkg.out_of_date else null,
                         .aur_dep_bases = try alloc.dupe([]const u8, dep_bases.keys()),
                     });
                 }

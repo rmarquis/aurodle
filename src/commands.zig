@@ -220,6 +220,32 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman, removals
         }
     }
 
+    // Warn about packages flagged out-of-date on AUR
+    {
+        const stderr = getStderr();
+        for (plan.build_order) |entry| {
+            if (entry.out_of_date) |ts| {
+                const es = std.time.epoch.EpochSeconds{ .secs = @intCast(ts) };
+                const ed = es.getEpochDay();
+                const yd = ed.calculateYearDay();
+                const md = yd.calculateMonthDay();
+                const ds = es.getDaySeconds();
+                stderr.print(
+                    "warning: {s} has been flagged out of date on {d}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z\n",
+                    .{
+                        entry.name,
+                        yd.year,
+                        md.month.numeric(),
+                        md.day_index + 1,
+                        ds.getHoursIntoDay(),
+                        ds.getMinutesIntoHour(),
+                        ds.getSecondsIntoMinute(),
+                    },
+                ) catch {};
+            }
+        }
+    }
+
     stdout.writeAll("resolving dependencies...\n") catch {};
 
     if (verbose) {
