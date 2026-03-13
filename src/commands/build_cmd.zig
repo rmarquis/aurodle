@@ -244,6 +244,13 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
         return .signal_killed;
     }
 
+    // Refresh sync DB so pacman -S sees the just-built packages.
+    if (build_result.succeeded.len > 0) {
+        refreshAurpkgsSyncDb(self.allocator, repository) catch |err| {
+            getStderr().print("warning: failed to refresh aurpkgs sync db: {}\n", .{err}) catch {};
+        };
+    }
+
     // Phase 6: Install targets (AUR from aurpkgs + repo targets in one transaction)
     var aur_targets: std.ArrayListUnmanaged([]const u8) = .empty;
     defer aur_targets.deinit(self.allocator);
@@ -336,6 +343,14 @@ pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
     defer result.deinit(self.allocator);
 
     if (result.signal_aborted) return .signal_killed;
+
+    // Final sync DB refresh so the packages are installable via pacman -S.
+    if (result.succeeded.len > 0) {
+        refreshAurpkgsSyncDb(self.allocator, repository) catch |err| {
+            getStderr().print("warning: failed to refresh aurpkgs sync db: {}\n", .{err}) catch {};
+        };
+    }
+
     if (result.failed.len > 0) {
         printBuildSummary(result);
         return .build_failed;
