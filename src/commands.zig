@@ -33,6 +33,7 @@ pub const Flags = struct {
     asdeps: bool = false,
     asexplicit: bool = false,
     devel: bool = false,
+    all: bool = false,
     by: ?aur.SearchField = null,
     sort: ?SortField = null,
     rsort: ?SortField = null,

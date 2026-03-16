@@ -220,6 +220,8 @@ fn parseArgs(args: []const []const u8, target_buf: [][]const u8) ParseError!Pars
                 flags.asexplicit = true;
             } else if (std.mem.eql(u8, arg, "--devel")) {
                 flags.devel = true;
+            } else if (std.mem.eql(u8, arg, "--all")) {
+                flags.all = true;
             } else if (std.mem.eql(u8, arg, "--by")) {
                 i += 1;
                 if (i >= args.len) return ParseError.MissingArgument;
@@ -371,6 +373,9 @@ fn printHelp() void {
         \\  --asdeps               Install as dependency
         \\  --asexplicit           Install as explicitly installed
         \\  --devel                Check VCS packages (-git, -svn, etc.) for updates
+        \\
+        \\Clean options:
+        \\  --all                  Remove all built packages (not just uninstalled)
         \\
         \\Search options:
         \\  --by <field>           Search by: name, name-desc, maintainer
@@ -536,6 +541,12 @@ test "parseArgs: --devel flag" {
     var buf: [256][]const u8 = undefined;
     const parsed = try parseArgs(&.{ "sync", "--devel", "foo" }, &buf);
     try std.testing.expect(parsed.flags.devel);
+}
+
+test "parseArgs: --all flag" {
+    var buf: [256][]const u8 = undefined;
+    const parsed = try parseArgs(&.{ "clean", "--all" }, &buf);
+    try std.testing.expect(parsed.flags.all);
 }
 
 test "parseArgs: --format flag with value" {

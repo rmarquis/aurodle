@@ -314,6 +314,53 @@ pub const Repository = struct {
         };
     }
 
+    /// Identify ALL artifacts for removal — every clone dir and package file.
+    /// Returns a plan — actual deletion is done by cleanExecute().
+    pub fn cleanAll(self: *const Repository) !CleanResult {
+        var all_clones: std.ArrayList([]const u8) = .empty;
+        errdefer {
+            for (all_clones.items) |s| self.allocator.free(s);
+            all_clones.deinit(self.allocator);
+        }
+
+        if (std.fs.cwd().openDir(self.cache_dir, .{ .iterate = true })) |dir_handle| {
+            var cache = dir_handle;
+            defer cache.close();
+
+            var it = cache.iterate();
+            while (try it.next()) |entry| {
+                if (entry.kind != .directory) continue;
+                if (std.mem.eql(u8, entry.name, self.repo_name)) continue;
+                try all_clones.append(self.allocator, try self.allocator.dupe(u8, entry.name));
+            }
+        } else |_| {}
+
+        var all_packages: std.ArrayList([]const u8) = .empty;
+        errdefer {
+            for (all_packages.items) |s| self.allocator.free(s);
+            all_packages.deinit(self.allocator);
+        }
+
+        if (std.fs.cwd().openDir(self.repo_dir, .{ .iterate = true })) |dir_handle| {
+            var repo_dir = dir_handle;
+            defer repo_dir.close();
+
+            var it = repo_dir.iterate();
+            while (try it.next()) |entry| {
+                if (entry.kind != .file) continue;
+                if (std.mem.indexOf(u8, entry.name, ".pkg.tar.") == null) continue;
+                if (self.isDbFile(entry.name)) continue;
+                try all_packages.append(self.allocator, try self.allocator.dupe(u8, entry.name));
+            }
+        } else |_| {}
+
+        return .{
+            .removed_clones = try all_clones.toOwnedSlice(self.allocator),
+            .removed_packages = try all_packages.toOwnedSlice(self.allocator),
+            .bytes_freed = 0,
+        };
+    }
+
     /// Execute the actual deletion after user confirmation.
     pub fn cleanExecute(self: *const Repository, plan: CleanResult) void {
         // Remove stale clone directories
@@ -1030,6 +1077,59 @@ test "clean with no uninstalled packages finds nothing" {
 
     // Empty uninstalled list — everything is still installed
     const result = try repo.clean(&.{});
+    defer repo.freeCleanResult(result);
+
+    try std.testing.expectEqual(@as(usize, 0), result.removed_clones.len);
+    try std.testing.expectEqual(@as(usize, 0), result.removed_packages.len);
+}
+
+test "cleanAll removes all clones and packages" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const tmp_path = try getTmpPath(tmp);
+    defer std.testing.allocator.free(tmp_path);
+
+    var repo = try Repository.initWithRoot(std.testing.allocator, tmp_path);
+    defer repo.deinit();
+
+    try repo.ensureExists();
+
+    // Create clone dirs
+    const yay_path = try std.fs.path.join(std.testing.allocator, &.{ tmp_path, "yay" });
+    defer std.testing.allocator.free(yay_path);
+    try std.fs.cwd().makePath(yay_path);
+
+    const paru_path = try std.fs.path.join(std.testing.allocator, &.{ tmp_path, "paru" });
+    defer std.testing.allocator.free(paru_path);
+    try std.fs.cwd().makePath(paru_path);
+
+    // Create package files
+    var repo_dir = try std.fs.cwd().openDir(repo.repo_dir, .{});
+    defer repo_dir.close();
+    try repo_dir.writeFile(.{ .sub_path = "yay-12.3.5-1-x86_64.pkg.tar.zst", .data = "pkg" });
+    try repo_dir.writeFile(.{ .sub_path = "paru-2.0.3-1-x86_64.pkg.tar.zst", .data = "pkg" });
+
+    const result = try repo.cleanAll();
+    defer repo.freeCleanResult(result);
+
+    try std.testing.expectEqual(@as(usize, 2), result.removed_clones.len);
+    try std.testing.expectEqual(@as(usize, 2), result.removed_packages.len);
+}
+
+test "cleanAll with empty repo finds nothing" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const tmp_path = try getTmpPath(tmp);
+    defer std.testing.allocator.free(tmp_path);
+
+    var repo = try Repository.initWithRoot(std.testing.allocator, tmp_path);
+    defer repo.deinit();
+
+    try repo.ensureExists();
+
+    const result = try repo.cleanAll();
     defer repo.freeCleanResult(result);
 
     try std.testing.expectEqual(@as(usize, 0), result.removed_clones.len);

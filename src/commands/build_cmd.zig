@@ -510,26 +510,30 @@ fn checkDevelUpgrades(
 /// Checks the aurpkgs database for packages no longer installed locally,
 /// then removes their clone directories, package files, and database entries.
 pub fn clean(self: *Commands) !ExitCode {
-    const pm = self.pacman orelse {
-        printErr("error: pacman not initialized\n");
-        return .general_error;
-    };
     const repository = self.repo orelse {
         printErr("error: repository not initialized\n");
         return .general_error;
     };
 
-    // Find aurpkgs packages that are no longer installed
-    const uninstalled = pm.uninstalledAurpkgs() catch |err| switch (err) {
-        error.AurDbNotConfigured => {
-            printErr("error: local AUR repository not configured in pacman.conf\n");
+    const plan = if (self.flags.all) blk: {
+        break :blk try repository.cleanAll();
+    } else blk: {
+        const pm = self.pacman orelse {
+            printErr("error: pacman not initialized\n");
             return .general_error;
-        },
-        else => return err,
-    };
-    defer self.allocator.free(uninstalled);
+        };
 
-    const plan = try repository.clean(uninstalled);
+        const uninstalled = pm.uninstalledAurpkgs() catch |err| switch (err) {
+            error.AurDbNotConfigured => {
+                printErr("error: local AUR repository not configured in pacman.conf\n");
+                return .general_error;
+            },
+            else => return err,
+        };
+        defer self.allocator.free(uninstalled);
+
+        break :blk try repository.clean(uninstalled);
+    };
     defer repository.freeCleanResult(plan);
 
     if (plan.removed_clones.len == 0 and plan.removed_packages.len == 0) {
@@ -541,15 +545,18 @@ pub fn clean(self: *Commands) !ExitCode {
 
     const stdout = getStdout();
 
+    const pkg_label = if (self.flags.all) "Packages" else "Stale packages";
+    const clone_label = if (self.flags.all) "Clone directories" else "Stale clone directories";
+
     if (plan.removed_packages.len > 0) {
-        stdout.print(":: Stale packages ({d}):\n", .{plan.removed_packages.len}) catch {};
+        stdout.print(":: {s} ({d}):\n", .{ pkg_label, plan.removed_packages.len }) catch {};
         for (plan.removed_packages) |filename| {
             stdout.print("  {s}\n", .{filename}) catch {};
         }
     }
 
     if (plan.removed_clones.len > 0) {
-        stdout.print(":: Stale clone directories ({d}):\n", .{plan.removed_clones.len}) catch {};
+        stdout.print(":: {s} ({d}):\n", .{ clone_label, plan.removed_clones.len }) catch {};
         for (plan.removed_clones) |name| {
             stdout.print("  {s}/\n", .{name}) catch {};
         }
