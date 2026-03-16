@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const registry_mod = @import("registry.zig");
 const aur = @import("aur.zig");
 const alpm = @import("alpm.zig");
+const pacman_mod = @import("pacman.zig");
 
 // ── Public Types ─────────────────────────────────────────────────────────
 
@@ -340,6 +341,9 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                         });
                     } else if (@hasDecl(@TypeOf(self.registry.pacman.*), "findProvider")) {
                         if (self.registry.pacman.findProvider(conflict_name)) |provider| {
+                            // Skip self-conflict via provides (e.g. auracle-git provides+conflicts
+                            // "auracle" and auracle-git is the installed provider of "auracle")
+                            if (std.mem.eql(u8, provider.provider_name, node.meta.name)) continue;
                             if (self.registry.pacman.isInstalled(provider.provider_name)) {
                                 try conflicts.append(self.allocator, .{
                                     .package = node.meta.name,
@@ -621,17 +625,29 @@ const testing = std.testing;
 
 const MockInstalledSet = struct {
     installed: std.StringHashMapUnmanaged(void) = .empty,
+    providers: std.StringHashMapUnmanaged([]const u8) = .empty,
 
     fn addInstalled(self: *MockInstalledSet, name: []const u8) void {
         self.installed.put(testing.allocator, name, {}) catch unreachable;
+    }
+
+    /// Register that `provider_name` provides `dep_name` (for findProvider lookups).
+    fn addProvider(self: *MockInstalledSet, dep_name: []const u8, provider_name: []const u8) void {
+        self.providers.put(testing.allocator, dep_name, provider_name) catch unreachable;
     }
 
     pub fn isInstalled(self: MockInstalledSet, name: []const u8) bool {
         return self.installed.contains(name);
     }
 
+    pub fn findProvider(self: MockInstalledSet, dep: []const u8) ?pacman_mod.ProviderMatch {
+        const provider_name = self.providers.get(dep) orelse return null;
+        return .{ .provider_name = provider_name, .provider_version = "", .db_name = "aurpkgs" };
+    }
+
     fn deinit(self: *MockInstalledSet) void {
         self.installed.deinit(testing.allocator);
+        self.providers.deinit(testing.allocator);
     }
 };
 
@@ -1724,4 +1740,23 @@ test "detectConflicts provides with versioned provides string" {
 
     try testing.expectEqual(@as(usize, 1), plan.conflicts.len);
     try testing.expectEqualStrings("bar", plan.conflicts[0].conflicts_with);
+}
+
+test "detectConflicts skips self-conflict via installed provider (VCS rebuild)" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // auracle-git provides+conflicts "auracle", and auracle-git is installed
+    // (it is the installed provider of "auracle"). Rebuilding auracle-git
+    // should NOT produce a self-conflict.
+    mock.addAurPackageFull("auracle-git", &.{}, &.{"auracle"}, &.{"auracle"});
+    mock.pacman.addInstalled("auracle-git");
+    mock.pacman.addProvider("auracle", "auracle-git");
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"auracle-git"});
+    defer plan.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), plan.conflicts.len);
 }
