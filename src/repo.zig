@@ -230,20 +230,20 @@ pub const Repository = struct {
 
     /// Copy-pasteable pacman.conf configuration for the local AUR repository.
     pub fn configInstructions() []const u8 {
-        return
-            \\Add the following to /etc/pacman.conf (name can be customized):
-            \\
-            \\[aurpkgs]
-            \\SigLevel = Optional TrustAll
-            \\Server = file:///var/lib/aurodle/aurpkgs
-            \\
-            \\Set PKGDEST in /etc/makepkg.conf to match the Server path:
-            \\
-            \\PKGDEST=/var/lib/aurodle/aurpkgs
-            \\
-            \\Then run:
-            \\  sudo install -d -o $USER /var/lib/aurodle/aurpkgs
-            \\  sudo pacman -Sy
+        return 
+        \\Add the following to /etc/pacman.conf (name can be customized):
+        \\
+        \\[aurpkgs]
+        \\SigLevel = Optional TrustAll
+        \\Server = file:///var/lib/aurodle/aurpkgs
+        \\
+        \\Set PKGDEST in /etc/makepkg.conf to match the Server path:
+        \\
+        \\PKGDEST=/var/lib/aurodle/aurpkgs
+        \\
+        \\Then run:
+        \\  sudo install -d -o $USER /var/lib/aurodle/aurpkgs
+        \\  sudo pacman -Sy
         ;
     }
 

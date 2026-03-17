@@ -137,7 +137,7 @@ pub fn listFiles(allocator: Allocator, cache_root: []const u8, pkgbase: []const 
 
     if (!dirExists(dest)) return error.NotCloned;
 
-    const result = try utils.runCommandIn(allocator, &.{"git", "ls-files"}, dest);
+    const result = try utils.runCommandIn(allocator, &.{ "git", "ls-files" }, dest);
     defer result.deinit(allocator);
 
     if (result.exit_code != 0) return error.InvalidRepository;

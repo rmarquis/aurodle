@@ -470,7 +470,10 @@ fn displayVersion(entry: solver_mod.BuildEntry) []const u8 {
 fn countDigits(n: usize) usize {
     var digits: usize = 1;
     var v = n;
-    while (v >= 10) { v /= 10; digits += 1; }
+    while (v >= 10) {
+        v /= 10;
+        digits += 1;
+    }
     return digits;
 }
 
@@ -485,7 +488,6 @@ fn printSize(writer: anytype, label: []const u8, bytes: i64) void {
         writer.print("{s}{s}{d} B\n", .{ label, sign, abs }) catch {};
     }
 }
-
 
 pub fn handleResolveError(err: anyerror) ExitCode {
     const stderr = getStderr();

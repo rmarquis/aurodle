@@ -481,9 +481,7 @@ test "vercmp: antisymmetry property" {
     for (pairs) |p| {
         const ab = vercmp(p[0], p[1]);
         const ba = vercmp(p[1], p[0]);
-        if (ab > 0) try std.testing.expect(ba < 0)
-        else if (ab < 0) try std.testing.expect(ba > 0)
-        else try std.testing.expectEqual(@as(i32, 0), ba);
+        if (ab > 0) try std.testing.expect(ba < 0) else if (ab < 0) try std.testing.expect(ba > 0) else try std.testing.expectEqual(@as(i32, 0), ba);
     }
 }
 
