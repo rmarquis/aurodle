@@ -13,16 +13,14 @@ const Flags = cmds.Flags;
 const SortField = cmds.SortField;
 const OutdatedEntry = cmds.OutdatedEntry;
 const getStdout = cmds.getStdout;
-const getStderr = cmds.getStderr;
 const printError = cmds.printError;
-const printErr = cmds.printErr;
 
 // ── Info Command ─────────────────────────────────────────────────────
 
 /// Display detailed info for AUR packages.
 pub fn info(self: *Commands, targets: []const []const u8) !ExitCode {
     const packages = self.aur_client.multiInfo(targets) catch |err| {
-        try printError(err);
+        try printError(err, self.err_writer);
         return .general_error;
     };
     defer self.allocator.free(packages);
@@ -37,8 +35,7 @@ pub fn info(self: *Commands, targets: []const []const u8) !ExitCode {
     var any_missing = false;
     for (targets) |target| {
         if (!found_names.contains(target)) {
-            const stderr = getStderr();
-            stderr.print("error: package '{s}' was not found\n", .{target}) catch {};
+            self.err_writer.print("error: package '{s}' was not found\n", .{target}) catch {};
             any_missing = true;
         }
     }
@@ -62,7 +59,7 @@ pub fn info(self: *Commands, targets: []const []const u8) !ExitCode {
 pub fn search(self: *Commands, query_str: []const u8) !ExitCode {
     const by_field = self.flags.by orelse .name_desc;
     const packages = self.aur_client.search(query_str, by_field) catch |err| {
-        try printError(err);
+        try printError(err, self.err_writer);
         return .general_error;
     };
     defer self.allocator.free(packages);
@@ -84,7 +81,7 @@ pub fn search(self: *Commands, query_str: []const u8) !ExitCode {
 /// List installed AUR packages with newer versions available.
 pub fn outdated(self: *Commands, filter: []const []const u8) !ExitCode {
     const pm = self.pacman orelse {
-        printErr("error: pacman not initialized\n");
+        self.err_writer.writeAll("error: pacman not initialized\n") catch {};
         return .general_error;
     };
 
@@ -113,7 +110,7 @@ pub fn outdated(self: *Commands, filter: []const []const u8) !ExitCode {
     for (to_check) |pkg| try names.append(self.allocator, pkg.name);
 
     const aur_pkgs = self.aur_client.multiInfo(names.items) catch |err| {
-        try printError(err);
+        try printError(err, self.err_writer);
         return .general_error;
     };
     defer self.allocator.free(aur_pkgs);
@@ -173,7 +170,7 @@ fn checkDevelPackages(
 ) !void {
     const c_root = self.cache_root orelse blk: {
         break :blk git.defaultCacheRoot(self.allocator) catch {
-            getStderr().writeAll("warning: could not determine cache directory for --devel check\n") catch {};
+            self.err_writer.writeAll("warning: could not determine cache directory for --devel check\n") catch {};
             return;
         };
     };
@@ -192,11 +189,11 @@ fn checkDevelPackages(
         if (already_outdated.contains(pkg.name)) continue;
 
         if (!self.flags.quiet) {
-            getStderr().print(":: checking {s}...\n", .{pkg.name}) catch {};
+            self.err_writer.print(":: checking {s}...\n", .{pkg.name}) catch {};
         }
 
         const vcs_result = devel.checkVersion(self.allocator, c_root, pkg.name) catch {
-            getStderr().print("warning: failed to check VCS version for {s}\n", .{pkg.name}) catch {};
+            self.err_writer.print("warning: failed to check VCS version for {s}\n", .{pkg.name}) catch {};
             continue;
         };
 
@@ -493,6 +490,7 @@ test "SortField.fromString returns null for unknown" {
 
 test "outdated returns general_error when pacman not initialized" {
     var cmds2 = Commands.init(testing.allocator, undefined, .{});
+    cmds2.err_writer = std.io.null_writer.any();
     const result = try cmds2.outdated(&.{});
     try testing.expectEqual(ExitCode.general_error, result);
 }

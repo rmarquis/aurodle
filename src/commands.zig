@@ -87,6 +87,7 @@ pub const Commands = struct {
     repo: ?*repo_mod.Repository,
     cache_root: ?[]const u8,
     flags: Flags,
+    err_writer: std.io.AnyWriter,
 
     pub fn init(allocator: Allocator, aur_client: *aur.Client, flags: Flags) Commands {
         return .{
@@ -97,6 +98,7 @@ pub const Commands = struct {
             .repo = null,
             .cache_root = null,
             .flags = flags,
+            .err_writer = defaultErrWriter(),
         };
     }
 
@@ -117,6 +119,7 @@ pub const Commands = struct {
             .repo = repository,
             .cache_root = cache_root,
             .flags = flags,
+            .err_writer = defaultErrWriter(),
         };
     }
 
@@ -173,19 +176,18 @@ pub const Commands = struct {
 
 // ── Shared Helpers (used by sub-modules) ─────────────────────────────
 
-pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman, removals: []const []const u8) void {
+pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman, removals: []const []const u8, err_writer: std.io.AnyWriter) void {
     const stdout = getStdout();
     const verbose = if (pm) |p| p.verbose_pkg_lists else false;
 
     // Warn about targets being reinstalled with the same version
     if (pm) |p| {
-        const stderr = getStderr();
         for (plan.build_order) |entry| {
             if (!entry.is_target) continue;
             if (devel.isVcsPackage(entry.name)) continue;
             if (p.installedVersion(entry.name)) |old| {
                 if (std.mem.eql(u8, old, entry.version)) {
-                    stderr.print("warning: {s}-{s} is up to date -- reinstalling\n", .{ entry.name, old }) catch {};
+                    err_writer.print("warning: {s}-{s} is up to date -- reinstalling\n", .{ entry.name, old }) catch {};
                 }
             }
         }
@@ -193,7 +195,7 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman, removals
             if (p.installedVersion(name)) |old| {
                 const new = p.syncVersion(name) orelse continue;
                 if (std.mem.eql(u8, old, new)) {
-                    stderr.print("warning: {s}-{s} is up to date -- reinstalling\n", .{ name, old }) catch {};
+                    err_writer.print("warning: {s}-{s} is up to date -- reinstalling\n", .{ name, old }) catch {};
                 }
             }
         }
@@ -202,18 +204,17 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman, removals
     // Warn about detected conflicts (informational for resolve/buildorder commands;
     // sync/build handle these interactively before reaching displayPlan)
     if (plan.conflicts.len > 0) {
-        const stderr = getStderr();
         for (plan.conflicts) |conflict| {
             switch (conflict.kind) {
-                .aur_aur => stderr.print(
+                .aur_aur => err_writer.print(
                     "warning: {s} and {s} are in conflict\n",
                     .{ conflict.package, conflict.conflicts_with },
                 ) catch {},
-                .aur_installed => stderr.print(
+                .aur_installed => err_writer.print(
                     "warning: {s} conflicts with installed package {s}\n",
                     .{ conflict.package, conflict.conflicts_with },
                 ) catch {},
-                .repo_installed => stderr.print(
+                .repo_installed => err_writer.print(
                     "warning: new dependency {s} conflicts with installed package {s}\n",
                     .{ conflict.package, conflict.conflicts_with },
                 ) catch {},
@@ -223,15 +224,13 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman, removals
 
     // Display provider selections (informational)
     if (plan.provider_selections.len > 0) {
-        const stderr = getStderr();
         for (plan.provider_selections) |sel| {
-            stderr.print(":: {s} provider: {s}\n", .{ sel.dep_name, sel.chosen }) catch {};
+            err_writer.print(":: {s} provider: {s}\n", .{ sel.dep_name, sel.chosen }) catch {};
         }
     }
 
     // Warn about packages flagged out-of-date on AUR
     {
-        const stderr = getStderr();
         for (plan.build_order) |entry| {
             if (entry.out_of_date) |ts| {
                 const es = std.time.epoch.EpochSeconds{ .secs = @intCast(ts) };
@@ -239,7 +238,7 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman, removals
                 const yd = ed.calculateYearDay();
                 const md = yd.calculateMonthDay();
                 const ds = es.getDaySeconds();
-                stderr.print(
+                err_writer.print(
                     "warning: {s} has been flagged out of date on {d}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z\n",
                     .{
                         entry.name,
@@ -489,31 +488,30 @@ fn printSize(writer: anytype, label: []const u8, bytes: i64) void {
     }
 }
 
-pub fn handleResolveError(err: anyerror) ExitCode {
-    const stderr = getStderr();
+pub fn handleResolveError(err: anyerror, err_writer: std.io.AnyWriter) ExitCode {
     if (err == error.CircularDependency) {
-        stderr.writeAll("error: circular dependency detected\n") catch {};
+        err_writer.writeAll("error: circular dependency detected\n") catch {};
     } else if (err == error.UnresolvableDependency) {
-        stderr.writeAll("error: unresolvable dependency\n") catch {};
+        err_writer.writeAll("error: unresolvable dependency\n") catch {};
     } else {
-        stderr.print("error: dependency resolution failed: {}\n", .{err}) catch {};
+        err_writer.print("error: dependency resolution failed: {}\n", .{err}) catch {};
     }
     return .general_error;
 }
 
-pub fn printError(err: anytype) !void {
-    const stderr = getStderr();
+pub fn printError(err: anytype, err_writer: std.io.AnyWriter) !void {
     switch (err) {
-        error.NetworkError => try stderr.writeAll("error: failed to connect to AUR\n"),
-        error.RateLimited => try stderr.writeAll("error: AUR rate limit exceeded. Wait and retry.\n"),
-        error.ApiError => try stderr.writeAll("error: AUR returned an error\n"),
-        error.MalformedResponse => try stderr.writeAll("error: received malformed response from AUR\n"),
-        else => try stderr.print("error: {}\n", .{err}),
+        error.NetworkError => try err_writer.writeAll("error: failed to connect to AUR\n"),
+        error.RateLimited => try err_writer.writeAll("error: AUR rate limit exceeded. Wait and retry.\n"),
+        error.ApiError => try err_writer.writeAll("error: AUR returned an error\n"),
+        error.MalformedResponse => try err_writer.writeAll("error: received malformed response from AUR\n"),
+        else => try err_writer.print("error: {}\n", .{err}),
     }
 }
 
-pub fn printErr(msg: []const u8) void {
-    getStderr().writeAll(msg) catch {};
+pub fn defaultErrWriter() std.io.AnyWriter {
+    const f: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
+    return f.deprecatedWriter().any();
 }
 
 // ── I/O Helpers ──────────────────────────────────────────────────────
@@ -528,11 +526,6 @@ pub fn getStdout() StdWriter {
     return f.deprecatedWriter();
 }
 
-pub fn getStderr() StdWriter {
-    const f: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
-    return f.deprecatedWriter();
-}
-
 // ── Tests ────────────────────────────────────────────────────────────
 
 test {
@@ -542,16 +535,16 @@ test {
 const testing = std.testing;
 
 test "handleResolveError returns general_error for CircularDependency" {
-    const result = handleResolveError(error.CircularDependency);
+    const result = handleResolveError(error.CircularDependency, std.io.null_writer.any());
     try testing.expectEqual(ExitCode.general_error, result);
 }
 
 test "handleResolveError returns general_error for UnresolvableDependency" {
-    const result = handleResolveError(error.UnresolvableDependency);
+    const result = handleResolveError(error.UnresolvableDependency, std.io.null_writer.any());
     try testing.expectEqual(ExitCode.general_error, result);
 }
 
 test "handleResolveError returns general_error for other errors" {
-    const result = handleResolveError(error.OutOfMemory);
+    const result = handleResolveError(error.OutOfMemory, std.io.null_writer.any());
     try testing.expectEqual(ExitCode.general_error, result);
 }

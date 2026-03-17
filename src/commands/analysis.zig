@@ -14,7 +14,7 @@ const displayPlan = cmds.displayPlan;
 /// Display the resolved dependency tree (human-readable).
 pub fn resolve(self: *Commands, targets: []const []const u8) !ExitCode {
     const reg = self.registry orelse {
-        cmds.printErr("error: registry not initialized\n");
+        self.err_writer.writeAll("error: registry not initialized\n") catch {};
         return .general_error;
     };
 
@@ -22,11 +22,11 @@ pub fn resolve(self: *Commands, targets: []const []const u8) !ExitCode {
     defer s.deinit();
 
     const plan = s.resolve(targets) catch |err| {
-        return handleResolveError(err);
+        return handleResolveError(err, self.err_writer);
     };
     defer plan.deinit(self.allocator);
 
-    displayPlan(plan, self.pacman, &.{});
+    displayPlan(plan, self.pacman, &.{}, self.err_writer);
     return .success;
 }
 
@@ -36,7 +36,7 @@ pub fn resolve(self: *Commands, targets: []const []const u8) !ExitCode {
 /// One package per line, in build order.
 pub fn buildorder(self: *Commands, targets: []const []const u8) !ExitCode {
     const reg = self.registry orelse {
-        cmds.printErr("error: registry not initialized\n");
+        self.err_writer.writeAll("error: registry not initialized\n") catch {};
         return .general_error;
     };
 
@@ -44,7 +44,7 @@ pub fn buildorder(self: *Commands, targets: []const []const u8) !ExitCode {
     defer s.deinit();
 
     const plan = s.resolve(targets) catch |err| {
-        return handleResolveError(err);
+        return handleResolveError(err, self.err_writer);
     };
     defer plan.deinit(self.allocator);
 
