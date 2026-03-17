@@ -6,6 +6,7 @@ const git = aurodle.git;
 const pacman_mod = aurodle.pacman;
 const registry_mod = aurodle.registry;
 const repo_mod = aurodle.repo;
+const utils = aurodle.utils;
 const Allocator = std.mem.Allocator;
 
 const ExitCode = commands.ExitCode;
@@ -309,6 +310,11 @@ fn runWithFullStack(
     // Initialize registry (cascade lookup: installed -> sync -> AUR -> provider)
     var reg = registry_mod.PackageRegistry.init(allocator, &pm, aur_client);
     defer reg.deinit();
+
+    // Enable interactive provider selection unless --noconfirm
+    if (!parsed.flags.noconfirm) {
+        reg.provider_chooser = &utils.promptProviderChoice;
+    }
 
     // Get cache root for git operations
     const cache_root = git.defaultCacheRoot(allocator) catch {

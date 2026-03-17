@@ -3,6 +3,24 @@ const Allocator = std.mem.Allocator;
 const aur = @import("aur.zig");
 const pacman_mod = @import("pacman.zig");
 
+// ── Provider Selection Types ─────────────────────────────────────────────
+
+pub const ProviderCandidate = struct {
+    name: []const u8,
+    version: []const u8,
+    db_name: []const u8, // repo name or "aur"
+};
+
+pub const ProviderChooserFn = *const fn (
+    dep_name: []const u8,
+    candidates: []const ProviderCandidate,
+) ?usize;
+
+pub const ProviderSelection = struct {
+    dep_name: []const u8,
+    chosen: []const u8,
+};
+
 // ── Public Types ─────────────────────────────────────────────────────────
 
 pub const Source = enum {
@@ -42,6 +60,9 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
         aur_client: *AurClientT,
         cache: std.StringHashMapUnmanaged(Resolution),
         pending_aur: std.StringArrayHashMapUnmanaged(void),
+        provider_chooser: ?ProviderChooserFn = null,
+        provider_choices: std.StringHashMapUnmanaged([]const u8) = .empty,
+        provider_selections: std.ArrayListUnmanaged(ProviderSelection) = .empty,
 
         pub fn init(allocator: Allocator, pm: *PacmanT, ac: *AurClientT) Self {
             return .{
@@ -56,6 +77,8 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
         pub fn deinit(self: *Self) void {
             self.cache.deinit(self.allocator);
             self.pending_aur.deinit(self.allocator);
+            self.provider_choices.deinit(self.allocator);
+            self.provider_selections.deinit(self.allocator);
         }
 
         /// Resolve a single dependency string through the cascade:
@@ -95,7 +118,7 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
             }
 
             // Tier 3: Provided by installed/sync package?
-            if (self.resolveProvider(spec.name)) |res| {
+            if (try self.resolveProvider(spec.name)) |res| {
                 try self.cacheResult(spec.name, res);
                 return res;
             }
@@ -147,7 +170,7 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
                     continue;
                 }
 
-                if (self.resolveProvider(spec.name)) |res| {
+                if (try self.resolveProvider(spec.name)) |res| {
                     try self.cacheResult(spec.name, res);
                     results.appendAssumeCapacity(res);
                     continue;
@@ -242,8 +265,67 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
             };
         }
 
-        fn resolveProvider(self: *Self, name: []const u8) ?Resolution {
-            const provider = self.pacman.findProvider(name) orelse return null;
+        fn resolveProvider(self: *Self, name: []const u8) !?Resolution {
+            // Check cached provider choice
+            if (self.provider_choices.get(name)) |chosen_name| {
+                return self.resolveProviderByName(name, chosen_name);
+            }
+
+            // Use findAllProviders if available, otherwise fall back to findProvider
+            if (comptime @hasDecl(PacmanT, "findAllProviders")) {
+                const all = try self.pacman.findAllProviders(self.allocator, name);
+                defer self.allocator.free(all);
+
+                if (all.len == 0) return null;
+
+                // Auto-select if exactly one is installed
+                if (all.len > 1) {
+                    var installed_idx: ?usize = null;
+                    var installed_count: usize = 0;
+                    for (all, 0..) |match, i| {
+                        if (self.pacman.isInstalled(match.provider_name)) {
+                            installed_idx = i;
+                            installed_count += 1;
+                        }
+                    }
+                    if (installed_count == 1) {
+                        const provider = all[installed_idx.?];
+                        try self.cacheProviderChoice(name, provider.provider_name);
+                        return self.makeProviderResolution(name, provider);
+                    }
+                }
+
+                // Single match or no chooser — use first
+                if (all.len == 1 or self.provider_chooser == null) {
+                    const provider = all[0];
+                    if (all.len > 1) {
+                        try self.cacheProviderChoice(name, provider.provider_name);
+                    }
+                    return self.makeProviderResolution(name, provider);
+                }
+
+                // Multiple matches + chooser — prompt user
+                var candidates: std.ArrayListUnmanaged(ProviderCandidate) = .empty;
+                defer candidates.deinit(self.allocator);
+                for (all) |match| {
+                    try candidates.append(self.allocator, .{
+                        .name = match.provider_name,
+                        .version = match.provider_version,
+                        .db_name = match.db_name,
+                    });
+                }
+
+                const idx = self.provider_chooser.?(name, candidates.items) orelse 0;
+                const provider = all[idx];
+                try self.cacheProviderChoice(name, provider.provider_name);
+                return self.makeProviderResolution(name, provider);
+            } else {
+                const provider = self.pacman.findProvider(name) orelse return null;
+                return self.makeProviderResolution(name, provider);
+            }
+        }
+
+        fn makeProviderResolution(self: *Self, name: []const u8, provider: pacman_mod.ProviderMatch) Resolution {
             const from_aurpkgs = self.pacman.isAurRepo(provider.db_name);
             const source: Source = if (self.pacman.isInstalled(provider.provider_name))
                 if (self.pacman.isInOfficialSyncDb(provider.provider_name)) .satisfied_repos else .satisfied_aur
@@ -259,14 +341,81 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
             };
         }
 
+        fn resolveProviderByName(self: *Self, dep_name: []const u8, provider_name: []const u8) ?Resolution {
+            // Look up the chosen provider in pacman
+            const provider = self.pacman.findProvider(dep_name) orelse return null;
+            if (std.mem.eql(u8, provider.provider_name, provider_name)) {
+                return self.makeProviderResolution(dep_name, provider);
+            }
+            // If the cached name doesn't match the first provider, scan all
+            if (comptime @hasDecl(PacmanT, "findAllProviders")) {
+                const all = self.pacman.findAllProviders(self.allocator, dep_name) catch return null;
+                defer self.allocator.free(all);
+                for (all) |match| {
+                    if (std.mem.eql(u8, match.provider_name, provider_name)) {
+                        return self.makeProviderResolution(dep_name, match);
+                    }
+                }
+            }
+            return null;
+        }
+
+        fn cacheProviderChoice(self: *Self, dep_name: []const u8, chosen: []const u8) !void {
+            try self.provider_choices.put(self.allocator, dep_name, chosen);
+            try self.provider_selections.append(self.allocator, .{
+                .dep_name = dep_name,
+                .chosen = chosen,
+            });
+        }
+
         fn resolveAurProvider(self: *Self, name: []const u8) !?Resolution {
+            // Check cached provider choice
+            if (self.provider_choices.get(name)) |chosen_name| {
+                // Try to find the chosen package in AUR
+                if (try self.aur_client.info(chosen_name)) |pkg| {
+                    return .{
+                        .name = pkg.name,
+                        .source = .aur,
+                        .version = pkg.version,
+                        .aur_pkg = pkg,
+                        .provider = pkg.name,
+                    };
+                }
+            }
+
             const results = self.aur_client.search(name, .provides) catch return null;
             defer self.allocator.free(results);
 
             if (results.len == 0) return null;
 
-            // Use the first provider found
-            const provider_pkg = results[0];
+            if (results.len == 1 or self.provider_chooser == null) {
+                const provider_pkg = results[0];
+                if (results.len > 1) {
+                    try self.cacheProviderChoice(name, provider_pkg.name);
+                }
+                return .{
+                    .name = provider_pkg.name,
+                    .source = .aur,
+                    .version = provider_pkg.version,
+                    .aur_pkg = provider_pkg,
+                    .provider = provider_pkg.name,
+                };
+            }
+
+            // Multiple AUR providers — prompt user
+            var candidates: std.ArrayListUnmanaged(ProviderCandidate) = .empty;
+            defer candidates.deinit(self.allocator);
+            for (results) |pkg| {
+                try candidates.append(self.allocator, .{
+                    .name = pkg.name,
+                    .version = pkg.version,
+                    .db_name = "aur",
+                });
+            }
+
+            const idx = self.provider_chooser.?(name, candidates.items) orelse 0;
+            const provider_pkg = results[idx];
+            try self.cacheProviderChoice(name, provider_pkg.name);
             return .{
                 .name = provider_pkg.name,
                 .source = .aur,
@@ -341,6 +490,8 @@ const MockPacman = struct {
     installed: std.StringHashMapUnmanaged([]const u8), // name → version
     sync: std.StringHashMapUnmanaged(SyncEntry), // name → {version, db_name}
     providers: std.StringHashMapUnmanaged(pacman_mod.ProviderMatch),
+    /// Multi-provider map: dep_name → list of all providers
+    all_providers: std.StringHashMapUnmanaged([]const pacman_mod.ProviderMatch) = .empty,
     aur_repo_name: []const u8 = "aurpkgs",
 
     const SyncEntry = struct {
@@ -360,6 +511,7 @@ const MockPacman = struct {
         self.installed.deinit(testing.allocator);
         self.sync.deinit(testing.allocator);
         self.providers.deinit(testing.allocator);
+        self.all_providers.deinit(testing.allocator);
     }
 
     fn addInstalled(self: *MockPacman, name: []const u8, version: []const u8) void {
@@ -372,6 +524,14 @@ const MockPacman = struct {
 
     fn addProvider(self: *MockPacman, dep: []const u8, match: pacman_mod.ProviderMatch) void {
         self.providers.put(testing.allocator, dep, match) catch unreachable;
+    }
+
+    fn addProviders(self: *MockPacman, dep: []const u8, matches: []const pacman_mod.ProviderMatch) void {
+        self.all_providers.put(testing.allocator, dep, matches) catch unreachable;
+        // Also set the first as the default single-provider result
+        if (matches.len > 0) {
+            self.providers.put(testing.allocator, dep, matches[0]) catch unreachable;
+        }
     }
 
     // ── Methods matching Pacman interface ────────────────────────────
@@ -420,6 +580,19 @@ const MockPacman = struct {
 
     pub fn findProvider(self: MockPacman, dep: []const u8) ?pacman_mod.ProviderMatch {
         return self.providers.get(dep);
+    }
+
+    pub fn findAllProviders(self: *MockPacman, allocator: Allocator, dep: []const u8) ![]pacman_mod.ProviderMatch {
+        if (self.all_providers.get(dep)) |matches| {
+            return try allocator.dupe(pacman_mod.ProviderMatch, matches);
+        }
+        // Fall back to single provider for backward compatibility
+        if (self.providers.get(dep)) |match| {
+            const result = try allocator.alloc(pacman_mod.ProviderMatch, 1);
+            result[0] = match;
+            return result;
+        }
+        return try allocator.alloc(pacman_mod.ProviderMatch, 0);
     }
 };
 
@@ -524,9 +697,15 @@ const MockAurClient = struct {
         var results: std.ArrayList(*aur.Package) = .empty;
         defer results.deinit(testing.allocator);
 
-        if (self.aur_providers.get(query)) |provider_name| {
-            if (self.packages.get(provider_name)) |pkg| {
-                try results.append(testing.allocator, pkg);
+        // Check all packages for matching provides
+        var it = self.packages.valueIterator();
+        while (it.next()) |pkg_ptr| {
+            const pkg = pkg_ptr.*;
+            for (pkg.provides) |prov| {
+                if (std.mem.eql(u8, prov, query)) {
+                    try results.append(testing.allocator, pkg);
+                    break;
+                }
             }
         }
 
@@ -1006,4 +1185,167 @@ test "resolve returns unknown when no provider exists anywhere" {
     try testing.expectEqual(Source.unknown, res.source);
     // Should have tried AUR search as last resort
     try testing.expectEqual(@as(usize, 1), ac.search_call_count);
+}
+
+// ── Provider Selection Tests ────────────────────────────────────────────
+
+fn testChooserSecond(_: []const u8, candidates: []const ProviderCandidate) ?usize {
+    if (candidates.len >= 2) return 1;
+    return 0;
+}
+
+fn testChooserFirst(_: []const u8, _: []const ProviderCandidate) ?usize {
+    return 0;
+}
+
+var test_chooser_call_count: usize = 0;
+
+fn testChooserCounting(_: []const u8, _: []const ProviderCandidate) ?usize {
+    test_chooser_call_count += 1;
+    return 0;
+}
+
+test "single provider does not invoke chooser" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+    pm.addProvider("java-runtime", .{
+        .provider_name = "jre-openjdk",
+        .provider_version = "21.0.1",
+        .db_name = "extra",
+    });
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+
+    test_chooser_call_count = 0;
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+    reg.provider_chooser = &testChooserCounting;
+
+    const res = try reg.resolve("java-runtime");
+    try testing.expectEqualStrings("jre-openjdk", res.provider.?);
+    try testing.expectEqual(@as(usize, 0), test_chooser_call_count);
+}
+
+test "multiple providers invoke chooser and select correct one" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+    const providers = [_]pacman_mod.ProviderMatch{
+        .{ .provider_name = "jdk-openjdk", .provider_version = "21.0.1", .db_name = "extra" },
+        .{ .provider_name = "jre-openjdk", .provider_version = "21.0.1", .db_name = "extra" },
+    };
+    pm.addProviders("java-runtime", &providers);
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+    reg.provider_chooser = &testChooserSecond;
+
+    const res = try reg.resolve("java-runtime");
+    try testing.expectEqualStrings("jre-openjdk", res.provider.?);
+    // Should have recorded the selection
+    try testing.expectEqual(@as(usize, 1), reg.provider_selections.items.len);
+    try testing.expectEqualStrings("java-runtime", reg.provider_selections.items[0].dep_name);
+    try testing.expectEqualStrings("jre-openjdk", reg.provider_selections.items[0].chosen);
+}
+
+test "installed provider auto-selected without chooser" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+    pm.addInstalled("jre-openjdk", "21.0.1");
+    const providers = [_]pacman_mod.ProviderMatch{
+        .{ .provider_name = "jdk-openjdk", .provider_version = "21.0.1", .db_name = "extra" },
+        .{ .provider_name = "jre-openjdk", .provider_version = "21.0.1", .db_name = "extra" },
+        .{ .provider_name = "jdk17-openjdk", .provider_version = "17.0.9", .db_name = "extra" },
+    };
+    pm.addProviders("java-runtime", &providers);
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+
+    test_chooser_call_count = 0;
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+    reg.provider_chooser = &testChooserCounting;
+
+    const res = try reg.resolve("java-runtime");
+    try testing.expectEqualStrings("jre-openjdk", res.provider.?);
+    try testing.expectEqual(Source.satisfied_aur, res.source);
+    // Chooser should NOT have been called (auto-selected installed)
+    try testing.expectEqual(@as(usize, 0), test_chooser_call_count);
+}
+
+test "provider choice is cached across resolve calls" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+    const providers = [_]pacman_mod.ProviderMatch{
+        .{ .provider_name = "jdk-openjdk", .provider_version = "21.0.1", .db_name = "extra" },
+        .{ .provider_name = "jre-openjdk", .provider_version = "21.0.1", .db_name = "extra" },
+    };
+    pm.addProviders("java-runtime", &providers);
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+
+    test_chooser_call_count = 0;
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+    reg.provider_chooser = &testChooserCounting;
+
+    _ = try reg.resolve("java-runtime");
+    // Invalidate the main cache to force re-resolution but keep provider_choices
+    reg.invalidate(&.{"java-runtime"});
+    _ = try reg.resolve("java-runtime");
+
+    // Chooser called only once (second time used cached choice)
+    try testing.expectEqual(@as(usize, 1), test_chooser_call_count);
+}
+
+test "multiple providers without chooser uses first" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+    const providers = [_]pacman_mod.ProviderMatch{
+        .{ .provider_name = "jdk-openjdk", .provider_version = "21.0.1", .db_name = "extra" },
+        .{ .provider_name = "jre-openjdk", .provider_version = "21.0.1", .db_name = "extra" },
+    };
+    pm.addProviders("java-runtime", &providers);
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+    // No chooser set — should auto-pick first
+
+    const res = try reg.resolve("java-runtime");
+    try testing.expectEqualStrings("jdk-openjdk", res.provider.?);
+}
+
+test "AUR multi-provider invokes chooser" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+    ac.addPackageWithProvides("auracle-git", "r427-1", &.{"auracle"});
+    ac.addPackageWithProvides("auracle-bin", "r400-1", &.{"auracle"});
+
+    test_chooser_call_count = 0;
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+    reg.provider_chooser = &testChooserCounting;
+
+    const res = try reg.resolve("auracle");
+    try testing.expectEqual(Source.aur, res.source);
+    // Chooser was called for multiple AUR providers
+    try testing.expectEqual(@as(usize, 1), test_chooser_call_count);
+    // Result is one of the two providers
+    try testing.expect(
+        std.mem.eql(u8, res.name, "auracle-git") or std.mem.eql(u8, res.name, "auracle-bin"),
+    );
+    // Selection was recorded
+    try testing.expectEqual(@as(usize, 1), reg.provider_selections.items.len);
+    try testing.expectEqualStrings("auracle", reg.provider_selections.items[0].dep_name);
 }

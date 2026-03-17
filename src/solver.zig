@@ -47,6 +47,7 @@ pub const BuildPlan = struct {
     repo_deps: [][]const u8,
     repo_targets: [][]const u8,
     conflicts: []Conflict = &.{},
+    provider_selections: []registry_mod.ProviderSelection = &.{},
 
     pub fn deinit(self: BuildPlan, allocator: Allocator) void {
         for (self.build_order) |entry| allocator.free(entry.aur_dep_bases);
@@ -55,6 +56,7 @@ pub const BuildPlan = struct {
         allocator.free(self.repo_deps);
         allocator.free(self.repo_targets);
         allocator.free(self.conflicts);
+        allocator.free(self.provider_selections);
     }
 };
 
@@ -109,6 +111,15 @@ pub fn SolverImpl(comptime RegistryT: type) type {
             // Phase 3: Plan assembly — pkgbase dedup + classification
             var plan = try self.assemblePlan(order);
             plan.conflicts = conflicts;
+
+            // Populate provider selections from registry (if available)
+            if (comptime @hasField(RegistryT, "provider_selections")) {
+                const selections = self.registry.provider_selections.items;
+                if (selections.len > 0) {
+                    plan.provider_selections = try self.allocator.dupe(registry_mod.ProviderSelection, selections);
+                }
+            }
+
             return plan;
         }
 

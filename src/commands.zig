@@ -221,6 +221,14 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman, removals
         }
     }
 
+    // Display provider selections (informational)
+    if (plan.provider_selections.len > 0) {
+        const stderr = getStderr();
+        for (plan.provider_selections) |sel| {
+            stderr.print(":: {s} provider: {s}\n", .{ sel.dep_name, sel.chosen }) catch {};
+        }
+    }
+
     // Warn about packages flagged out-of-date on AUR
     {
         const stderr = getStderr();

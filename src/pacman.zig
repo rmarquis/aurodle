@@ -288,6 +288,27 @@ pub const Pacman = struct {
         return null;
     }
 
+    /// Find ALL packages that provide the given dependency across all sync databases.
+    /// Official repos are listed first, then aurpkgs.
+    /// Returns empty slice if none found. Caller owns the returned slice.
+    pub fn findAllProviders(self: Pacman, allocator: Allocator, dep: []const u8) ![]ProviderMatch {
+        var matches: std.ArrayList(ProviderMatch) = .empty;
+        errdefer matches.deinit(allocator);
+
+        // Official repos first (skip aurpkgs)
+        for (self.sync_dbs) |db| {
+            if (std.mem.eql(u8, db.getName(), self.aur_repo_name)) continue;
+            try findAllProvidersInDb(allocator, db, dep, &matches);
+        }
+
+        // Then aurpkgs
+        if (self.aurpkgs_db) |aurdb| {
+            try findAllProvidersInDb(allocator, aurdb, dep, &matches);
+        }
+
+        return try matches.toOwnedSlice(allocator);
+    }
+
     /// Find a package satisfying a dependency string in the given database set.
     pub fn findDbsSatisfier(self: Pacman, db_set: DbSet, depstring: []const u8) ?[]const u8 {
         const dbs = switch (db_set) {
@@ -426,6 +447,38 @@ fn findProviderInDb(db: alpm.Database, dep: []const u8) ?ProviderMatch {
         }
     }
     return null;
+}
+
+/// Collect ALL packages in a single database that provide `dep`.
+fn findAllProvidersInDb(allocator: Allocator, db: alpm.Database, dep: []const u8, matches: *std.ArrayList(ProviderMatch)) !void {
+    var it = db.getPkgcache();
+    while (it.next()) |pkg| {
+        var found = false;
+
+        // Check direct name match
+        if (std.mem.eql(u8, pkg.getName(), dep)) {
+            found = true;
+        }
+
+        // Check provides list
+        if (!found) {
+            var dep_it = pkg.getProvides();
+            while (dep_it.next()) |prov| {
+                if (std.mem.eql(u8, prov.name, dep)) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+
+        if (found) {
+            try matches.append(allocator, .{
+                .provider_name = pkg.getName(),
+                .provider_version = pkg.getVersion(),
+                .db_name = db.getName(),
+            });
+        }
+    }
 }
 
 const PacmanConf = struct {

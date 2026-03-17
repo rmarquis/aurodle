@@ -162,6 +162,65 @@ pub fn promptNoYes(message: []const u8) !bool {
     return response[0] == 'y' or response[0] == 'Y';
 }
 
+const registry_mod = @import("registry.zig");
+
+/// Prompt the user to choose a provider, matching pacman's format:
+///
+/// :: There are N providers available for <dep>:
+/// :: Repository extra
+///    1) jdk-openjdk  2) jre-openjdk  ...
+/// :: Repository aurpkgs
+///    5) jdk-openjdk-git
+/// Enter a number (default=1):
+///
+/// Signature matches `ProviderChooserFn`.
+pub fn promptProviderChoice(
+    dep_name: []const u8,
+    candidates: []const registry_mod.ProviderCandidate,
+) ?usize {
+    const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
+    const stdin: std.fs.File = .{ .handle = std.posix.STDIN_FILENO };
+
+    if (!std.posix.isatty(stdin.handle)) return 0;
+
+    const w = stderr.deprecatedWriter();
+    w.print(":: There are {d} providers available for {s}:\n", .{ candidates.len, dep_name }) catch {};
+
+    // Group by db_name and display
+    var num: usize = 1;
+    var current_db: []const u8 = "";
+    for (candidates) |c| {
+        if (!std.mem.eql(u8, c.db_name, current_db)) {
+            current_db = c.db_name;
+            w.print(":: Repository {s}\n   ", .{current_db}) catch {};
+        }
+        w.print(" {d}) {s}", .{ num, c.name }) catch {};
+        num += 1;
+    }
+    w.writeByte('\n') catch {};
+
+    // Prompt loop
+    while (true) {
+        w.print("\nEnter a number (default=1): ", .{}) catch {};
+
+        var buf: [32]u8 = undefined;
+        const n = stdin.read(&buf) catch return 0;
+        if (n == 0) return 0;
+
+        const response = std.mem.trim(u8, buf[0..n], " \t\n\r");
+        if (response.len == 0) return 0; // default
+
+        const choice = std.fmt.parseInt(usize, response, 10) catch {
+            w.writeAll(":: Invalid number, try again.") catch {};
+            continue;
+        };
+        if (choice >= 1 and choice <= candidates.len) {
+            return choice - 1;
+        }
+        w.writeAll(":: Invalid number, try again.") catch {};
+    }
+}
+
 /// Expand ~ at the start of a path to $HOME.
 /// Does NOT handle ~user syntax — only ~/path.
 /// Returns a newly allocated string.
