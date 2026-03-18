@@ -12,6 +12,9 @@ pub const BuildEntry = struct {
     pkgbase: []const u8,
     version: []const u8,
     is_target: bool,
+    /// Names of user-requested targets that belong to this pkgbase.
+    /// For split packages, multiple target names may share one build entry.
+    target_names: []const []const u8 = &.{},
     /// Unix timestamp when flagged out-of-date on AUR, or null.
     out_of_date: ?i64 = null,
     /// Pkgbases of AUR dependencies (for build failure propagation and sync DB refresh).
@@ -54,7 +57,10 @@ pub const BuildPlan = struct {
     provider_selections: []registry_mod.ProviderSelection = &.{},
 
     pub fn deinit(self: BuildPlan, allocator: Allocator) void {
-        for (self.build_order) |entry| allocator.free(entry.aur_dep_bases);
+        for (self.build_order) |entry| {
+            allocator.free(entry.aur_dep_bases);
+            allocator.free(entry.target_names);
+        }
         allocator.free(self.build_order);
         allocator.free(self.all_deps);
         allocator.free(self.repo_deps);
@@ -585,17 +591,28 @@ pub fn SolverImpl(comptime RegistryT: type) type {
             var all_deps: std.ArrayListUnmanaged(DependencyEntry) = .empty;
             var repo_deps: std.ArrayListUnmanaged([]const u8) = .empty;
 
-            // Track seen pkgbases for deduplication
-            var seen_pkgbase = std.StringHashMapUnmanaged(void){};
+            // Track seen pkgbases for deduplication (maps to build_order index)
+            var seen_pkgbase = std.StringHashMapUnmanaged(usize){};
             defer seen_pkgbase.deinit(alloc);
+
+            // Temporary per-entry target name collectors
+            var target_lists = std.ArrayListUnmanaged(std.ArrayListUnmanaged([]const u8)){};
+            defer target_lists.deinit(alloc);
 
             // Build order: AUR packages, deduplicated by pkgbase
             for (order) |name| {
                 const node = self.graph.getNode(name).?;
                 const pkgbase = node.meta.pkgbase orelse name;
 
-                if (!seen_pkgbase.contains(pkgbase)) {
-                    try seen_pkgbase.put(alloc, pkgbase, {});
+                if (seen_pkgbase.get(pkgbase)) |idx| {
+                    // Pkgbase already has a build entry — accumulate target name if applicable
+                    if (self.targets.contains(name)) {
+                        try target_lists.items[idx].append(alloc, name);
+                        build_order.items[idx].is_target = true;
+                    }
+                } else {
+                    const idx = build_order.items.len;
+                    try seen_pkgbase.put(alloc, pkgbase, idx);
 
                     // Collect pkgbases of AUR deps (deduplicated)
                     var dep_bases: std.StringArrayHashMapUnmanaged(void) = .empty;
@@ -607,15 +624,27 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                         try dep_bases.put(alloc, dep_pkgbase, {});
                     }
 
+                    const is_target = self.targets.contains(name);
+
+                    // Start target name list for this entry
+                    var tgt_list: std.ArrayListUnmanaged([]const u8) = .empty;
+                    if (is_target) try tgt_list.append(alloc, name);
+                    try target_lists.append(alloc, tgt_list);
+
                     try build_order.append(alloc, .{
                         .name = name,
                         .pkgbase = pkgbase,
                         .version = node.meta.version orelse "unknown",
-                        .is_target = self.targets.contains(name),
+                        .is_target = is_target,
                         .out_of_date = if (node.meta.aur_pkg) |pkg| pkg.out_of_date else null,
                         .aur_dep_bases = try alloc.dupe([]const u8, dep_bases.keys()),
                     });
                 }
+            }
+
+            // Finalize target_names slices
+            for (build_order.items, 0..) |*entry, i| {
+                entry.target_names = try target_lists.items[i].toOwnedSlice(alloc);
             }
 
             // Single pass: collect all deps + classify repo deps/targets
@@ -2074,4 +2103,82 @@ test "needed allows build when AUR version is newer" {
     // AUR version is newer, so it should be in build_order even with --needed
     try testing.expectEqual(@as(usize, 1), plan.build_order.len);
     try testing.expectEqualStrings("pacaur", plan.build_order[0].name);
+}
+
+test "split package: multiple targets from same pkgbase all tracked as targets" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // qt6-base and qt6-tools both have pkgbase "qt6"
+    mock.addAurPackageWithBase("qt6-base", "qt6", &.{}, &.{});
+    mock.addAurPackageWithBase("qt6-tools", "qt6", &.{}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{ "qt6-base", "qt6-tools" });
+    defer plan.deinit(testing.allocator);
+
+    // Only one build entry (one makepkg invocation for pkgbase "qt6")
+    try testing.expectEqual(@as(usize, 1), plan.build_order.len);
+    try testing.expectEqualStrings("qt6", plan.build_order[0].pkgbase);
+    try testing.expect(plan.build_order[0].is_target);
+
+    // Both target names must be tracked for installation
+    try testing.expectEqual(@as(usize, 2), plan.build_order[0].target_names.len);
+    // Order depends on BFS traversal; check both names are present
+    var found_base = false;
+    var found_tools = false;
+    for (plan.build_order[0].target_names) |tname| {
+        if (std.mem.eql(u8, tname, "qt6-base")) found_base = true;
+        if (std.mem.eql(u8, tname, "qt6-tools")) found_tools = true;
+    }
+    try testing.expect(found_base);
+    try testing.expect(found_tools);
+}
+
+test "split package: single target from split pkgbase tracks only that target" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    mock.addAurPackageWithBase("qt6-base", "qt6", &.{}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"qt6-base"});
+    defer plan.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), plan.build_order.len);
+    try testing.expectEqual(@as(usize, 1), plan.build_order[0].target_names.len);
+    try testing.expectEqualStrings("qt6-base", plan.build_order[0].target_names[0]);
+}
+
+test "split package: non-target dep sharing pkgbase with target" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // "app" depends on "qt6-tools", user targets "qt6-base" and "app"
+    // qt6-base and qt6-tools share pkgbase "qt6"
+    mock.addAurPackageWithBase("qt6-base", "qt6", &.{}, &.{});
+    mock.addAurPackageWithBase("qt6-tools", "qt6", &.{}, &.{});
+    mock.addAurPackage("app", &.{"qt6-tools"}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{ "qt6-base", "app" });
+    defer plan.deinit(testing.allocator);
+
+    // Two build entries: one for qt6 pkgbase, one for app
+    try testing.expectEqual(@as(usize, 2), plan.build_order.len);
+
+    // Find the qt6 entry
+    var qt6_entry: ?BuildEntry = null;
+    for (plan.build_order) |entry| {
+        if (std.mem.eql(u8, entry.pkgbase, "qt6")) qt6_entry = entry;
+    }
+    try testing.expect(qt6_entry != null);
+
+    // qt6-base is a target, qt6-tools is a dep (not a target)
+    // Only qt6-base should appear in target_names
+    try testing.expectEqual(@as(usize, 1), qt6_entry.?.target_names.len);
+    try testing.expectEqualStrings("qt6-base", qt6_entry.?.target_names[0]);
 }

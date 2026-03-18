@@ -231,11 +231,12 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman, removals
     // Warn about targets being reinstalled with the same version
     if (pm) |p| {
         for (plan.build_order) |entry| {
-            if (!entry.is_target) continue;
-            if (devel.isVcsPackage(entry.name)) continue;
-            if (p.installedVersion(entry.name)) |old| {
-                if (std.mem.eql(u8, old, entry.version)) {
-                    err_writer.print("{s}warning:{s} {s}-{s} is up to date -- reinstalling\n", .{ ec.yellow, ec.reset, entry.name, old }) catch {};
+            for (entry.target_names) |tname| {
+                if (devel.isVcsPackage(tname)) continue;
+                if (p.installedVersion(tname)) |old| {
+                    if (std.mem.eql(u8, old, entry.version)) {
+                        err_writer.print("{s}warning:{s} {s}-{s} is up to date -- reinstalling\n", .{ ec.yellow, ec.reset, tname, old }) catch {};
+                    }
                 }
             }
         }

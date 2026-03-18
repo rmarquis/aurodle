@@ -258,10 +258,13 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
     }
 
     // Phase 6: Install targets (AUR from aurpkgs + repo targets in one transaction)
+    // Use target_names to handle split packages (multiple targets per pkgbase)
     var aur_targets: std.ArrayListUnmanaged([]const u8) = .empty;
     defer aur_targets.deinit(self.allocator);
     for (plan.build_order) |entry| {
-        if (entry.is_target) try aur_targets.append(self.allocator, entry.name);
+        for (entry.target_names) |tname| {
+            try aur_targets.append(self.allocator, tname);
+        }
     }
 
     if (build_result.failed.len == 0) {
