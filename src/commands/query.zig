@@ -329,6 +329,7 @@ fn displayInfo(pkg: *aur.Package, installed_version: ?[]const u8, c: color.Style
     }
     write.optionalField(stdout, "Description", pkg.description);
     write.optionalField(stdout, "URL", pkg.url);
+    stdout.print("{s:<16}: https://aur.archlinux.org/packages/{s}\n", .{ "AUR Page", pkg.name }) catch {};
     write.sliceField(stdout, "Licenses", pkg.licenses);
     write.sliceField(stdout, "Groups", pkg.groups);
     write.sliceField(stdout, "Provides", pkg.provides);
