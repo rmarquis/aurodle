@@ -778,7 +778,7 @@ fn reviewPackages(
             if (try utils.promptYesNoStyled(self.stdout_color, msg)) {
                 const exit_code = utils.runInteractive(
                     self.allocator,
-                    &.{ "git", "diff", "ORIG_HEAD..HEAD" },
+                    &.{ "git", "diff", "--color=always", "ORIG_HEAD..HEAD" },
                     clone_dir,
                 ) catch {
                     stdout.writeAll("  (could not show diff)\n") catch {};
