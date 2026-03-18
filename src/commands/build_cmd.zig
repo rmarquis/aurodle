@@ -448,24 +448,29 @@ pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
         try checkDevelUpgrades(self, to_check, &upgrade_set, &to_upgrade, &outdated_display);
     }
 
-    // Filter out ignored packages
+    // Prompt for ignored packages (matching pacman behavior)
     if (self.flags.ignore.len > 0) {
         var i: usize = 0;
         while (i < to_upgrade.items.len) {
             const name = to_upgrade.items[i];
             if (self.isIgnored(name)) {
-                self.err_writer.print(
-                    "{s}warning:{s} {s} is in IgnorePkg -- skipping\n",
-                    .{ ec.yellow, ec.reset, name },
-                ) catch {};
-                _ = to_upgrade.swapRemove(i);
-                // Also remove from display list
-                var j: usize = 0;
-                while (j < outdated_display.items.len) {
-                    if (std.mem.eql(u8, outdated_display.items[j].name, name)) {
-                        _ = outdated_display.swapRemove(j);
-                    } else j += 1;
-                }
+                var msg_buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&msg_buf, "{s} is in IgnorePkg. Install anyway?", .{name}) catch name;
+                const install = utils.promptYesNoStyled(self.stdout_color, msg) catch false;
+                if (!install) {
+                    self.err_writer.print(
+                        "{s}warning:{s} skipping target: {s}\n",
+                        .{ ec.yellow, ec.reset, name },
+                    ) catch {};
+                    _ = to_upgrade.swapRemove(i);
+                    // Also remove from display list
+                    var j: usize = 0;
+                    while (j < outdated_display.items.len) {
+                        if (std.mem.eql(u8, outdated_display.items[j].name, name)) {
+                            _ = outdated_display.swapRemove(j);
+                        } else j += 1;
+                    }
+                } else i += 1;
             } else i += 1;
         }
     }

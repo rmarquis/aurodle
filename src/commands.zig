@@ -6,6 +6,7 @@ const solver_mod = @import("solver.zig");
 const repo_mod = @import("repo.zig");
 const pacman_mod = @import("pacman.zig");
 const devel = @import("devel.zig");
+const utils = @import("utils.zig");
 const color = @import("color.zig");
 
 // Sub-modules (pub for test discovery via refAllDecls)
@@ -134,7 +135,7 @@ pub const Commands = struct {
     }
 
     /// Filter out ignored packages from a target list.
-    /// Prints a warning for each ignored target on stderr.
+    /// Prompts the user for each ignored target (matching pacman behavior).
     /// Returns the filtered slice (backed by the provided buffer).
     pub fn filterIgnored(self: *Commands, targets: []const []const u8, buf: [][]const u8) []const []const u8 {
         if (self.flags.ignore.len == 0) return targets;
@@ -143,10 +144,18 @@ pub const Commands = struct {
         var count: usize = 0;
         for (targets) |target| {
             if (self.isIgnored(target)) {
-                self.err_writer.print(
-                    "{s}warning:{s} {s} is in IgnorePkg -- skipping\n",
-                    .{ ec.yellow, ec.reset, target },
-                ) catch {};
+                var msg_buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&msg_buf, "{s} is in IgnorePkg. Install anyway?", .{target}) catch target;
+                const install = utils.promptYesNoStyled(self.stdout_color, msg) catch false;
+                if (install) {
+                    buf[count] = target;
+                    count += 1;
+                } else {
+                    self.err_writer.print(
+                        "{s}warning:{s} skipping target: {s}\n",
+                        .{ ec.yellow, ec.reset, target },
+                    ) catch {};
+                }
             } else {
                 buf[count] = target;
                 count += 1;
