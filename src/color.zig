@@ -8,6 +8,7 @@ pub const Style = struct {
     yellow: []const u8,
     blue: []const u8,
     magenta: []const u8,
+    cyan: []const u8,
     bold: []const u8,
     reset: []const u8,
 
@@ -17,6 +18,7 @@ pub const Style = struct {
         .yellow = "\x1b[1;33m",
         .blue = "\x1b[1;34m",
         .magenta = "\x1b[1;35m",
+        .cyan = "\x1b[1;36m",
         .bold = "\x1b[1m",
         .reset = "\x1b[0m",
     };
@@ -27,6 +29,7 @@ pub const Style = struct {
         .yellow = "",
         .blue = "",
         .magenta = "",
+        .cyan = "",
         .bold = "",
         .reset = "",
     };
@@ -53,6 +56,7 @@ test "enabled style has non-empty escape codes" {
     try testing.expect(s.green.len > 0);
     try testing.expect(s.yellow.len > 0);
     try testing.expect(s.blue.len > 0);
+    try testing.expect(s.cyan.len > 0);
     try testing.expect(s.bold.len > 0);
     try testing.expect(s.reset.len > 0);
 }
@@ -63,6 +67,7 @@ test "disabled style has empty strings" {
     try testing.expectEqualStrings("", s.green);
     try testing.expectEqualStrings("", s.yellow);
     try testing.expectEqualStrings("", s.blue);
+    try testing.expectEqualStrings("", s.cyan);
     try testing.expectEqualStrings("", s.bold);
     try testing.expectEqualStrings("", s.reset);
 }

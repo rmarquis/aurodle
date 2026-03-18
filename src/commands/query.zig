@@ -331,9 +331,9 @@ fn displayInfo(pkg: *aur.Package, installed_version: ?[]const u8, c: color.Style
     }
     write.optionalField(stdout, "Description", pkg.description);
     if (pkg.url) |url| {
-        stdout.print("{s:<16}: {s}{s}{s}\n", .{ "URL", c.blue, url, c.reset }) catch {};
+        stdout.print("{s:<16}: {s}{s}{s}\n", .{ "URL", c.cyan, url, c.reset }) catch {};
     }
-    stdout.print("{s:<16}: {s}https://aur.archlinux.org/packages/{s}{s}\n", .{ "AUR Page", c.blue, pkg.name, c.reset }) catch {};
+    stdout.print("{s:<16}: {s}https://aur.archlinux.org/packages/{s}{s}\n", .{ "AUR Page", c.cyan, pkg.name, c.reset }) catch {};
     write.sliceField(stdout, "Licenses", pkg.licenses);
     write.sliceField(stdout, "Groups", pkg.groups);
     write.sliceField(stdout, "Provides", pkg.provides);
