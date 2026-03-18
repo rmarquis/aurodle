@@ -14,7 +14,7 @@ zig build
 **Release build:**
 
 ```bash
-zig build -Doptimize=ReleaseSafe
+zig build --release=safe
 ```
 
 ## Setup
