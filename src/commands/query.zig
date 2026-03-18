@@ -74,7 +74,11 @@ pub fn search(self: *Commands, query_str: []const u8) !ExitCode {
     // Sort results
     const sorted = try sortPackages(self.allocator, self.flags, packages);
     defer self.allocator.free(sorted);
-    displaySearchResults(sorted, self.stdout_color);
+
+    const alpm_handle = alpm.Handle.init("/", "/var/lib/pacman/") catch null;
+    defer if (alpm_handle) |h| h.deinit();
+    const local_db = if (alpm_handle) |h| h.getLocalDb() else null;
+    displaySearchResults(sorted, self.stdout_color, local_db);
 
     return .success;
 }
@@ -361,12 +365,12 @@ fn displayInfo(pkg: *aur.Package, installed_version: ?[]const u8, c: color.Style
     stdout.writeByte('\n') catch {};
 }
 
-fn displaySearchResults(packages: []const *aur.Package, c: color.Style) void {
+fn displaySearchResults(packages: []const *aur.Package, c: color.Style, local_db: ?alpm.Database) void {
     const stdout = getStdout();
 
     for (packages) |pkg| {
         const ver_color = if (pkg.out_of_date != null) c.red else c.green;
-        stdout.print("{s}aur/{s}{s} {s}{s}{s} (+{d} {d:.2})", .{
+        stdout.print("{s}aur/{s}{s} {s}{s}{s} (+{d}, {d:.2})", .{
             c.magenta,
             c.reset,
             pkg.name,
@@ -377,8 +381,15 @@ fn displaySearchResults(packages: []const *aur.Package, c: color.Style) void {
             pkg.popularity,
         }) catch {};
 
-        if (pkg.out_of_date != null) {
-            stdout.print(" {s}[out-of-date]{s}", .{ c.red, c.reset }) catch {};
+        if (local_db) |db| {
+            if (db.getPackage(pkg.name)) |local_pkg| {
+                const iv = local_pkg.getVersion();
+                if (std.mem.eql(u8, iv, pkg.version)) {
+                    stdout.writeAll(" [installed]") catch {};
+                } else {
+                    stdout.print(" [installed: {s}{s}{s}]", .{ c.green, iv, c.reset }) catch {};
+                }
+            }
         }
 
         stdout.writeByte('\n') catch {};
