@@ -173,6 +173,7 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
     // Phase 1: Resolve
     var s = solver_mod.Solver.init(self.allocator, reg);
     s.rebuild = self.flags.rebuild;
+    s.needed = self.flags.needed;
     s.ignore = self.flags.ignore;
     defer s.deinit();
 
@@ -200,8 +201,8 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
             if (!dep.is_target) continue;
             if (dep.source == .repo_aur) {
                 try aurpkgs_targets.append(self.allocator, dep.name);
-            } else if (dep.source == .satisfied_aur) {
-                // Reinstall if available in aurpkgs repo
+            } else if (dep.source == .satisfied_aur and !self.flags.needed) {
+                // Reinstall if available in aurpkgs repo (skip with --needed)
                 if (self.pacman) |pm| {
                     if (pm.isAurRepo(pm.syncDbFor(dep.name) orelse "")) {
                         try aurpkgs_targets.append(self.allocator, dep.name);
@@ -304,6 +305,7 @@ pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
 
     var s = solver_mod.Solver.init(self.allocator, reg);
     s.rebuild = self.flags.rebuild;
+    s.needed = self.flags.needed;
     s.ignore = self.flags.ignore;
     defer s.deinit();
 
@@ -826,6 +828,10 @@ fn installAllTargets(self: *Commands, aurpkgs_names: []const []const u8, repo_na
         try argv.append(self.allocator, "--asdeps");
     } else if (self.flags.asexplicit) {
         try argv.append(self.allocator, "--asexplicit");
+    }
+
+    if (self.flags.needed) {
+        try argv.append(self.allocator, "--needed");
     }
 
     if (self.flags.noconfirm) {

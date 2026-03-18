@@ -79,6 +79,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
         graph: DepGraph,
         targets: std.StringHashMapUnmanaged(void),
         rebuild: bool = false,
+        needed: bool = false,
         ignore: []const []const u8 = &.{},
 
         pub fn init(allocator: Allocator, reg: *RegistryT) Self {
@@ -246,7 +247,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                                 alpm.vercmp(pkg.version, local_ver) > 0
                             else
                                 false;
-                            if (dominated or self.rebuild) {
+                            if (dominated or (self.rebuild and !self.needed)) {
                                 node.meta.source = .aur;
                                 node.meta.version = pkg.version;
                             }
@@ -948,6 +949,59 @@ const MockRegistry = struct {
         self.aur_overrides.put(testing.allocator, name, .{
             .source = .aur,
             .version = version,
+            .pkgbase = name,
+            .depends = depends,
+            .makedepends = makedepends,
+            .aur_pkg = pkg,
+        }) catch unreachable;
+    }
+
+    /// Like addSatisfiedWithAurDeps but with separate installed and AUR versions.
+    fn addSatisfiedWithAurDepsVersioned(self: *MockRegistry, name: []const u8, installed_version: []const u8, aur_version: []const u8, depends: []const []const u8, makedepends: []const []const u8) void {
+        // Primary entry: satisfied_aur with installed version
+        self.packages.put(testing.allocator, name, .{
+            .source = .satisfied_aur,
+            .version = installed_version,
+            .pkgbase = name,
+            .depends = &.{},
+            .makedepends = &.{},
+            .aur_pkg = null,
+        }) catch unreachable;
+
+        // AUR override with newer version
+        const alloc = self.arena.allocator();
+        const pkg = alloc.create(aur.Package) catch unreachable;
+        pkg.* = .{
+            .id = 0,
+            .name = name,
+            .pkgbase = name,
+            .pkgbase_id = 0,
+            .version = aur_version,
+            .description = null,
+            .url = null,
+            .url_path = null,
+            .maintainer = null,
+            .submitter = null,
+            .votes = 0,
+            .popularity = 0,
+            .first_submitted = 0,
+            .last_modified = 0,
+            .out_of_date = null,
+            .depends = depends,
+            .makedepends = makedepends,
+            .checkdepends = &.{},
+            .optdepends = &.{},
+            .provides = &.{},
+            .conflicts = &.{},
+            .replaces = &.{},
+            .groups = &.{},
+            .keywords = &.{},
+            .licenses = &.{},
+            .comaintainers = &.{},
+        };
+        self.aur_overrides.put(testing.allocator, name, .{
+            .source = .aur,
+            .version = aur_version,
             .pkgbase = name,
             .depends = depends,
             .makedepends = makedepends,
@@ -1984,4 +2038,40 @@ test "ignored package does not affect targets (filtered upstream)" {
     const plan = try s.resolve(&.{"foo"});
     defer plan.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 1), plan.build_order.len);
+}
+
+test "needed prevents rebuild of satisfied_aur target at same version" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // pacaur is installed (satisfied_aur) with same version as AUR
+    mock.addSatisfiedWithAurDeps("pacaur", "4.8.6-2", &.{}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    s.rebuild = true;
+    s.needed = true;
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"pacaur"});
+    defer plan.deinit(testing.allocator);
+
+    // --needed overrides --rebuild: pacaur should NOT be in build_order
+    try testing.expectEqual(@as(usize, 0), plan.build_order.len);
+}
+
+test "needed allows build when AUR version is newer" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // pacaur installed at 4.8.5, AUR has 4.8.6
+    mock.addSatisfiedWithAurDepsVersioned("pacaur", "4.8.5-1", "4.8.6-1", &.{}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    s.needed = true;
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"pacaur"});
+    defer plan.deinit(testing.allocator);
+
+    // AUR version is newer, so it should be in build_order even with --needed
+    try testing.expectEqual(@as(usize, 1), plan.build_order.len);
+    try testing.expectEqualStrings("pacaur", plan.build_order[0].name);
 }
