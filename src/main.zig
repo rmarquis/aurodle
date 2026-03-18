@@ -125,11 +125,17 @@ const Operation = enum {
             .{ "clean", .clean },
             .{ "resolve", .resolve },
             .{ "buildorder", .buildorder },
-            // Short aliases
+        });
+        return map.get(s);
+    }
+
+    /// Pacman-style short aliases, only valid with dash prefix (-S, -Ss, etc.)
+    fn fromShortAlias(s: []const u8) ?Operation {
+        const map = std.StaticStringMap(Operation).initComptime(.{
             .{ "S", .sync },
             .{ "B", .build },
             .{ "G", .clone },
-            .{ "Qi", .info },
+            .{ "Si", .info },
             .{ "Ss", .search },
             .{ "Qu", .outdated },
             .{ "U", .upgrade },
@@ -188,10 +194,12 @@ fn parseArgs(args: []const []const u8, target_buf: [][]const u8) ParseError!Pars
         return ParseError.VersionRequested;
     }
 
-    // First non-flag argument is the command
-    const operation = Operation.fromString(args[0]) orelse {
-        return ParseError.UnknownCommand;
-    };
+    // First non-flag argument is the command.
+    // Check pacman-style short aliases (-S, -Ss, -Si, etc.) then full names.
+    const operation = if (args[0].len >= 2 and args[0][0] == '-' and args[0][1] != '-')
+        Operation.fromShortAlias(args[0][1..]) orelse return ParseError.UnknownCommand
+    else
+        Operation.fromString(args[0]) orelse return ParseError.UnknownCommand;
 
     var flags = commands.Flags{};
     var target_count: usize = 0;
@@ -390,17 +398,17 @@ fn printHelp() void {
         \\Usage: aurodle <command> [options] [targets...]
         \\
         \\Commands:
-        \\  sync <packages...>     Install AUR packages (resolve, clone, build, install)
-        \\  build <packages...>    Build packages into local repository
-        \\  clone <packages...>    Clone AUR package repositories
-        \\  info <packages...>     Display AUR package information
-        \\  search <term>          Search AUR packages
-        \\  show <package>         Display package build files
-        \\  resolve <packages...>  Show dependency tree
-        \\  buildorder <pkgs...>   Show build order (machine-readable)
-        \\  outdated [packages...] List outdated AUR packages
-        \\  upgrade [packages...]  Upgrade outdated AUR packages
-        \\  clean                  Remove stale cache files
+        \\  sync,  -S <packages...>   Install AUR packages (resolve, clone, build, install)
+        \\  build, -B <packages...>   Build packages into local repository
+        \\  clone, -G <packages...>   Clone AUR package repositories
+        \\  info, -Si <packages...>   Display AUR package information
+        \\  search, -Ss <term>        Search AUR packages
+        \\  show <package>            Display package build files
+        \\  resolve <packages...>     Show dependency tree
+        \\  buildorder <pkgs...>      Show build order (machine-readable)
+        \\  outdated, -Qu [pkgs...]   List outdated AUR packages
+        \\  upgrade, -U [packages...] Upgrade outdated AUR packages
+        \\  clean                     Remove stale cache files
         \\
         \\Global options:
         \\  -h, --help             Show this help
@@ -506,22 +514,41 @@ test "parseArgs: outdated with no targets is valid" {
     try std.testing.expectEqual(@as(usize, 0), parsed.targets.len);
 }
 
-test "parseArgs: short aliases" {
+test "parseArgs: dashless short aliases are rejected" {
+    try std.testing.expectError(ParseError.UnknownCommand, testParse(&.{ "S", "foo" }));
+    try std.testing.expectError(ParseError.UnknownCommand, testParse(&.{ "Si", "foo" }));
+    try std.testing.expectError(ParseError.UnknownCommand, testParse(&.{ "Ss", "foo" }));
+    try std.testing.expectError(ParseError.UnknownCommand, testParse(&.{ "G", "foo" }));
+}
+
+test "parseArgs: dash-prefixed short aliases" {
     var buf1: [256][]const u8 = undefined;
-    const parsed = try parseArgs(&.{ "S", "foo" }, &buf1);
+    const parsed = try parseArgs(&.{ "-S", "foo" }, &buf1);
     try std.testing.expectEqual(Operation.sync, parsed.operation);
 
     var buf2: [256][]const u8 = undefined;
-    const parsed2 = try parseArgs(&.{ "Qi", "foo" }, &buf2);
+    const parsed2 = try parseArgs(&.{ "-Si", "foo" }, &buf2);
     try std.testing.expectEqual(Operation.info, parsed2.operation);
 
     var buf3: [256][]const u8 = undefined;
-    const parsed3 = try parseArgs(&.{ "Ss", "foo" }, &buf3);
+    const parsed3 = try parseArgs(&.{ "-Ss", "foo" }, &buf3);
     try std.testing.expectEqual(Operation.search, parsed3.operation);
 
     var buf4: [256][]const u8 = undefined;
-    const parsed4 = try parseArgs(&.{ "G", "foo" }, &buf4);
-    try std.testing.expectEqual(Operation.clone, parsed4.operation);
+    const parsed4 = try parseArgs(&.{ "-Qu" }, &buf4);
+    try std.testing.expectEqual(Operation.outdated, parsed4.operation);
+
+    var buf5: [256][]const u8 = undefined;
+    const parsed5 = try parseArgs(&.{ "-U" }, &buf5);
+    try std.testing.expectEqual(Operation.upgrade, parsed5.operation);
+
+    var buf6: [256][]const u8 = undefined;
+    const parsed6 = try parseArgs(&.{ "-B", "foo" }, &buf6);
+    try std.testing.expectEqual(Operation.build, parsed6.operation);
+
+    var buf7: [256][]const u8 = undefined;
+    const parsed7 = try parseArgs(&.{ "-G", "foo" }, &buf7);
+    try std.testing.expectEqual(Operation.clone, parsed7.operation);
 }
 
 test "parseArgs: combined short flags" {
