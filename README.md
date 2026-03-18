@@ -24,29 +24,29 @@ aurodle builds AUR packages into a local pacman repository. Before using it, cre
 **1. Create the repository directory:**
 
 ```bash
-sudo install -d -o $USER /var/lib/aurodle/aurpkgs
+sudo install -d -o $USER /var/lib/aurodle/aur
 ```
 
 **2. Add the repository to `/etc/pacman.conf`:**
 
 ```ini
-[aurpkgs]
+[aur]
 SigLevel = Optional TrustAll
-Server = file:///var/lib/aurodle/aurpkgs
+Server = file:///var/lib/aurodle/aur
 ```
 
 **3. Set PKGDEST in `/etc/makepkg.conf`:**
 
 ```bash
-PKGDEST=/var/lib/aurodle/aurpkgs
+PKGDEST=/var/lib/aurodle/aur
 ```
 
 This tells makepkg to place built packages directly into the local repository.
 
-**4. Create an empty local aurpkgs repo database**
+**4. Create an empty local aur repo database**
 
 ```bash
-repo-add /var/lib/aurodle/aurpkgs/aurpkgs.db.tar.xz
+repo-add /var/lib/aurodle/aur/aur.db.tar.xz
 ```
 
 **5. Sync the database:**
