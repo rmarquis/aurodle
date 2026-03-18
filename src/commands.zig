@@ -305,46 +305,33 @@ fn displayPlanCompact(
     stdout: anytype,
     c: color.Style,
 ) void {
-    const repo_count = plan.repo_deps.len + plan.repo_targets.len;
-    const aur_hdr = "AUR Packages ()".len + countDigits(plan.build_order.len);
-    const repo_hdr = "Repo Packages ()".len + countDigits(repo_count);
-    const hdr_width = @max(aur_hdr, repo_hdr);
+    const total = plan.build_order.len + plan.repo_deps.len + plan.repo_targets.len;
+    if (total == 0) return;
 
-    if (plan.build_order.len > 0) {
-        stdout.print("\nAUR Packages ({d})", .{plan.build_order.len}) catch {};
-        stdout.writeByteNTimes(' ', hdr_width - aur_hdr) catch {};
-        for (plan.build_order) |entry| {
-            stdout.print(" {s}aur/{s}{s}-{s}", .{ c.magenta, c.reset, entry.name, displayVersion(entry) }) catch {};
-        }
-        stdout.writeByte('\n') catch {};
+    stdout.print("\nPackages ({d})", .{total}) catch {};
+    for (plan.build_order) |entry| {
+        stdout.print(" {s}aur/{s}{s}-{s}", .{ c.magenta, c.reset, entry.name, displayVersion(entry) }) catch {};
     }
-    if (repo_count > 0) {
-        stdout.print("\nRepo Packages ({d})", .{repo_count}) catch {};
-        stdout.writeByteNTimes(' ', hdr_width - repo_hdr) catch {};
-        for (plan.repo_targets) |name| {
-            const repo = if (pm) |p| p.syncDbFor(name) else null;
-            const ver = if (pm) |p| p.syncVersion(name) orelse "?" else "?";
-            if (repo) |r| {
-                stdout.print(" {s}{s}/{s}{s}-{s}", .{ c.magenta, r, c.reset, name, ver }) catch {};
-            } else {
-                stdout.print(" {s}-{s}", .{ name, ver }) catch {};
-            }
-        }
-        for (plan.repo_deps) |dep| {
-            const repo = if (pm) |p| p.syncDbFor(dep) else null;
-            const ver = if (pm) |p| p.syncVersion(dep) orelse "?" else "?";
-            if (repo) |r| {
-                stdout.print(" {s}{s}/{s}{s}-{s}", .{ c.magenta, r, c.reset, dep, ver }) catch {};
-            } else {
-                stdout.print(" {s}-{s}", .{ dep, ver }) catch {};
-            }
-        }
-        stdout.writeByte('\n') catch {};
+    for (plan.repo_targets) |name| {
+        printCompactRepoPkg(pm, name, stdout, c);
+    }
+    for (plan.repo_deps) |dep| {
+        printCompactRepoPkg(pm, dep, stdout, c);
+    }
+    stdout.writeByte('\n') catch {};
+}
+
+fn printCompactRepoPkg(pm: ?*pacman_mod.Pacman, name: []const u8, stdout: anytype, c: color.Style) void {
+    const repo = if (pm) |p| p.syncDbFor(name) else null;
+    const ver = if (pm) |p| p.syncVersion(name) orelse "?" else "?";
+    if (repo) |r| {
+        stdout.print(" {s}{s}/{s}{s}-{s}", .{ c.magenta, r, c.reset, name, ver }) catch {};
+    } else {
+        stdout.print(" {s}-{s}", .{ name, ver }) catch {};
     }
 }
 
-const hdr_aur = "AUR Package ()";
-const hdr_repo = "Repo Package ()";
+const hdr_pkg = "Package ()";
 const hdr_old_ver = "Old Version";
 const hdr_new_ver = "New Version";
 
@@ -355,21 +342,13 @@ fn displayPlanVerbose(
     stdout: anytype,
     c: color.Style,
 ) void {
-    // Compute column widths across both sections, seeded from headers
-    var name_col: usize = 0;
+    const total = plan.build_order.len + removals.len + plan.repo_deps.len + plan.repo_targets.len;
+    if (total == 0) return;
+
+    // Compute column widths, seeded from header
+    var name_col: usize = hdr_pkg.len + countDigits(total);
     var old_col: usize = hdr_old_ver.len;
     var has_old_version = false;
-
-    const aur_count = plan.build_order.len + removals.len;
-    if (aur_count > 0) {
-        const w = hdr_aur.len + countDigits(aur_count);
-        if (w > name_col) name_col = w;
-    }
-    const repo_count = plan.repo_deps.len + plan.repo_targets.len;
-    if (repo_count > 0) {
-        const w = hdr_repo.len + countDigits(repo_count);
-        if (w > name_col) name_col = w;
-    }
 
     const aur_prefix = "aur/";
     for (plan.build_order) |entry| {
@@ -408,80 +387,67 @@ fn displayPlanVerbose(
         }
     }
 
-    // AUR section (includes removals)
-    if (aur_count > 0) {
-        stdout.writeByte('\n') catch {};
-        stdout.print(hdr_aur[0 .. hdr_aur.len - 1] ++ "{d})", .{aur_count}) catch {};
-        pad(stdout, countDigits(aur_count) + hdr_aur.len, name_col);
+    // Single header
+    stdout.writeByte('\n') catch {};
+    stdout.print(hdr_pkg[0 .. hdr_pkg.len - 1] ++ "{d})", .{total}) catch {};
+    pad(stdout, countDigits(total) + hdr_pkg.len, name_col);
+    if (has_old_version) {
+        stdout.writeAll(hdr_old_ver) catch {};
+        pad(stdout, hdr_old_ver.len, old_col);
+    }
+    stdout.writeAll(hdr_new_ver ++ "\n\n") catch {};
+
+    // Packages being removed (old version, no new version)
+    for (removals) |name| {
+        stdout.writeAll(name) catch {};
+        pad(stdout, name.len, name_col);
         if (has_old_version) {
-            stdout.writeAll(hdr_old_ver) catch {};
-            pad(stdout, hdr_old_ver.len, old_col);
+            const old_ver = if (pm) |p| p.installedVersion(name) orelse "?" else "?";
+            stdout.print("{s}{s}{s}", .{ c.red, old_ver, c.reset }) catch {};
+            pad(stdout, old_ver.len, old_col);
         }
-        stdout.writeAll(hdr_new_ver ++ "\n\n") catch {};
-
-        // Packages being removed (old version, no new version)
-        for (removals) |name| {
-            stdout.writeAll(name) catch {};
-            pad(stdout, name.len, name_col);
-            if (has_old_version) {
-                const old_ver = if (pm) |p| p.installedVersion(name) orelse "?" else "?";
-                stdout.print("{s}{s}{s}", .{ c.red, old_ver, c.reset }) catch {};
-                pad(stdout, old_ver.len, old_col);
-            }
-            stdout.writeByte('\n') catch {};
-        }
-
-        // Packages being built/installed
-        for (plan.build_order) |entry| {
-            stdout.print("{s}{s}{s}{s}", .{ c.magenta, aur_prefix, c.reset, entry.name }) catch {};
-            pad(stdout, aur_prefix.len + entry.name.len, name_col);
-            if (has_old_version) {
-                const old_ver = if (pm) |p| p.installedVersion(entry.name) orelse "" else "";
-                if (old_ver.len > 0) {
-                    stdout.print("{s}{s}{s}", .{ c.red, old_ver, c.reset }) catch {};
-                    pad(stdout, old_ver.len, old_col);
-                } else {
-                    pad(stdout, 0, old_col);
-                }
-            }
-            stdout.print("{s}{s}{s}\n", .{ c.green, displayVersion(entry), c.reset }) catch {};
-        }
+        stdout.writeByte('\n') catch {};
     }
 
-    // Repo section (targets + deps combined)
-    if (repo_count > 0) {
-        stdout.writeByte('\n') catch {};
-        stdout.print(hdr_repo[0 .. hdr_repo.len - 1] ++ "{d})", .{repo_count}) catch {};
-        pad(stdout, countDigits(repo_count) + hdr_repo.len, name_col);
+    // AUR packages being built/installed
+    for (plan.build_order) |entry| {
+        stdout.print("{s}{s}{s}{s}", .{ c.magenta, aur_prefix, c.reset, entry.name }) catch {};
+        pad(stdout, aur_prefix.len + entry.name.len, name_col);
         if (has_old_version) {
-            stdout.writeAll(hdr_old_ver) catch {};
-            pad(stdout, hdr_old_ver.len, old_col);
-        }
-        stdout.writeAll(hdr_new_ver ++ "\n\n") catch {};
-
-        for (repo_lists) |list| {
-            for (list) |name| {
-                const repo = if (pm) |p| p.syncDbFor(name) else null;
-                const ver = if (pm) |p| p.syncVersion(name) orelse "?" else "?";
-                const w = if (repo) |r| blk: {
-                    stdout.print("{s}{s}/{s}{s}", .{ c.magenta, r, c.reset, name }) catch {};
-                    break :blk r.len + 1 + name.len;
-                } else blk: {
-                    stdout.writeAll(name) catch {};
-                    break :blk name.len;
-                };
-                pad(stdout, w, name_col);
-                if (has_old_version) {
-                    const old_ver = if (pm) |p| p.installedVersion(name) orelse "-" else "-";
-                    if (!std.mem.eql(u8, old_ver, "-")) {
-                        stdout.print("{s}{s}{s}", .{ c.red, old_ver, c.reset }) catch {};
-                    } else {
-                        stdout.writeAll(old_ver) catch {};
-                    }
-                    pad(stdout, old_ver.len, old_col);
-                }
-                stdout.print("{s}{s}{s}\n", .{ c.green, ver, c.reset }) catch {};
+            const old_ver = if (pm) |p| p.installedVersion(entry.name) orelse "" else "";
+            if (old_ver.len > 0) {
+                stdout.print("{s}{s}{s}", .{ c.red, old_ver, c.reset }) catch {};
+                pad(stdout, old_ver.len, old_col);
+            } else {
+                pad(stdout, 0, old_col);
             }
+        }
+        stdout.print("{s}{s}{s}\n", .{ c.green, displayVersion(entry), c.reset }) catch {};
+    }
+
+    // Repo packages (targets + deps)
+    for (repo_lists) |list| {
+        for (list) |name| {
+            const repo = if (pm) |p| p.syncDbFor(name) else null;
+            const ver = if (pm) |p| p.syncVersion(name) orelse "?" else "?";
+            const w = if (repo) |r| blk: {
+                stdout.print("{s}{s}/{s}{s}", .{ c.magenta, r, c.reset, name }) catch {};
+                break :blk r.len + 1 + name.len;
+            } else blk: {
+                stdout.writeAll(name) catch {};
+                break :blk name.len;
+            };
+            pad(stdout, w, name_col);
+            if (has_old_version) {
+                const old_ver = if (pm) |p| p.installedVersion(name) orelse "-" else "-";
+                if (!std.mem.eql(u8, old_ver, "-")) {
+                    stdout.print("{s}{s}{s}", .{ c.red, old_ver, c.reset }) catch {};
+                } else {
+                    stdout.writeAll(old_ver) catch {};
+                }
+                pad(stdout, old_ver.len, old_col);
+            }
+            stdout.print("{s}{s}{s}\n", .{ c.green, ver, c.reset }) catch {};
         }
     }
 }
