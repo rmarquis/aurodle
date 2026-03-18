@@ -58,6 +58,7 @@ pub const Pacman = struct {
     aur_repo_name: []const u8,
     owns_sync_dbs: bool,
     verbose_pkg_lists: bool = false,
+    color: bool = false,
 
     /// Initialize by parsing /etc/pacman.conf and registering all
     /// discovered sync databases.
@@ -86,6 +87,7 @@ pub const Pacman = struct {
             .aur_repo_name = aur_repo_name,
             .owns_sync_dbs = true,
             .verbose_pkg_lists = conf.verbose_pkg_lists,
+            .color = conf.color,
         };
     }
 
@@ -484,6 +486,7 @@ fn findAllProvidersInDb(allocator: Allocator, db: alpm.Database, dep: []const u8
 const PacmanConf = struct {
     sync_dbs: []alpm.Database,
     verbose_pkg_lists: bool,
+    color: bool,
 };
 
 /// Parse /etc/pacman.conf and register each [repo] section as a sync database.
@@ -504,6 +507,7 @@ fn registerSyncDbs(allocator: Allocator, handle: alpm.Handle) !PacmanConf {
     var current_repo: ?alpm.Database = null;
     var in_options = false;
     var verbose_pkg_lists = false;
+    var color_opt = false;
     var lines = std.mem.splitScalar(u8, content, '\n');
 
     while (lines.next()) |line| {
@@ -532,8 +536,9 @@ fn registerSyncDbs(allocator: Allocator, handle: alpm.Handle) !PacmanConf {
         }
 
         // Options section directives
-        if (in_options and std.mem.eql(u8, trimmed, "VerbosePkgLists")) {
-            verbose_pkg_lists = true;
+        if (in_options) {
+            if (std.mem.eql(u8, trimmed, "VerbosePkgLists")) verbose_pkg_lists = true;
+            if (std.mem.eql(u8, trimmed, "Color")) color_opt = true;
         }
 
         // Include directive: add servers from mirrorlist file
@@ -554,6 +559,7 @@ fn registerSyncDbs(allocator: Allocator, handle: alpm.Handle) !PacmanConf {
     return .{
         .sync_dbs = try dbs.toOwnedSlice(allocator),
         .verbose_pkg_lists = verbose_pkg_lists,
+        .color = color_opt,
     };
 }
 

@@ -102,8 +102,8 @@ pub const Commands = struct {
             .cache_root = null,
             .flags = flags,
             .err_writer = defaultErrWriter(),
-            .stdout_color = color.Style.detect(std.posix.STDOUT_FILENO),
-            .stderr_color = color.Style.detect(std.posix.STDERR_FILENO),
+            .stdout_color = color.Style.disabled,
+            .stderr_color = color.Style.disabled,
         };
     }
 
@@ -116,6 +116,7 @@ pub const Commands = struct {
         cache_root: []const u8,
         flags: Flags,
     ) Commands {
+        const use_color = pm.color;
         return .{
             .allocator = allocator,
             .aur_client = aur_client,
@@ -125,8 +126,8 @@ pub const Commands = struct {
             .cache_root = cache_root,
             .flags = flags,
             .err_writer = defaultErrWriter(),
-            .stdout_color = color.Style.detect(std.posix.STDOUT_FILENO),
-            .stderr_color = color.Style.detect(std.posix.STDERR_FILENO),
+            .stdout_color = color.Style.detect(std.posix.STDOUT_FILENO, use_color),
+            .stderr_color = color.Style.detect(std.posix.STDERR_FILENO, use_color),
         };
     }
 

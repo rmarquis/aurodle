@@ -122,6 +122,10 @@ pub fn runSudoInteractive(
 /// If stdin is not a terminal (piped input), returns false
 /// (fail-safe: don't auto-confirm in non-interactive mode).
 pub fn promptYesNo(message: []const u8) !bool {
+    return promptYesNoStyled(color.Style.disabled, message);
+}
+
+pub fn promptYesNoStyled(c: color.Style, message: []const u8) !bool {
     const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
     const stdin: std.fs.File = .{ .handle = std.posix.STDIN_FILENO };
 
@@ -130,7 +134,6 @@ pub fn promptYesNo(message: []const u8) !bool {
         return false;
     }
 
-    const c = color.Style.detect(stdout.handle);
     const w = stdout.deprecatedWriter();
     try w.print("{s}::{s} {s} [Y/n] ", .{ c.blue, c.reset, message });
 
@@ -152,9 +155,8 @@ pub fn promptNoYes(message: []const u8) !bool {
         return false;
     }
 
-    const c = color.Style.detect(stdout.handle);
     const w = stdout.deprecatedWriter();
-    try w.print("{s}::{s} {s} [y/N] ", .{ c.blue, c.reset, message });
+    try w.print(":: {s} [y/N] ", .{message});
 
     var buf: [16]u8 = undefined;
     const n = stdin.read(&buf) catch return false;
@@ -186,9 +188,8 @@ pub fn promptProviderChoice(
 
     if (!std.posix.isatty(stdin.handle)) return 0;
 
-    const s = color.Style.detect(stderr.handle);
     const w = stderr.deprecatedWriter();
-    w.print("{s}::{s} There are {d} providers available for {s}:\n", .{ s.blue, s.reset, candidates.len, dep_name }) catch {};
+    w.print(":: There are {d} providers available for {s}:\n", .{ candidates.len, dep_name }) catch {};
 
     // Group by db_name and display
     var num: usize = 1;
@@ -196,7 +197,7 @@ pub fn promptProviderChoice(
     for (candidates) |cand| {
         if (!std.mem.eql(u8, cand.db_name, current_db)) {
             current_db = cand.db_name;
-            w.print("{s}::{s} Repository {s}\n   ", .{ s.blue, s.reset, current_db }) catch {};
+            w.print(":: Repository {s}\n   ", .{current_db}) catch {};
         }
         w.print(" {d}) {s}", .{ num, cand.name }) catch {};
         num += 1;
@@ -215,13 +216,13 @@ pub fn promptProviderChoice(
         if (response.len == 0) return 0; // default
 
         const choice = std.fmt.parseInt(usize, response, 10) catch {
-            w.print("{s}::{s} Invalid number, try again.", .{ s.yellow, s.reset }) catch {};
+            w.writeAll(":: Invalid number, try again.") catch {};
             continue;
         };
         if (choice >= 1 and choice <= candidates.len) {
             return choice - 1;
         }
-        w.print("{s}::{s} Invalid number, try again.", .{ s.yellow, s.reset }) catch {};
+        w.writeAll(":: Invalid number, try again.") catch {};
     }
 }
 

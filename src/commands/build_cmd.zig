@@ -216,7 +216,7 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
     displayPlan(plan, self.pacman, removals, self.err_writer, self.stdout_color, ec);
 
     if (!self.flags.noconfirm) {
-        if (!try utils.promptYesNo("Proceed with installation?")) {
+        if (!try utils.promptYesNoStyled(self.stdout_color, "Proceed with installation?")) {
             return .success;
         }
     }
@@ -318,7 +318,7 @@ pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
     displayPlan(plan, self.pacman, removals, self.err_writer, self.stdout_color, ec);
 
     if (!self.flags.noconfirm) {
-        if (!try utils.promptYesNo("Proceed with build?")) {
+        if (!try utils.promptYesNoStyled(self.stdout_color, "Proceed with build?")) {
             return .success;
         }
     }
@@ -567,7 +567,7 @@ pub fn clean(self: *Commands) !ExitCode {
     }
 
     if (!self.flags.noconfirm) {
-        if (!try utils.promptYesNo("Proceed with cleanup?")) {
+        if (!try utils.promptYesNoStyled(self.stdout_color, "Proceed with cleanup?")) {
             return .success;
         }
     }
@@ -731,7 +731,7 @@ fn reviewPackages(
             const msg = try std.fmt.allocPrint(self.allocator, "View {s} diff?", .{entry.pkgbase});
             defer self.allocator.free(msg);
 
-            if (try utils.promptYesNo(msg)) {
+            if (try utils.promptYesNoStyled(self.stdout_color, msg)) {
                 const exit_code = utils.runInteractive(
                     self.allocator,
                     &.{ "git", "diff", "ORIG_HEAD..HEAD" },
@@ -748,7 +748,7 @@ fn reviewPackages(
             const msg = try std.fmt.allocPrint(self.allocator, "Review {s} files?", .{entry.pkgbase});
             defer self.allocator.free(msg);
 
-            if (try utils.promptYesNo(msg)) {
+            if (try utils.promptYesNoStyled(self.stdout_color, msg)) {
                 const exit_code = utils.runInteractive(
                     self.allocator,
                     &.{ editor, clone_dir },

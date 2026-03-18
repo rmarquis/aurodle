@@ -31,7 +31,10 @@ pub const Style = struct {
         .reset = "",
     };
 
-    pub fn detect(fd: std.posix.fd_t) Style {
+    /// Detect color support: requires pacman.conf Color option AND a TTY.
+    /// Respects NO_COLOR env var and TERM=dumb.
+    pub fn detect(fd: std.posix.fd_t, pacman_color: bool) Style {
+        if (!pacman_color) return disabled;
         if (std.posix.getenv("NO_COLOR")) |_| return disabled;
         if (std.posix.getenv("TERM")) |term| {
             if (std.mem.eql(u8, term, "dumb")) return disabled;
@@ -66,6 +69,11 @@ test "disabled style has empty strings" {
 
 test "detect returns disabled for non-TTY fd" {
     // In the test runner, fds are piped (not TTYs)
-    const s = Style.detect(std.posix.STDOUT_FILENO);
+    const s = Style.detect(std.posix.STDOUT_FILENO, true);
+    try testing.expectEqualStrings("", s.red);
+}
+
+test "detect returns disabled when pacman Color is off" {
+    const s = Style.detect(std.posix.STDOUT_FILENO, false);
     try testing.expectEqualStrings("", s.red);
 }
