@@ -313,23 +313,27 @@ fn displayInfo(pkg: *aur.Package, installed_version: ?[]const u8, c: color.Style
         }
     };
 
-    write.field(stdout, "Repository", "aur");
+    stdout.print("{s:<16}: {s}aur{s}\n", .{ "Repository", c.magenta, c.reset }) catch {};
     write.field(stdout, "Name", pkg.name);
     if (!std.mem.eql(u8, pkg.name, pkg.pkgbase)) {
         write.field(stdout, "Package Base", pkg.pkgbase);
     }
+    const is_ood = pkg.out_of_date != null;
+    const ver_color = if (is_ood) c.red else c.green;
     if (installed_version) |iv| {
         if (std.mem.eql(u8, iv, pkg.version)) {
-            stdout.print("{s:<16}: {s} [installed]\n", .{ "Version", pkg.version }) catch {};
+            stdout.print("{s:<16}: {s}{s}{s} [installed]\n", .{ "Version", ver_color, pkg.version, c.reset }) catch {};
         } else {
-            stdout.print("{s:<16}: {s}{s}{s} [installed: {s}{s}{s}]\n", .{ "Version", c.green, pkg.version, c.reset, c.red, iv, c.reset }) catch {};
+            stdout.print("{s:<16}: {s}{s}{s} [installed: {s}{s}{s}]\n", .{ "Version", ver_color, pkg.version, c.reset, c.green, iv, c.reset }) catch {};
         }
     } else {
-        write.field(stdout, "Version", pkg.version);
+        stdout.print("{s:<16}: {s}{s}{s}\n", .{ "Version", ver_color, pkg.version, c.reset }) catch {};
     }
     write.optionalField(stdout, "Description", pkg.description);
-    write.optionalField(stdout, "URL", pkg.url);
-    stdout.print("{s:<16}: https://aur.archlinux.org/packages/{s}\n", .{ "AUR Page", pkg.name }) catch {};
+    if (pkg.url) |url| {
+        stdout.print("{s:<16}: {s}{s}{s}\n", .{ "URL", c.blue, url, c.reset }) catch {};
+    }
+    stdout.print("{s:<16}: {s}https://aur.archlinux.org/packages/{s}{s}\n", .{ "AUR Page", c.blue, pkg.name, c.reset }) catch {};
     write.sliceField(stdout, "Licenses", pkg.licenses);
     write.sliceField(stdout, "Groups", pkg.groups);
     write.sliceField(stdout, "Provides", pkg.provides);
@@ -349,7 +353,7 @@ fn displayInfo(pkg: *aur.Package, installed_version: ?[]const u8, c: color.Style
     write.timestampField(stdout, "Last Modified", pkg.last_modified);
 
     if (pkg.out_of_date) |_| {
-        write.field(stdout, "Out Of Date", "Yes");
+        stdout.print("{s:<16}: {s}Yes{s}\n", .{ "Out Of Date", c.red, c.reset }) catch {};
     } else {
         write.field(stdout, "Out Of Date", "No");
     }

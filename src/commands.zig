@@ -105,8 +105,8 @@ pub const Commands = struct {
             .cache_root = null,
             .flags = flags,
             .err_writer = defaultErrWriter(),
-            .stdout_color = color.Style.disabled,
-            .stderr_color = color.Style.disabled,
+            .stdout_color = color.Style.detect(std.posix.STDOUT_FILENO, true),
+            .stderr_color = color.Style.detect(std.posix.STDERR_FILENO, true),
         };
     }
 
