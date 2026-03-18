@@ -260,7 +260,7 @@ graph TB
       };
   };
   ```
-- **Hidden Complexity**: Multi-source lookup ordering and short-circuiting, AUR batch query optimization (collects unknown packages and issues a single `multiInfo`), result caching across multiple calls within a session, version constraint satisfaction checking, provider resolution for virtual packages, distinguishing installed-from-repos (`satisfied_repo`) vs installed-from-AUR (`satisfied_aur`) vs available-in-aurpkgs (`repo_aur`) via sync database membership, excluding the aurpkgs database from official repo classification.
+- **Hidden Complexity**: Multi-source lookup ordering and short-circuiting, AUR batch query optimization (collects unknown packages and issues a single `multiInfo`), result caching across multiple calls within a session, version constraint satisfaction checking, multi-stage provider selection for virtual packages (installed providers → sync db providers → AUR provider search, with interactive user prompt when multiple candidates exist, auto-selection for single matches, and per-session caching of choices via `provider_choices`/`provider_selections` maps), distinguishing installed-from-repos (`satisfied_repo`) vs installed-from-AUR (`satisfied_aur`) vs available-in-aurpkgs (`repo_aur`) via sync database membership, excluding the aurpkgs database from official repo classification.
 - **Depth Score**: **Deep** — The mediator pattern pays off here. The resolver calls `registry.resolve("libfoo>=2.0")` and gets back a classified result without knowing anything about libalpm queries, AUR HTTP calls, or caching strategies.
 
 ---
@@ -301,7 +301,7 @@ graph TB
       pub const Conflict = struct {
           package: []const u8,
           conflicts_with: []const u8,
-          kind: Kind, // aur_aur | aur_installed
+          kind: Kind, // aur_aur | aur_installed | aur_replaces | repo_replaces
       };
 
       pub const DependencyEntry = struct {
@@ -312,7 +312,7 @@ graph TB
       };
   };
   ```
-- **Hidden Complexity**: BFS dependency discovery with batched AUR resolution (`resolveMany()` per frontier level), provides-aware conflict detection (Phase 1.5: builds reverse provides map, checks AUR↔AUR and AUR↔installed conflicts with bidirectional deduplication), pkgname-to-pkgbase deduplication (multiple pkgnames may share a pkgbase — only build once), topological sort using Kahn's algorithm with cycle detection, dependency type handling (depends vs makedepends), build failure propagation via `aur_dep_bases`, and target-vs-dependency classification for repo packages (repo_targets vs repo_deps).
+- **Hidden Complexity**: BFS dependency discovery with batched AUR resolution (`resolveMany()` per frontier level), provides-aware conflict detection (Phase 1.5: builds reverse provides map, checks AUR↔AUR and AUR↔installed conflicts with bidirectional deduplication), replacement detection (scans AUR `replaces` arrays and repo sync package replaces against installed packages, generating `aur_replaces`/`repo_replaces` conflict warnings), pkgname-to-pkgbase deduplication (multiple pkgnames may share a pkgbase — only build once), topological sort using Kahn's algorithm with cycle detection, dependency type handling (depends vs makedepends), build failure propagation via `aur_dep_bases`, and target-vs-dependency classification for repo packages (repo_targets vs repo_deps).
 - **Depth Score**: **Deep** — A single `resolve()` call hides the entire graph algorithm pipeline. The caller gets a ready-to-execute build plan.
 
 ---
@@ -332,7 +332,7 @@ graph TB
       pub fn configInstructions() []const u8
   };
   ```
-- **Hidden Complexity**: Directory creation (`~/.cache/aurodle/aurpkgs/`), `repo-add -R` invocation, locating built packages by resolving `$PKGDEST` from makepkg.conf, copying packages to the repository directory, handling split packages (multiple `.pkg.tar.*` files from one build), database integrity, pacman.conf validation (checking `[aurpkgs]` section exists).
+- **Hidden Complexity**: Directory creation, `repo-add -R` invocation, locating built packages by resolving `$PKGDEST` from makepkg.conf, copying packages to the repository directory, handling split packages (multiple `.pkg.tar.*` files from one build), database integrity, dynamic repo name derivation from pacman.conf (`deriveRepoNameFromPacmanConf` scans for `[section]` with `Server = file://` matching PKGDEST, falls back to `DEFAULT_REPO_NAME`), pacman.conf validation.
 - **Depth Score**: **Deep** — Four methods hide all filesystem operations, external tool invocation, and configuration checking.
 
 ---
@@ -587,7 +587,9 @@ sequenceDiagram
 flowchart TD
     A[Target packages] --> B[Registry: classify each]
     B --> P{Provider redirect?}
-    P -->|Yes| PR[Redirect to provider name]
+    P -->|Single provider| PR[Redirect to provider name]
+    P -->|Multiple providers| PP[Prompt user to choose]
+    PP --> PR
     PR --> B
     P -->|No| C{Source?}
     C -->|SATISFIED_REPO| SR{Target?}
@@ -612,19 +614,26 @@ flowchart TD
     H --> I[Registry: classify each dependency]
     I --> B
     F --> J[Add to dependency graph]
-    J --> CD[Conflict detection]
+    J --> CD[Conflict + replacement detection]
     CD --> CD1[Build provides map from AUR nodes]
     CD1 --> CD2{For each AUR node's conflicts}
     CD2 -->|Name or provider in graph| CD3[AUR↔AUR warning]
     CD2 -->|Installed by name or provider| CD4[AUR↔installed warning]
     CD2 -->|No match| CD5[Skip]
-    CD3 --> CD6
-    CD4 --> CD6
-    CD5 --> CD6
+    CD3 --> CDR
+    CD4 --> CDR
+    CD5 --> CDR
+    CDR{For each AUR node's replaces}
+    CDR -->|Replaced pkg installed| CDR1[aur_replaces warning]
+    CDR -->|Not installed| CDR2[Skip]
+    CDR1 --> CD6
+    CDR2 --> CD6
     CD6{For each new repo dep}
     CD6 -->|Sync pkg conflicts with installed| CD7[Repo↔installed warning]
+    CD6 -->|Sync pkg replaces installed| CD7b[repo_replaces warning]
     CD6 -->|No conflict| CD8[Skip]
     CD7 --> K
+    CD7b --> K
     CD8 --> K
     K[Topological sort via Kahn's]
     K --> L{Remaining edges?}
