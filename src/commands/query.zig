@@ -313,6 +313,7 @@ fn displayInfo(pkg: *aur.Package, installed_version: ?[]const u8, c: color.Style
         }
     };
 
+    write.field(stdout, "Repository", "aur");
     write.field(stdout, "Name", pkg.name);
     if (!std.mem.eql(u8, pkg.name, pkg.pkgbase)) {
         write.field(stdout, "Package Base", pkg.pkgbase);
