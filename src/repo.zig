@@ -4,7 +4,7 @@ const utils = @import("utils.zig");
 
 // ── Constants ────────────────────────────────────────────────────────────
 
-pub const DEFAULT_REPO_NAME = "aurpkgs";
+pub const DEFAULT_REPO_NAME = "aur";
 pub const DEFAULT_PKGEXT = ".pkg.tar.zst";
 
 // ── Types ────────────────────────────────────────────────────────────────
@@ -697,7 +697,7 @@ test "configInstructions contains required elements" {
     try std.testing.expect(std.mem.indexOf(u8, instructions, "PKGDEST=") != null);
 }
 
-test "isConfiguredFromPath detects aurpkgs section" {
+test "isConfiguredFromPath detects aur section" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -711,9 +711,9 @@ test "isConfiguredFromPath detects aurpkgs section" {
         \\[core]
         \\Include = /etc/pacman.d/mirrorlist
         \\
-        \\[aurpkgs]
+        \\[aur]
         \\SigLevel = Optional TrustAll
-        \\Server = file:///home/user/.cache/aurodle/aurpkgs
+        \\Server = file:///home/user/.cache/aurodle/aur
         ,
     });
 
