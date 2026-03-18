@@ -74,7 +74,7 @@ pub fn search(self: *Commands, query_str: []const u8) !ExitCode {
     // Sort results
     const sorted = try sortPackages(self.allocator, self.flags, packages);
     defer self.allocator.free(sorted);
-    displaySearchResults(sorted);
+    displaySearchResults(sorted, self.stdout_color);
 
     return .success;
 }
@@ -361,19 +361,24 @@ fn displayInfo(pkg: *aur.Package, installed_version: ?[]const u8, c: color.Style
     stdout.writeByte('\n') catch {};
 }
 
-fn displaySearchResults(packages: []const *aur.Package) void {
+fn displaySearchResults(packages: []const *aur.Package, c: color.Style) void {
     const stdout = getStdout();
 
     for (packages) |pkg| {
-        stdout.print("aur/{s} {s} (+{d} {d:.2})", .{
+        const ver_color = if (pkg.out_of_date != null) c.red else c.green;
+        stdout.print("{s}aur/{s}{s} {s}{s}{s} (+{d} {d:.2})", .{
+            c.magenta,
+            c.reset,
             pkg.name,
+            ver_color,
             pkg.version,
+            c.reset,
             pkg.votes,
             pkg.popularity,
         }) catch {};
 
         if (pkg.out_of_date != null) {
-            stdout.writeAll(" [out-of-date]") catch {};
+            stdout.print(" {s}[out-of-date]{s}", .{ c.red, c.reset }) catch {};
         }
 
         stdout.writeByte('\n') catch {};
