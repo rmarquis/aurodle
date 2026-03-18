@@ -321,6 +321,28 @@ fn runWithFullStack(
     };
     defer pm.deinit();
 
+    // Merge IgnorePkg from pacman.conf with --ignore flag
+    var flags = parsed.flags;
+    if (pm.ignore_pkgs.len > 0) {
+        var count: usize = flags.ignore.len;
+        for (pm.ignore_pkgs) |pkg| {
+            if (count >= flags.ignore_buf.len) break;
+            // Skip duplicates already in CLI --ignore
+            var dup = false;
+            for (flags.ignore) |existing| {
+                if (std.mem.eql(u8, existing, pkg)) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup) {
+                flags.ignore_buf[count] = pkg;
+                count += 1;
+            }
+        }
+        flags.ignore = flags.ignore_buf[0..count];
+    }
+
     // Initialize registry (cascade lookup: installed -> sync -> AUR -> provider)
     var reg = registry_mod.PackageRegistry.init(allocator, &pm, aur_client);
     defer reg.deinit();
@@ -345,7 +367,7 @@ fn runWithFullStack(
         &reg,
         &repository,
         cache_root,
-        parsed.flags,
+        flags,
     );
 
     return switch (parsed.operation) {

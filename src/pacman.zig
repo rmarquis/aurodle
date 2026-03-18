@@ -59,6 +59,7 @@ pub const Pacman = struct {
     owns_sync_dbs: bool,
     verbose_pkg_lists: bool = false,
     color: bool = false,
+    ignore_pkgs: []const []const u8 = &.{},
 
     /// Initialize by parsing /etc/pacman.conf and registering all
     /// discovered sync databases.
@@ -88,6 +89,7 @@ pub const Pacman = struct {
             .owns_sync_dbs = true,
             .verbose_pkg_lists = conf.verbose_pkg_lists,
             .color = conf.color,
+            .ignore_pkgs = conf.ignore_pkgs,
         };
     }
 
@@ -129,6 +131,8 @@ pub const Pacman = struct {
 
     pub fn deinit(self: *Pacman) void {
         if (self.owns_sync_dbs) self.allocator.free(self.sync_dbs);
+        for (self.ignore_pkgs) |pkg| self.allocator.free(pkg);
+        self.allocator.free(self.ignore_pkgs);
         self.handle.deinit();
     }
 
@@ -512,6 +516,7 @@ const PacmanConf = struct {
     sync_dbs: []alpm.Database,
     verbose_pkg_lists: bool,
     color: bool,
+    ignore_pkgs: []const []const u8,
 };
 
 /// Parse /etc/pacman.conf and register each [repo] section as a sync database.
@@ -533,6 +538,7 @@ fn registerSyncDbs(allocator: Allocator, handle: alpm.Handle) !PacmanConf {
     var in_options = false;
     var verbose_pkg_lists = false;
     var color_opt = false;
+    var ignore_pkgs: std.ArrayListUnmanaged([]const u8) = .empty;
     var lines = std.mem.splitScalar(u8, content, '\n');
 
     while (lines.next()) |line| {
@@ -564,6 +570,14 @@ fn registerSyncDbs(allocator: Allocator, handle: alpm.Handle) !PacmanConf {
         if (in_options) {
             if (std.mem.eql(u8, trimmed, "VerbosePkgLists")) verbose_pkg_lists = true;
             if (std.mem.eql(u8, trimmed, "Color")) color_opt = true;
+            if (std.mem.startsWith(u8, trimmed, "IgnorePkg")) {
+                const eq_pos = std.mem.indexOfScalar(u8, trimmed, '=') orelse continue;
+                const value = std.mem.trim(u8, trimmed[eq_pos + 1 ..], " \t");
+                var it = std.mem.tokenizeAny(u8, value, " \t");
+                while (it.next()) |pkg| {
+                    try ignore_pkgs.append(allocator, try allocator.dupe(u8, pkg));
+                }
+            }
         }
 
         // Include directive: add servers from mirrorlist file
@@ -585,6 +599,7 @@ fn registerSyncDbs(allocator: Allocator, handle: alpm.Handle) !PacmanConf {
         .sync_dbs = try dbs.toOwnedSlice(allocator),
         .verbose_pkg_lists = verbose_pkg_lists,
         .color = color_opt,
+        .ignore_pkgs = try ignore_pkgs.toOwnedSlice(allocator),
     };
 }
 
