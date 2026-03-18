@@ -6,6 +6,7 @@ const solver_mod = @import("solver.zig");
 const repo_mod = @import("repo.zig");
 const pacman_mod = @import("pacman.zig");
 const devel = @import("devel.zig");
+const color = @import("color.zig");
 
 // Sub-modules (pub for test discovery via refAllDecls)
 pub const query = @import("commands/query.zig");
@@ -88,6 +89,8 @@ pub const Commands = struct {
     cache_root: ?[]const u8,
     flags: Flags,
     err_writer: std.io.AnyWriter,
+    stdout_color: color.Style,
+    stderr_color: color.Style,
 
     pub fn init(allocator: Allocator, aur_client: *aur.Client, flags: Flags) Commands {
         return .{
@@ -99,6 +102,8 @@ pub const Commands = struct {
             .cache_root = null,
             .flags = flags,
             .err_writer = defaultErrWriter(),
+            .stdout_color = color.Style.detect(std.posix.STDOUT_FILENO),
+            .stderr_color = color.Style.detect(std.posix.STDERR_FILENO),
         };
     }
 
@@ -120,6 +125,8 @@ pub const Commands = struct {
             .cache_root = cache_root,
             .flags = flags,
             .err_writer = defaultErrWriter(),
+            .stdout_color = color.Style.detect(std.posix.STDOUT_FILENO),
+            .stderr_color = color.Style.detect(std.posix.STDERR_FILENO),
         };
     }
 
@@ -176,7 +183,7 @@ pub const Commands = struct {
 
 // ── Shared Helpers (used by sub-modules) ─────────────────────────────
 
-pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman, removals: []const []const u8, err_writer: std.io.AnyWriter) void {
+pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman, removals: []const []const u8, err_writer: std.io.AnyWriter, c: color.Style, ec: color.Style) void {
     const stdout = getStdout();
     const verbose = if (pm) |p| p.verbose_pkg_lists else false;
 
@@ -187,7 +194,7 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman, removals
             if (devel.isVcsPackage(entry.name)) continue;
             if (p.installedVersion(entry.name)) |old| {
                 if (std.mem.eql(u8, old, entry.version)) {
-                    err_writer.print("warning: {s}-{s} is up to date -- reinstalling\n", .{ entry.name, old }) catch {};
+                    err_writer.print("{s}warning:{s} {s}-{s} is up to date -- reinstalling\n", .{ ec.yellow, ec.reset, entry.name, old }) catch {};
                 }
             }
         }
@@ -195,7 +202,7 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman, removals
             if (p.installedVersion(name)) |old| {
                 const new = p.syncVersion(name) orelse continue;
                 if (std.mem.eql(u8, old, new)) {
-                    err_writer.print("warning: {s}-{s} is up to date -- reinstalling\n", .{ name, old }) catch {};
+                    err_writer.print("{s}warning:{s} {s}-{s} is up to date -- reinstalling\n", .{ ec.yellow, ec.reset, name, old }) catch {};
                 }
             }
         }
@@ -207,16 +214,16 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman, removals
         for (plan.conflicts) |conflict| {
             switch (conflict.kind) {
                 .aur_aur => err_writer.print(
-                    "warning: {s} and {s} are in conflict\n",
-                    .{ conflict.package, conflict.conflicts_with },
+                    "{s}warning:{s} {s} and {s} are in conflict\n",
+                    .{ ec.yellow, ec.reset, conflict.package, conflict.conflicts_with },
                 ) catch {},
                 .aur_installed => err_writer.print(
-                    "warning: {s} conflicts with installed package {s}\n",
-                    .{ conflict.package, conflict.conflicts_with },
+                    "{s}warning:{s} {s} conflicts with installed package {s}\n",
+                    .{ ec.yellow, ec.reset, conflict.package, conflict.conflicts_with },
                 ) catch {},
                 .repo_installed => err_writer.print(
-                    "warning: new dependency {s} conflicts with installed package {s}\n",
-                    .{ conflict.package, conflict.conflicts_with },
+                    "{s}warning:{s} new dependency {s} conflicts with installed package {s}\n",
+                    .{ ec.yellow, ec.reset, conflict.package, conflict.conflicts_with },
                 ) catch {},
             }
         }
@@ -225,7 +232,7 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman, removals
     // Display provider selections (informational)
     if (plan.provider_selections.len > 0) {
         for (plan.provider_selections) |sel| {
-            err_writer.print(":: {s} provider: {s}\n", .{ sel.dep_name, sel.chosen }) catch {};
+            err_writer.print("{s}::{s} {s} provider: {s}\n", .{ ec.blue, ec.reset, sel.dep_name, sel.chosen }) catch {};
         }
     }
 
@@ -239,15 +246,21 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman, removals
                 const md = yd.calculateMonthDay();
                 const ds = es.getDaySeconds();
                 err_writer.print(
-                    "warning: {s} has been flagged out of date on {d}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z\n",
+                    "{s}warning:{s} {s} has been flagged {s}out of date{s} on {s}{d}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z{s}\n",
                     .{
+                        ec.yellow,
+                        ec.reset,
                         entry.name,
+                        ec.red,
+                        ec.reset,
+                        ec.yellow,
                         yd.year,
                         md.month.numeric(),
                         md.day_index + 1,
                         ds.getHoursIntoDay(),
                         ds.getMinutesIntoHour(),
                         ds.getSecondsIntoMinute(),
+                        ec.reset,
                     },
                 ) catch {};
             }
@@ -257,9 +270,9 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman, removals
     stdout.writeAll("resolving dependencies...\n") catch {};
 
     if (verbose) {
-        displayPlanVerbose(plan, pm, removals, stdout);
+        displayPlanVerbose(plan, pm, removals, stdout, c);
     } else {
-        displayPlanCompact(plan, pm, stdout);
+        displayPlanCompact(plan, pm, stdout, c);
     }
 
     if (pm) |p| {
@@ -289,6 +302,7 @@ fn displayPlanCompact(
     plan: solver_mod.BuildPlan,
     pm: ?*pacman_mod.Pacman,
     stdout: anytype,
+    c: color.Style,
 ) void {
     const repo_count = plan.repo_deps.len + plan.repo_targets.len;
     const aur_hdr = "AUR Packages ()".len + countDigits(plan.build_order.len);
@@ -299,7 +313,7 @@ fn displayPlanCompact(
         stdout.print("\nAUR Packages ({d})", .{plan.build_order.len}) catch {};
         stdout.writeByteNTimes(' ', hdr_width - aur_hdr) catch {};
         for (plan.build_order) |entry| {
-            stdout.print(" aur/{s}-{s}", .{ entry.name, displayVersion(entry) }) catch {};
+            stdout.print(" {s}aur/{s}{s}-{s}", .{ c.magenta, c.reset, entry.name, displayVersion(entry) }) catch {};
         }
         stdout.writeByte('\n') catch {};
     }
@@ -307,12 +321,22 @@ fn displayPlanCompact(
         stdout.print("\nRepo Packages ({d})", .{repo_count}) catch {};
         stdout.writeByteNTimes(' ', hdr_width - repo_hdr) catch {};
         for (plan.repo_targets) |name| {
+            const repo = if (pm) |p| p.syncDbFor(name) else null;
             const ver = if (pm) |p| p.syncVersion(name) orelse "?" else "?";
-            stdout.print(" {s}-{s}", .{ name, ver }) catch {};
+            if (repo) |r| {
+                stdout.print(" {s}{s}/{s}{s}-{s}", .{ c.magenta, r, c.reset, name, ver }) catch {};
+            } else {
+                stdout.print(" {s}-{s}", .{ name, ver }) catch {};
+            }
         }
         for (plan.repo_deps) |dep| {
+            const repo = if (pm) |p| p.syncDbFor(dep) else null;
             const ver = if (pm) |p| p.syncVersion(dep) orelse "?" else "?";
-            stdout.print(" {s}-{s}", .{ dep, ver }) catch {};
+            if (repo) |r| {
+                stdout.print(" {s}{s}/{s}{s}-{s}", .{ c.magenta, r, c.reset, dep, ver }) catch {};
+            } else {
+                stdout.print(" {s}-{s}", .{ dep, ver }) catch {};
+            }
         }
         stdout.writeByte('\n') catch {};
     }
@@ -328,6 +352,7 @@ fn displayPlanVerbose(
     pm: ?*pacman_mod.Pacman,
     removals: []const []const u8,
     stdout: anytype,
+    c: color.Style,
 ) void {
     // Compute column widths across both sections, seeded from headers
     var name_col: usize = 0;
@@ -399,7 +424,7 @@ fn displayPlanVerbose(
             pad(stdout, name.len, name_col);
             if (has_old_version) {
                 const old_ver = if (pm) |p| p.installedVersion(name) orelse "?" else "?";
-                stdout.writeAll(old_ver) catch {};
+                stdout.print("{s}{s}{s}", .{ c.red, old_ver, c.reset }) catch {};
                 pad(stdout, old_ver.len, old_col);
             }
             stdout.writeByte('\n') catch {};
@@ -407,18 +432,18 @@ fn displayPlanVerbose(
 
         // Packages being built/installed
         for (plan.build_order) |entry| {
-            stdout.print("{s}{s}", .{ aur_prefix, entry.name }) catch {};
+            stdout.print("{s}{s}{s}{s}", .{ c.magenta, aur_prefix, c.reset, entry.name }) catch {};
             pad(stdout, aur_prefix.len + entry.name.len, name_col);
             if (has_old_version) {
                 const old_ver = if (pm) |p| p.installedVersion(entry.name) orelse "" else "";
                 if (old_ver.len > 0) {
-                    stdout.writeAll(old_ver) catch {};
+                    stdout.print("{s}{s}{s}", .{ c.red, old_ver, c.reset }) catch {};
                     pad(stdout, old_ver.len, old_col);
                 } else {
                     pad(stdout, 0, old_col);
                 }
             }
-            stdout.print("{s}\n", .{displayVersion(entry)}) catch {};
+            stdout.print("{s}{s}{s}\n", .{ c.green, displayVersion(entry), c.reset }) catch {};
         }
     }
 
@@ -438,7 +463,7 @@ fn displayPlanVerbose(
                 const repo = if (pm) |p| p.syncDbFor(name) else null;
                 const ver = if (pm) |p| p.syncVersion(name) orelse "?" else "?";
                 const w = if (repo) |r| blk: {
-                    stdout.print("{s}/{s}", .{ r, name }) catch {};
+                    stdout.print("{s}{s}/{s}{s}", .{ c.magenta, r, c.reset, name }) catch {};
                     break :blk r.len + 1 + name.len;
                 } else blk: {
                     stdout.writeAll(name) catch {};
@@ -447,10 +472,14 @@ fn displayPlanVerbose(
                 pad(stdout, w, name_col);
                 if (has_old_version) {
                     const old_ver = if (pm) |p| p.installedVersion(name) orelse "-" else "-";
-                    stdout.writeAll(old_ver) catch {};
+                    if (!std.mem.eql(u8, old_ver, "-")) {
+                        stdout.print("{s}{s}{s}", .{ c.red, old_ver, c.reset }) catch {};
+                    } else {
+                        stdout.writeAll(old_ver) catch {};
+                    }
                     pad(stdout, old_ver.len, old_col);
                 }
-                stdout.print("{s}\n", .{ver}) catch {};
+                stdout.print("{s}{s}{s}\n", .{ c.green, ver, c.reset }) catch {};
             }
         }
     }
@@ -488,24 +517,24 @@ fn printSize(writer: anytype, label: []const u8, bytes: i64) void {
     }
 }
 
-pub fn handleResolveError(err: anyerror, err_writer: std.io.AnyWriter) ExitCode {
+pub fn handleResolveError(err: anyerror, err_writer: std.io.AnyWriter, ec: color.Style) ExitCode {
     if (err == error.CircularDependency) {
-        err_writer.writeAll("error: circular dependency detected\n") catch {};
+        err_writer.print("{s}error:{s} circular dependency detected\n", .{ ec.red, ec.reset }) catch {};
     } else if (err == error.UnresolvableDependency) {
-        err_writer.writeAll("error: unresolvable dependency\n") catch {};
+        err_writer.print("{s}error:{s} unresolvable dependency\n", .{ ec.red, ec.reset }) catch {};
     } else {
-        err_writer.print("error: dependency resolution failed: {}\n", .{err}) catch {};
+        err_writer.print("{s}error:{s} dependency resolution failed: {}\n", .{ ec.red, ec.reset, err }) catch {};
     }
     return .general_error;
 }
 
-pub fn printError(err: anytype, err_writer: std.io.AnyWriter) !void {
+pub fn printError(err: anytype, err_writer: std.io.AnyWriter, ec: color.Style) !void {
     switch (err) {
-        error.NetworkError => try err_writer.writeAll("error: failed to connect to AUR\n"),
-        error.RateLimited => try err_writer.writeAll("error: AUR rate limit exceeded. Wait and retry.\n"),
-        error.ApiError => try err_writer.writeAll("error: AUR returned an error\n"),
-        error.MalformedResponse => try err_writer.writeAll("error: received malformed response from AUR\n"),
-        else => try err_writer.print("error: {}\n", .{err}),
+        error.NetworkError => try err_writer.print("{s}error:{s} failed to connect to AUR\n", .{ ec.red, ec.reset }),
+        error.RateLimited => try err_writer.print("{s}error:{s} AUR rate limit exceeded. Wait and retry.\n", .{ ec.red, ec.reset }),
+        error.ApiError => try err_writer.print("{s}error:{s} AUR returned an error\n", .{ ec.red, ec.reset }),
+        error.MalformedResponse => try err_writer.print("{s}error:{s} received malformed response from AUR\n", .{ ec.red, ec.reset }),
+        else => try err_writer.print("{s}error:{s} {}\n", .{ ec.red, ec.reset, err }),
     }
 }
 
@@ -535,16 +564,16 @@ test {
 const testing = std.testing;
 
 test "handleResolveError returns general_error for CircularDependency" {
-    const result = handleResolveError(error.CircularDependency, std.io.null_writer.any());
+    const result = handleResolveError(error.CircularDependency, std.io.null_writer.any(), color.Style.disabled);
     try testing.expectEqual(ExitCode.general_error, result);
 }
 
 test "handleResolveError returns general_error for UnresolvableDependency" {
-    const result = handleResolveError(error.UnresolvableDependency, std.io.null_writer.any());
+    const result = handleResolveError(error.UnresolvableDependency, std.io.null_writer.any(), color.Style.disabled);
     try testing.expectEqual(ExitCode.general_error, result);
 }
 
 test "handleResolveError returns general_error for other errors" {
-    const result = handleResolveError(error.OutOfMemory, std.io.null_writer.any());
+    const result = handleResolveError(error.OutOfMemory, std.io.null_writer.any(), color.Style.disabled);
     try testing.expectEqual(ExitCode.general_error, result);
 }

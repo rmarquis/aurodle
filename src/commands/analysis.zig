@@ -2,6 +2,7 @@ const std = @import("std");
 const registry_mod = @import("../registry.zig");
 const solver_mod = @import("../solver.zig");
 const cmds = @import("../commands.zig");
+const color = @import("../color.zig");
 
 const Commands = cmds.Commands;
 const ExitCode = cmds.ExitCode;
@@ -13,8 +14,9 @@ const displayPlan = cmds.displayPlan;
 
 /// Display the resolved dependency tree (human-readable).
 pub fn resolve(self: *Commands, targets: []const []const u8) !ExitCode {
+    const ec = self.stderr_color;
     const reg = self.registry orelse {
-        self.err_writer.writeAll("error: registry not initialized\n") catch {};
+        self.err_writer.print("{s}error:{s} registry not initialized\n", .{ ec.red, ec.reset }) catch {};
         return .general_error;
     };
 
@@ -22,11 +24,11 @@ pub fn resolve(self: *Commands, targets: []const []const u8) !ExitCode {
     defer s.deinit();
 
     const plan = s.resolve(targets) catch |err| {
-        return handleResolveError(err, self.err_writer);
+        return handleResolveError(err, self.err_writer, ec);
     };
     defer plan.deinit(self.allocator);
 
-    displayPlan(plan, self.pacman, &.{}, self.err_writer);
+    displayPlan(plan, self.pacman, &.{}, self.err_writer, self.stdout_color, ec);
     return .success;
 }
 
@@ -35,8 +37,9 @@ pub fn resolve(self: *Commands, targets: []const []const u8) !ExitCode {
 /// Display the build order as a plain list (machine-readable).
 /// One package per line, in build order.
 pub fn buildorder(self: *Commands, targets: []const []const u8) !ExitCode {
+    const ec = self.stderr_color;
     const reg = self.registry orelse {
-        self.err_writer.writeAll("error: registry not initialized\n") catch {};
+        self.err_writer.print("{s}error:{s} registry not initialized\n", .{ ec.red, ec.reset }) catch {};
         return .general_error;
     };
 
@@ -44,7 +47,7 @@ pub fn buildorder(self: *Commands, targets: []const []const u8) !ExitCode {
     defer s.deinit();
 
     const plan = s.resolve(targets) catch |err| {
-        return handleResolveError(err, self.err_writer);
+        return handleResolveError(err, self.err_writer, ec);
     };
     defer plan.deinit(self.allocator);
 

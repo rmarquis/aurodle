@@ -10,6 +10,7 @@ pub const pacman = @import("pacman.zig");
 pub const registry = @import("registry.zig");
 pub const solver = @import("solver.zig");
 pub const devel = @import("devel.zig");
+pub const color = @import("color.zig");
 
 test {
     std.testing.refAllDecls(@This());

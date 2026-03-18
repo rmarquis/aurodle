@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const color = @import("color.zig");
 
 /// Max output size we'll capture from a child process.
 const MAX_OUTPUT = 10 * 1024 * 1024;
@@ -129,8 +130,9 @@ pub fn promptYesNo(message: []const u8) !bool {
         return false;
     }
 
+    const c = color.Style.detect(stdout.handle);
     const w = stdout.deprecatedWriter();
-    try w.print(":: {s} [Y/n] ", .{message});
+    try w.print("{s}::{s} {s} [Y/n] ", .{ c.blue, c.reset, message });
 
     var buf: [16]u8 = undefined;
     const n = stdin.read(&buf) catch return true;
@@ -150,8 +152,9 @@ pub fn promptNoYes(message: []const u8) !bool {
         return false;
     }
 
+    const c = color.Style.detect(stdout.handle);
     const w = stdout.deprecatedWriter();
-    try w.print(":: {s} [y/N] ", .{message});
+    try w.print("{s}::{s} {s} [y/N] ", .{ c.blue, c.reset, message });
 
     var buf: [16]u8 = undefined;
     const n = stdin.read(&buf) catch return false;
@@ -183,18 +186,19 @@ pub fn promptProviderChoice(
 
     if (!std.posix.isatty(stdin.handle)) return 0;
 
+    const s = color.Style.detect(stderr.handle);
     const w = stderr.deprecatedWriter();
-    w.print(":: There are {d} providers available for {s}:\n", .{ candidates.len, dep_name }) catch {};
+    w.print("{s}::{s} There are {d} providers available for {s}:\n", .{ s.blue, s.reset, candidates.len, dep_name }) catch {};
 
     // Group by db_name and display
     var num: usize = 1;
     var current_db: []const u8 = "";
-    for (candidates) |c| {
-        if (!std.mem.eql(u8, c.db_name, current_db)) {
-            current_db = c.db_name;
-            w.print(":: Repository {s}\n   ", .{current_db}) catch {};
+    for (candidates) |cand| {
+        if (!std.mem.eql(u8, cand.db_name, current_db)) {
+            current_db = cand.db_name;
+            w.print("{s}::{s} Repository {s}\n   ", .{ s.blue, s.reset, current_db }) catch {};
         }
-        w.print(" {d}) {s}", .{ num, c.name }) catch {};
+        w.print(" {d}) {s}", .{ num, cand.name }) catch {};
         num += 1;
     }
     w.writeByte('\n') catch {};
@@ -211,13 +215,13 @@ pub fn promptProviderChoice(
         if (response.len == 0) return 0; // default
 
         const choice = std.fmt.parseInt(usize, response, 10) catch {
-            w.writeAll(":: Invalid number, try again.") catch {};
+            w.print("{s}::{s} Invalid number, try again.", .{ s.yellow, s.reset }) catch {};
             continue;
         };
         if (choice >= 1 and choice <= candidates.len) {
             return choice - 1;
         }
-        w.writeAll(":: Invalid number, try again.") catch {};
+        w.print("{s}::{s} Invalid number, try again.", .{ s.yellow, s.reset }) catch {};
     }
 }
 

@@ -10,6 +10,7 @@ const pacman_mod = @import("../pacman.zig");
 const utils = @import("../utils.zig");
 const cmds = @import("../commands.zig");
 const query = @import("query.zig");
+const color = @import("../color.zig");
 
 const Commands = cmds.Commands;
 const ExitCode = cmds.ExitCode;
@@ -26,9 +27,11 @@ const displayPlan = cmds.displayPlan;
 /// Display build files for a package clone.
 /// Lists files in the clone directory and displays PKGBUILD content.
 pub fn show(self: *Commands, target: []const u8) !ExitCode {
+    const ec = self.stderr_color;
+    const c = self.stdout_color;
     const c_root = self.cache_root orelse blk: {
         break :blk git.defaultCacheRoot(self.allocator) catch {
-            self.err_writer.writeAll("error: could not determine cache directory (HOME not set)\n") catch {};
+            self.err_writer.print("{s}error:{s} could not determine cache directory (HOME not set)\n", .{ ec.red, ec.reset }) catch {};
             return .general_error;
         };
     };
@@ -45,7 +48,7 @@ pub fn show(self: *Commands, target: []const u8) !ExitCode {
 
     // Verify clone exists
     if (!try git.isCloned(self.allocator, c_root, pkgbase)) {
-        self.err_writer.print("error: {s} is not cloned. Run 'aurodle sync {s}' first.\n", .{ target, target }) catch {};
+        self.err_writer.print("{s}error:{s} {s} is not cloned. Run 'aurodle sync {s}' first.\n", .{ ec.red, ec.reset, target, target }) catch {};
         return .general_error;
     }
 
@@ -58,7 +61,7 @@ pub fn show(self: *Commands, target: []const u8) !ExitCode {
     const stdout = getStdout();
 
     // Display file listing
-    stdout.print(":: {s} build files:\n", .{pkgbase}) catch {};
+    stdout.print("{s}::{s} {s} build files:\n", .{ c.blue, c.reset, pkgbase }) catch {};
     for (files) |file| {
         const marker: []const u8 = if (file.is_pkgbuild) " (PKGBUILD)" else "";
         stdout.print("  {s}{s}\n", .{ file.name, marker }) catch {};
@@ -67,12 +70,12 @@ pub fn show(self: *Commands, target: []const u8) !ExitCode {
 
     // Display PKGBUILD content
     const pkgbuild_content = git.readFile(self.allocator, c_root, pkgbase, "PKGBUILD") catch |err| {
-        self.err_writer.print("error: could not read PKGBUILD: {}\n", .{err}) catch {};
+        self.err_writer.print("{s}error:{s} could not read PKGBUILD: {}\n", .{ ec.red, ec.reset, err }) catch {};
         return .general_error;
     };
     defer self.allocator.free(pkgbuild_content);
 
-    stdout.print(":: PKGBUILD:\n{s}\n", .{pkgbuild_content}) catch {};
+    stdout.print("{s}::{s} PKGBUILD:\n{s}\n", .{ c.blue, c.reset, pkgbuild_content }) catch {};
 
     return .success;
 }
@@ -81,11 +84,12 @@ pub fn show(self: *Commands, target: []const u8) !ExitCode {
 
 /// Clone AUR packages to the cache directory (FR-8).
 pub fn clonePackages(self: *Commands, targets: []const []const u8) !ExitCode {
+    const ec = self.stderr_color;
     const stdout = getStdout();
 
     // Resolve pkgname->pkgbase via AUR RPC
     const packages = self.aur_client.multiInfo(targets) catch |err| {
-        try printError(err, self.err_writer);
+        try printError(err, self.err_writer, ec);
         return .general_error;
     };
     defer self.allocator.free(packages);
@@ -101,7 +105,7 @@ pub fn clonePackages(self: *Commands, targets: []const []const u8) !ExitCode {
     var any_error = false;
     for (targets) |target| {
         if (!pkgbase_map.contains(target)) {
-            self.err_writer.print("error: package '{s}' was not found\n", .{target}) catch {};
+            self.err_writer.print("{s}error:{s} package '{s}' was not found\n", .{ ec.red, ec.reset, target }) catch {};
             any_error = true;
         }
     }
@@ -109,7 +113,7 @@ pub fn clonePackages(self: *Commands, targets: []const []const u8) !ExitCode {
     // Get cache root
     const c_root = self.cache_root orelse blk: {
         break :blk git.defaultCacheRoot(self.allocator) catch {
-            self.err_writer.writeAll("error: could not determine cache directory (HOME not set)\n") catch {};
+            self.err_writer.print("{s}error:{s} could not determine cache directory (HOME not set)\n", .{ ec.red, ec.reset }) catch {};
             return .general_error;
         };
     };
@@ -127,7 +131,7 @@ pub fn clonePackages(self: *Commands, targets: []const []const u8) !ExitCode {
         try cloned_set.put(self.allocator, pkgbase, {});
 
         const result = git.clone(self.allocator, c_root, pkgbase) catch {
-            self.err_writer.print("error: failed to clone '{s}'\n", .{pkgbase}) catch {};
+            self.err_writer.print("{s}error:{s} failed to clone '{s}'\n", .{ ec.red, ec.reset, pkgbase }) catch {};
             any_error = true;
             continue;
         };
@@ -147,16 +151,17 @@ pub fn clonePackages(self: *Commands, targets: []const []const u8) !ExitCode {
 
 /// Execute the full sync workflow: resolve -> clone -> review -> build -> install.
 pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
+    const ec = self.stderr_color;
     const reg = self.registry orelse {
-        self.err_writer.writeAll("error: registry not initialized\n") catch {};
+        self.err_writer.print("{s}error:{s} registry not initialized\n", .{ ec.red, ec.reset }) catch {};
         return .general_error;
     };
     const repository = self.repo orelse {
-        self.err_writer.writeAll("error: repository not initialized\n") catch {};
+        self.err_writer.print("{s}error:{s} repository not initialized\n", .{ ec.red, ec.reset }) catch {};
         return .general_error;
     };
     const c_root = self.cache_root orelse {
-        self.err_writer.writeAll("error: cache root not set\n") catch {};
+        self.err_writer.print("{s}error:{s} cache root not set\n", .{ ec.red, ec.reset }) catch {};
         return .general_error;
     };
 
@@ -166,15 +171,15 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
     defer s.deinit();
 
     const plan = s.resolve(targets) catch |err| {
-        return handleResolveError(err, self.err_writer);
+        return handleResolveError(err, self.err_writer, ec);
     };
     defer plan.deinit(self.allocator);
 
     // Phase 1.5: Resolve conflicts interactively
     var removals: []const []const u8 = &.{};
     if (plan.conflicts.len > 0 and !self.flags.noconfirm) {
-        removals = try resolveConflicts(self.allocator, plan.conflicts) orelse {
-            self.err_writer.writeAll(":: unresolvable package conflicts detected\n") catch {};
+        removals = try resolveConflicts(self.allocator, plan.conflicts, self.stdout_color) orelse {
+            self.err_writer.print("{s}::{s} unresolvable package conflicts detected\n", .{ ec.red, ec.reset }) catch {};
             return .general_error;
         };
     }
@@ -208,7 +213,7 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
     }
 
     // Phase 2: Display and confirm
-    displayPlan(plan, self.pacman, removals, self.err_writer);
+    displayPlan(plan, self.pacman, removals, self.err_writer, self.stdout_color, ec);
 
     if (!self.flags.noconfirm) {
         if (!try utils.promptYesNo("Proceed with installation?")) {
@@ -219,7 +224,7 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
     // Phase 3: Clone
     for (plan.build_order) |entry| {
         _ = git.cloneOrUpdate(self.allocator, c_root, entry.pkgbase) catch |err| {
-            self.err_writer.print("error: failed to clone/update '{s}': {}\n", .{ entry.pkgbase, err }) catch {};
+            self.err_writer.print("{s}error:{s} failed to clone/update '{s}': {}\n", .{ ec.red, ec.reset, entry.pkgbase, err }) catch {};
             return .general_error;
         };
     }
@@ -241,7 +246,7 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
     // Refresh sync DB so pacman -S sees the just-built packages.
     if (build_result.succeeded.len > 0) {
         refreshAurpkgsSyncDb(self.allocator, repository) catch |err| {
-            self.err_writer.print("warning: failed to refresh aurpkgs sync db: {}\n", .{err}) catch {};
+            self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err }) catch {};
         };
     }
 
@@ -261,7 +266,7 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
         if (installable.len > 0 or plan.repo_targets.len > 0) {
             try installAllTargets(self, installable, plan.repo_targets);
         }
-        printBuildSummary(build_result, self.err_writer);
+        printBuildSummary(build_result, self.err_writer, ec);
         return .build_failed;
     }
 
@@ -272,16 +277,17 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
 
 /// Build packages and add to repository without installing.
 pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
+    const ec = self.stderr_color;
     const reg = self.registry orelse {
-        self.err_writer.writeAll("error: registry not initialized\n") catch {};
+        self.err_writer.print("{s}error:{s} registry not initialized\n", .{ ec.red, ec.reset }) catch {};
         return .general_error;
     };
     const repository = self.repo orelse {
-        self.err_writer.writeAll("error: repository not initialized\n") catch {};
+        self.err_writer.print("{s}error:{s} repository not initialized\n", .{ ec.red, ec.reset }) catch {};
         return .general_error;
     };
     const c_root = self.cache_root orelse {
-        self.err_writer.writeAll("error: cache root not set\n") catch {};
+        self.err_writer.print("{s}error:{s} cache root not set\n", .{ ec.red, ec.reset }) catch {};
         return .general_error;
     };
 
@@ -290,15 +296,15 @@ pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
     defer s.deinit();
 
     const plan = s.resolve(targets) catch |err| {
-        return handleResolveError(err, self.err_writer);
+        return handleResolveError(err, self.err_writer, ec);
     };
     defer plan.deinit(self.allocator);
 
     // Resolve conflicts interactively
     var removals: []const []const u8 = &.{};
     if (plan.conflicts.len > 0 and !self.flags.noconfirm) {
-        removals = try resolveConflicts(self.allocator, plan.conflicts) orelse {
-            self.err_writer.writeAll(":: unresolvable package conflicts detected\n") catch {};
+        removals = try resolveConflicts(self.allocator, plan.conflicts, self.stdout_color) orelse {
+            self.err_writer.print("{s}::{s} unresolvable package conflicts detected\n", .{ ec.red, ec.reset }) catch {};
             return .general_error;
         };
     }
@@ -309,7 +315,7 @@ pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
         return .success;
     }
 
-    displayPlan(plan, self.pacman, removals, self.err_writer);
+    displayPlan(plan, self.pacman, removals, self.err_writer, self.stdout_color, ec);
 
     if (!self.flags.noconfirm) {
         if (!try utils.promptYesNo("Proceed with build?")) {
@@ -320,7 +326,7 @@ pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
     // Clone
     for (plan.build_order) |entry| {
         _ = git.cloneOrUpdate(self.allocator, c_root, entry.pkgbase) catch |err| {
-            self.err_writer.print("error: failed to clone/update '{s}': {}\n", .{ entry.pkgbase, err }) catch {};
+            self.err_writer.print("{s}error:{s} failed to clone/update '{s}': {}\n", .{ ec.red, ec.reset, entry.pkgbase, err }) catch {};
             return .general_error;
         };
     }
@@ -340,12 +346,12 @@ pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
     // Final sync DB refresh so the packages are installable via pacman -S.
     if (result.succeeded.len > 0) {
         refreshAurpkgsSyncDb(self.allocator, repository) catch |err| {
-            self.err_writer.print("warning: failed to refresh aurpkgs sync db: {}\n", .{err}) catch {};
+            self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err }) catch {};
         };
     }
 
     if (result.failed.len > 0) {
-        printBuildSummary(result, self.err_writer);
+        printBuildSummary(result, self.err_writer, ec);
         return .build_failed;
     }
 
@@ -358,8 +364,9 @@ pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
 /// With no arguments: upgrade all outdated AUR packages.
 /// With arguments: upgrade only the specified packages.
 pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
+    const ec = self.stderr_color;
     const pm = self.pacman orelse {
-        self.err_writer.writeAll("error: pacman not initialized\n") catch {};
+        self.err_writer.print("{s}error:{s} pacman not initialized\n", .{ ec.red, ec.reset }) catch {};
         return .general_error;
     };
 
@@ -386,7 +393,7 @@ pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
     for (to_check) |pkg| try names.append(self.allocator, pkg.name);
 
     const aur_pkgs = self.aur_client.multiInfo(names.items) catch |err| {
-        try printError(err, self.err_writer);
+        try printError(err, self.err_writer, ec);
         return .general_error;
     };
     defer self.allocator.free(aur_pkgs);
@@ -436,8 +443,9 @@ pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
 
     // Display what will be upgraded
     const stdout = getStdout();
-    stdout.print(":: {d} package(s) to upgrade:\n", .{outdated_display.items.len}) catch {};
-    query.formatOutdated(outdated_display.items);
+    const c = self.stdout_color;
+    stdout.print("{s}::{s} {d} package(s) to upgrade:\n", .{ c.blue, c.reset, outdated_display.items.len }) catch {};
+    query.formatOutdated(outdated_display.items, c);
 
     // Delegate to sync for the actual build+install workflow
     return sync(self, to_upgrade.items);
@@ -453,9 +461,10 @@ fn checkDevelUpgrades(
     to_upgrade: *std.ArrayListUnmanaged([]const u8),
     outdated_display: *std.ArrayListUnmanaged(OutdatedEntry),
 ) !void {
+    const ec2 = self.stderr_color;
     const c_root = self.cache_root orelse blk: {
         break :blk git.defaultCacheRoot(self.allocator) catch {
-            self.err_writer.writeAll("warning: could not determine cache directory for --devel check\n") catch {};
+            self.err_writer.print("{s}warning:{s} could not determine cache directory for --devel check\n", .{ ec2.yellow, ec2.reset }) catch {};
             return;
         };
     };
@@ -474,11 +483,11 @@ fn checkDevelUpgrades(
         if (upgrade_set.contains(pkg.name)) continue;
 
         if (!self.flags.quiet) {
-            self.err_writer.print(":: checking {s}...\n", .{pkg.name}) catch {};
+            self.err_writer.print("{s}::{s} checking {s}...\n", .{ ec2.blue, ec2.reset, pkg.name }) catch {};
         }
 
         const vcs_result = devel.checkVersion(self.allocator, c_root, pkg.name) catch {
-            self.err_writer.print("warning: failed to check VCS version for {s}\n", .{pkg.name}) catch {};
+            self.err_writer.print("{s}warning:{s} failed to check VCS version for {s}\n", .{ ec2.yellow, ec2.reset, pkg.name }) catch {};
             continue;
         };
 
@@ -503,8 +512,9 @@ fn checkDevelUpgrades(
 /// Checks the aurpkgs database for packages no longer installed locally,
 /// then removes their clone directories, package files, and database entries.
 pub fn clean(self: *Commands) !ExitCode {
+    const ec = self.stderr_color;
     const repository = self.repo orelse {
-        self.err_writer.writeAll("error: repository not initialized\n") catch {};
+        self.err_writer.print("{s}error:{s} repository not initialized\n", .{ ec.red, ec.reset }) catch {};
         return .general_error;
     };
 
@@ -512,13 +522,13 @@ pub fn clean(self: *Commands) !ExitCode {
         break :blk try repository.cleanAll();
     } else blk: {
         const pm = self.pacman orelse {
-            self.err_writer.writeAll("error: pacman not initialized\n") catch {};
+            self.err_writer.print("{s}error:{s} pacman not initialized\n", .{ ec.red, ec.reset }) catch {};
             return .general_error;
         };
 
         const uninstalled = pm.uninstalledAurpkgs() catch |err| switch (err) {
             error.AurDbNotConfigured => {
-                self.err_writer.writeAll("error: local AUR repository not configured in pacman.conf\n") catch {};
+                self.err_writer.print("{s}error:{s} local AUR repository not configured in pacman.conf\n", .{ ec.red, ec.reset }) catch {};
                 return .general_error;
             },
             else => return err,
@@ -537,19 +547,20 @@ pub fn clean(self: *Commands) !ExitCode {
     }
 
     const stdout = getStdout();
+    const c = self.stdout_color;
 
     const pkg_label = if (self.flags.all) "Packages" else "Stale packages";
     const clone_label = if (self.flags.all) "Clone directories" else "Stale clone directories";
 
     if (plan.removed_packages.len > 0) {
-        stdout.print(":: {s} ({d}):\n", .{ pkg_label, plan.removed_packages.len }) catch {};
+        stdout.print("{s}::{s} {s} ({d}):\n", .{ c.blue, c.reset, pkg_label, plan.removed_packages.len }) catch {};
         for (plan.removed_packages) |filename| {
             stdout.print("  {s}\n", .{filename}) catch {};
         }
     }
 
     if (plan.removed_clones.len > 0) {
-        stdout.print(":: {s} ({d}):\n", .{ clone_label, plan.removed_clones.len }) catch {};
+        stdout.print("{s}::{s} {s} ({d}):\n", .{ c.blue, c.reset, clone_label, plan.removed_clones.len }) catch {};
         for (plan.removed_clones) |name| {
             stdout.print("  {s}/\n", .{name}) catch {};
         }
@@ -568,7 +579,7 @@ pub fn clean(self: *Commands) !ExitCode {
     // /var/lib/pacman/sync/ which is a separate root-owned copy.
     if (plan.removed_packages.len > 0) {
         refreshAurpkgsSyncDb(self.allocator, repository) catch |err| {
-            self.err_writer.print("warning: failed to refresh aurpkgs sync db: {}\n", .{err}) catch {};
+            self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err }) catch {};
         };
     }
 
@@ -583,6 +594,8 @@ fn buildLoop(
     repository: *repo_mod.Repository,
     c_root: []const u8,
 ) !BuildResult {
+    const ec = self.stderr_color;
+    const sc = self.stdout_color;
     var succeeded: std.ArrayListUnmanaged([]const u8) = .empty;
     var failed: std.ArrayListUnmanaged(FailedBuild) = .empty;
     var failed_bases: std.StringHashMapUnmanaged(void) = .empty;
@@ -591,7 +604,7 @@ fn buildLoop(
     for (plan.build_order, 0..) |entry, i| {
         // Skip if a dependency failed, propagating failure to downstream entries
         if (hasFailedDep(entry, &failed_bases)) {
-            self.err_writer.print(":: skipping {s} -- a dependency failed to build\n", .{entry.name}) catch {};
+            self.err_writer.print("{s}::{s} skipping {s} -- a dependency failed to build\n", .{ ec.yellow, ec.reset, entry.name }) catch {};
             try failed_bases.put(self.allocator, entry.pkgbase, {});
             continue;
         }
@@ -600,7 +613,7 @@ fn buildLoop(
         defer self.allocator.free(clone_dir);
 
         const ver = if (devel.isVcsPackage(entry.name)) "latest" else entry.version;
-        getStdout().print(":: building {s} {s}...\n", .{ entry.name, ver }) catch {};
+        getStdout().print("{s}::{s} building {s} {s}...\n", .{ sc.blue, sc.reset, entry.name, ver }) catch {};
 
         // Run makepkg -s (--syncdeps installs missing deps as --asdeps)
         const makepkg_args: []const []const u8 = if (self.flags.rebuild)
@@ -627,7 +640,9 @@ fn buildLoop(
                 };
             }
 
-            self.err_writer.print("error: build failed for {s} (exit {d})\n", .{
+            self.err_writer.print("{s}error:{s} build failed for {s} (exit {d})\n", .{
+                ec.red,
+                ec.reset,
                 entry.pkgbase,
                 exit_code,
             }) catch {};
@@ -642,7 +657,7 @@ fn buildLoop(
 
         // Build succeeded — add packages to repo
         const added = repository.addBuiltPackages() catch |err| {
-            self.err_writer.print("error: failed to add built packages for {s}: {}\n", .{ entry.pkgbase, err }) catch {};
+            self.err_writer.print("{s}error:{s} failed to add built packages for {s}: {}\n", .{ ec.red, ec.reset, entry.pkgbase, err }) catch {};
             try failed.append(self.allocator, .{
                 .pkgbase = entry.pkgbase,
                 .exit_code = 0,
@@ -660,7 +675,7 @@ fn buildLoop(
         // (/var/lib/pacman/sync/aurpkgs.db) is root-owned and separate.
         if (anySubsequentEntryNeeds(plan.build_order[i + 1 ..], entry.pkgbase)) {
             refreshAurpkgsSyncDb(self.allocator, repository) catch |err| {
-                self.err_writer.print("warning: failed to refresh aurpkgs sync db: {}\n", .{err}) catch {};
+                self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err }) catch {};
             };
         }
 
@@ -702,6 +717,7 @@ fn reviewPackages(
     c_root: []const u8,
 ) !void {
     const stdout = getStdout();
+    const sc = self.stdout_color;
     const editor = getEditor();
 
     for (entries) |entry| {
@@ -725,7 +741,7 @@ fn reviewPackages(
                     continue;
                 };
                 _ = exit_code;
-                stdout.print(":: {s} diff reviewed\n", .{entry.pkgbase}) catch {};
+                stdout.print("{s}::{s} {s} diff reviewed\n", .{ sc.blue, sc.reset, entry.pkgbase }) catch {};
             }
         } else {
             // Fresh clone — open all files in editor
@@ -745,7 +761,7 @@ fn reviewPackages(
                 if (exit_code != 0) {
                     stdout.print("  editor exited with {d}\n", .{exit_code}) catch {};
                 }
-                stdout.print(":: {s} files reviewed\n", .{entry.pkgbase}) catch {};
+                stdout.print("{s}::{s} {s} files reviewed\n", .{ sc.blue, sc.reset, entry.pkgbase }) catch {};
             }
         }
     }
@@ -806,7 +822,8 @@ fn installAllTargets(self: *Commands, aurpkgs_names: []const []const u8, repo_na
     const exit_code = try utils.runSudoInteractive(self.allocator, argv.items);
 
     if (exit_code != 0) {
-        self.err_writer.print("error: installation failed (exit {d})\n", .{exit_code}) catch {};
+        const ec3 = self.stderr_color;
+        self.err_writer.print("{s}error:{s} installation failed (exit {d})\n", .{ ec3.red, ec3.reset, exit_code }) catch {};
     }
 }
 
@@ -830,13 +847,17 @@ fn filterInstallable(
     return try installable.toOwnedSlice(self.allocator);
 }
 
-fn printBuildSummary(result: BuildResult, err_writer: std.io.AnyWriter) void {
-    err_writer.print("\n:: Build summary: {d} succeeded, {d} failed\n", .{
+fn printBuildSummary(result: BuildResult, err_writer: std.io.AnyWriter, ec: color.Style) void {
+    err_writer.print("\n{s}::{s} Build summary: {d} succeeded, {d} failed\n", .{
+        ec.blue,
+        ec.reset,
         result.succeeded.len,
         result.failed.len,
     }) catch {};
     for (result.failed) |f| {
-        err_writer.print("  FAILED: {s} (exit {d})\n", .{
+        err_writer.print("  {s}FAILED:{s} {s} (exit {d})\n", .{
+            ec.red,
+            ec.reset,
             f.pkgbase,
             f.exit_code,
         }) catch {};
@@ -856,7 +877,7 @@ fn refreshAurpkgsSyncDb(allocator: Allocator, repository: *repo_mod.Repository) 
 
 /// Prompt the user to resolve each detected conflict.
 /// Returns the list of packages accepted for removal, or null if any conflict was rejected.
-fn resolveConflicts(allocator: Allocator, conflicts: []const solver_mod.Conflict) !?[]const []const u8 {
+fn resolveConflicts(allocator: Allocator, conflicts: []const solver_mod.Conflict, c: color.Style) !?[]const []const u8 {
     const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
     const stdin: std.fs.File = .{ .handle = std.posix.STDIN_FILENO };
     if (!std.posix.isatty(stdin.handle)) return null;
@@ -867,12 +888,12 @@ fn resolveConflicts(allocator: Allocator, conflicts: []const solver_mod.Conflict
     for (conflicts) |conflict| {
         switch (conflict.kind) {
             .aur_aur => w.print(
-                ":: {s} and {s} are in conflict. Continue anyway? [y/N] ",
-                .{ conflict.package, conflict.conflicts_with },
+                "{s}::{s} {s} and {s} are in conflict. Continue anyway? [y/N] ",
+                .{ c.yellow, c.reset, conflict.package, conflict.conflicts_with },
             ) catch {},
             .aur_installed, .repo_installed => w.print(
-                ":: {s} and {s} are in conflict ({s}). Remove {s}? [y/N] ",
-                .{ conflict.package, conflict.conflicts_with, conflict.conflicts_with, conflict.conflicts_with },
+                "{s}::{s} {s} and {s} are in conflict ({s}). Remove {s}? [y/N] ",
+                .{ c.yellow, c.reset, conflict.package, conflict.conflicts_with, conflict.conflicts_with, conflict.conflicts_with },
             ) catch {},
         }
 
@@ -966,6 +987,7 @@ test "anySubsequentEntryNeeds returns false when no future entry depends on pkgb
 test "upgrade returns general_error when pacman not initialized" {
     var cmd = Commands.init(testing.allocator, undefined, .{});
     cmd.err_writer = std.io.null_writer.any();
+    cmd.stderr_color = color.Style.disabled;
     const result = try upgrade(&cmd, &.{});
     try testing.expectEqual(ExitCode.general_error, result);
 }
@@ -973,6 +995,7 @@ test "upgrade returns general_error when pacman not initialized" {
 test "clean returns general_error when pacman not initialized" {
     var cmd = Commands.init(testing.allocator, undefined, .{});
     cmd.err_writer = std.io.null_writer.any();
+    cmd.stderr_color = color.Style.disabled;
     const result = try clean(&cmd);
     try testing.expectEqual(ExitCode.general_error, result);
 }
