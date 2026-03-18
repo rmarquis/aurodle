@@ -226,6 +226,14 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman, removals
                     "{s}warning:{s} new dependency {s} conflicts with installed package {s}\n",
                     .{ ec.yellow, ec.reset, conflict.package, conflict.conflicts_with },
                 ) catch {},
+                .aur_replaces => err_writer.print(
+                    "{s}warning:{s} aur/{s} replaces installed package {s}\n",
+                    .{ ec.yellow, ec.reset, conflict.package, conflict.conflicts_with },
+                ) catch {},
+                .repo_replaces => err_writer.print(
+                    "{s}warning:{s} {s} replaces installed package {s}\n",
+                    .{ ec.yellow, ec.reset, conflict.package, conflict.conflicts_with },
+                ) catch {},
             }
         }
     }

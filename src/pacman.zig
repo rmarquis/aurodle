@@ -252,6 +252,31 @@ pub const Pacman = struct {
         return null;
     }
 
+    /// Check if a sync db package replaces any installed package.
+    /// Returns the name of the first installed package that would be replaced, or null.
+    /// Only checks official repos (skips aurpkgs).
+    pub fn syncPkgReplacesInstalled(self: Pacman, name: []const u8) ?[]const u8 {
+        var pkg: ?alpm.AlpmPackage = null;
+        for (self.sync_dbs) |db| {
+            if (std.mem.eql(u8, db.getName(), self.aur_repo_name)) continue;
+            if (db.getPackage(name)) |p| {
+                pkg = p;
+                break;
+            }
+        }
+        const sync_pkg = pkg orelse return null;
+
+        var replaces = sync_pkg.getReplaces();
+        while (replaces.next()) |dep| {
+            if (self.isInstalled(dep.name)) return dep.name;
+            const local_pkgs = self.local_db.getPkgcache();
+            if (alpm.findSatisfier(local_pkgs, dep.name)) |satisfier| {
+                return satisfier.getName();
+            }
+        }
+        return null;
+    }
+
     // ── Version Satisfaction ─────────────────────────────────────────────
 
     /// Does the installed version of `name` satisfy `constraint`?

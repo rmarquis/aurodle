@@ -895,6 +895,14 @@ fn resolveConflicts(allocator: Allocator, conflicts: []const solver_mod.Conflict
                 "{s}::{s} {s} and {s} are in conflict ({s}). Remove {s}? [y/N] ",
                 .{ c.yellow, c.reset, conflict.package, conflict.conflicts_with, conflict.conflicts_with, conflict.conflicts_with },
             ) catch {},
+            .aur_replaces => w.print(
+                "{s}::{s} Replace {s} with aur/{s}? [y/N] ",
+                .{ c.yellow, c.reset, conflict.conflicts_with, conflict.package },
+            ) catch {},
+            .repo_replaces => w.print(
+                "{s}::{s} Replace {s} with {s}? [y/N] ",
+                .{ c.yellow, c.reset, conflict.conflicts_with, conflict.package },
+            ) catch {},
         }
 
         var buf: [16]u8 = undefined;
@@ -912,9 +920,12 @@ fn resolveConflicts(allocator: Allocator, conflicts: []const solver_mod.Conflict
             return null;
         }
 
-        // Track packages accepted for removal (installed conflicts only)
-        if (conflict.kind == .aur_installed or conflict.kind == .repo_installed) {
-            try removals.append(allocator, conflict.conflicts_with);
+        // Track packages accepted for removal (installed conflicts and replaces)
+        switch (conflict.kind) {
+            .aur_installed, .repo_installed, .aur_replaces, .repo_replaces => {
+                try removals.append(allocator, conflict.conflicts_with);
+            },
+            .aur_aur => {},
         }
     }
     return try removals.toOwnedSlice(allocator);

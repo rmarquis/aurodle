@@ -219,6 +219,10 @@ pub const AlpmPackage = struct {
         return .{ .current = c.alpm_pkg_get_conflicts(self.raw) };
     }
 
+    pub fn getReplaces(self: AlpmPackage) DepIterator {
+        return .{ .current = c.alpm_pkg_get_replaces(self.raw) };
+    }
+
     /// Download size in bytes (sync db packages only; 0 for local).
     pub fn getSize(self: AlpmPackage) i64 {
         return c.alpm_pkg_get_size(self.raw);

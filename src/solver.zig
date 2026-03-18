@@ -38,6 +38,10 @@ pub const Conflict = struct {
         aur_installed,
         /// A new repo dependency conflicts with an already-installed package.
         repo_installed,
+        /// An AUR package replaces an already-installed package.
+        aur_replaces,
+        /// A new repo dependency replaces an already-installed package.
+        repo_replaces,
     };
 };
 
@@ -367,6 +371,41 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                 }
             }
 
+            // AUR replaces: check if AUR packages replace any installed package.
+            {
+                var repl_it = self.graph.nodes.iterator();
+                while (repl_it.next()) |entry| {
+                    const node = entry.value_ptr;
+                    const pkg = node.meta.aur_pkg orelse continue;
+
+                    for (pkg.replaces) |replace_dep| {
+                        const replace_name = registry_mod.parseDep(replace_dep).name;
+
+                        // Skip self-replacement (package replaces its own name)
+                        if (std.mem.eql(u8, replace_name, node.meta.name)) continue;
+
+                        if (self.registry.pacman.isInstalled(replace_name)) {
+                            try conflicts.append(self.allocator, .{
+                                .package = node.meta.name,
+                                .conflicts_with = replace_name,
+                                .kind = .aur_replaces,
+                            });
+                        } else if (@hasDecl(@TypeOf(self.registry.pacman.*), "findProvider")) {
+                            if (self.registry.pacman.findProvider(replace_name)) |provider| {
+                                if (std.mem.eql(u8, provider.provider_name, node.meta.name)) continue;
+                                if (self.registry.pacman.isInstalled(provider.provider_name)) {
+                                    try conflicts.append(self.allocator, .{
+                                        .package = node.meta.name,
+                                        .conflicts_with = provider.provider_name,
+                                        .kind = .aur_replaces,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Repo↔installed: new repo dependencies that conflict with installed packages.
             // Only checked when pacman has syncPkgConflictsWithInstalled (production, not mock).
             if (@hasDecl(@TypeOf(self.registry.pacman.*), "syncPkgConflictsWithInstalled")) {
@@ -385,6 +424,25 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                             .package = node.meta.name,
                             .conflicts_with = installed_name,
                             .kind = .repo_installed,
+                        });
+                    }
+                }
+            }
+
+            // Repo replaces: new repo dependencies that replace installed packages.
+            if (@hasDecl(@TypeOf(self.registry.pacman.*), "syncPkgReplacesInstalled")) {
+                var repo_repl_it = self.graph.nodes.iterator();
+                while (repo_repl_it.next()) |entry| {
+                    const node = entry.value_ptr;
+                    if (node.meta.source != .repos) continue;
+
+                    if (self.registry.pacman.syncPkgReplacesInstalled(node.meta.name)) |installed_name| {
+                        if (self.graph.getNode(installed_name) != null) continue;
+
+                        try conflicts.append(self.allocator, .{
+                            .package = node.meta.name,
+                            .conflicts_with = installed_name,
+                            .kind = .repo_replaces,
                         });
                     }
                 }
@@ -703,6 +761,47 @@ const MockRegistry = struct {
 
     fn addAurPackageWithConflicts(self: *MockRegistry, name: []const u8, depends: []const []const u8, conflicts: []const []const u8) void {
         self.addAurPackageFull(name, depends, conflicts, &.{});
+    }
+
+    fn addAurPackageFullWithReplaces(self: *MockRegistry, name: []const u8, depends: []const []const u8, conflicts: []const []const u8, provides: []const []const u8, replaces: []const []const u8) void {
+        const alloc = self.arena.allocator();
+        const pkg = alloc.create(aur.Package) catch unreachable;
+        pkg.* = .{
+            .id = 0,
+            .name = name,
+            .pkgbase = name,
+            .pkgbase_id = 0,
+            .version = "1.0-1",
+            .description = null,
+            .url = null,
+            .url_path = null,
+            .maintainer = null,
+            .submitter = null,
+            .votes = 0,
+            .popularity = 0,
+            .first_submitted = 0,
+            .last_modified = 0,
+            .out_of_date = null,
+            .depends = depends,
+            .makedepends = &.{},
+            .checkdepends = &.{},
+            .optdepends = &.{},
+            .provides = provides,
+            .conflicts = conflicts,
+            .replaces = replaces,
+            .groups = &.{},
+            .keywords = &.{},
+            .licenses = &.{},
+            .comaintainers = &.{},
+        };
+        self.packages.put(testing.allocator, name, .{
+            .source = .aur,
+            .version = "1.0-1",
+            .pkgbase = name,
+            .depends = depends,
+            .makedepends = &.{},
+            .aur_pkg = pkg,
+        }) catch unreachable;
     }
 
     fn addAurPackageFull(self: *MockRegistry, name: []const u8, depends: []const []const u8, conflicts: []const []const u8, provides: []const []const u8) void {
@@ -1770,4 +1869,73 @@ test "detectConflicts skips self-conflict via installed provider (VCS rebuild)" 
     defer plan.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 0), plan.conflicts.len);
+}
+
+test "detectConflicts finds AUR replaces installed" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // new-pkg replaces old-pkg which is installed
+    mock.addAurPackageFullWithReplaces("new-pkg", &.{}, &.{}, &.{}, &.{"old-pkg"});
+    mock.pacman.addInstalled("old-pkg");
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"new-pkg"});
+    defer plan.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), plan.conflicts.len);
+    try testing.expectEqual(Conflict.Kind.aur_replaces, plan.conflicts[0].kind);
+    try testing.expectEqualStrings("new-pkg", plan.conflicts[0].package);
+    try testing.expectEqualStrings("old-pkg", plan.conflicts[0].conflicts_with);
+}
+
+test "detectConflicts ignores self-replacement" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // Package replaces its own name (no-op)
+    mock.addAurPackageFullWithReplaces("foo", &.{}, &.{}, &.{}, &.{"foo"});
+    mock.pacman.addInstalled("foo");
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"foo"});
+    defer plan.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), plan.conflicts.len);
+}
+
+test "detectConflicts replaces does not trigger when target not installed" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // new-pkg replaces old-pkg but old-pkg is not installed
+    mock.addAurPackageFullWithReplaces("new-pkg", &.{}, &.{}, &.{}, &.{"old-pkg"});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"new-pkg"});
+    defer plan.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), plan.conflicts.len);
+}
+
+test "detectConflicts replaces via installed provider" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // new-pkg replaces "virtual-dep", which is provided by "old-provider" (installed)
+    mock.addAurPackageFullWithReplaces("new-pkg", &.{}, &.{}, &.{}, &.{"virtual-dep"});
+    mock.pacman.addInstalled("old-provider");
+    mock.pacman.addProvider("virtual-dep", "old-provider");
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"new-pkg"});
+    defer plan.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), plan.conflicts.len);
+    try testing.expectEqual(Conflict.Kind.aur_replaces, plan.conflicts[0].kind);
+    try testing.expectEqualStrings("old-provider", plan.conflicts[0].conflicts_with);
 }
