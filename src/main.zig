@@ -223,6 +223,20 @@ fn parseArgs(args: []const []const u8, target_buf: [][]const u8) ParseError!Pars
                 flags.devel = true;
             } else if (std.mem.eql(u8, arg, "--all")) {
                 flags.all = true;
+            } else if (std.mem.eql(u8, arg, "--ignore")) {
+                i += 1;
+                if (i >= args.len) return ParseError.MissingArgument;
+                // Parse comma-separated package names into ignore_buf
+                var count: usize = flags.ignore.len;
+                var it = std.mem.splitScalar(u8, args[i], ',');
+                while (it.next()) |name| {
+                    const trimmed = std.mem.trim(u8, name, " ");
+                    if (trimmed.len == 0) continue;
+                    if (count >= flags.ignore_buf.len) return ParseError.MissingArgument;
+                    flags.ignore_buf[count] = trimmed;
+                    count += 1;
+                }
+                flags.ignore = flags.ignore_buf[0..count];
             } else if (std.mem.eql(u8, arg, "--by")) {
                 i += 1;
                 if (i >= args.len) return ParseError.MissingArgument;
@@ -379,6 +393,7 @@ fn printHelp() void {
         \\  --asdeps               Install as dependency
         \\  --asexplicit           Install as explicitly installed
         \\  --devel                Check VCS packages (-git, -svn, etc.) for updates
+        \\  --ignore <pkg,...>     Skip packages (comma-separated)
         \\
         \\Clean options:
         \\  --all                  Remove all built packages (not just uninstalled)
@@ -553,6 +568,26 @@ test "parseArgs: --all flag" {
     var buf: [256][]const u8 = undefined;
     const parsed = try parseArgs(&.{ "clean", "--all" }, &buf);
     try std.testing.expect(parsed.flags.all);
+}
+
+test "parseArgs: --ignore flag with single package" {
+    var buf: [256][]const u8 = undefined;
+    const parsed = try parseArgs(&.{ "sync", "--ignore", "foo", "bar" }, &buf);
+    try std.testing.expectEqual(@as(usize, 1), parsed.flags.ignore.len);
+    try std.testing.expectEqualStrings("foo", parsed.flags.ignore[0]);
+}
+
+test "parseArgs: --ignore flag with comma-separated packages" {
+    var buf: [256][]const u8 = undefined;
+    const parsed = try parseArgs(&.{ "sync", "--ignore", "foo,bar,baz", "target" }, &buf);
+    try std.testing.expectEqual(@as(usize, 3), parsed.flags.ignore.len);
+    try std.testing.expectEqualStrings("foo", parsed.flags.ignore[0]);
+    try std.testing.expectEqualStrings("bar", parsed.flags.ignore[1]);
+    try std.testing.expectEqualStrings("baz", parsed.flags.ignore[2]);
+}
+
+test "parseArgs: --ignore with missing value returns MissingArgument" {
+    try std.testing.expectError(ParseError.MissingArgument, testParse(&.{ "sync", "--ignore" }));
 }
 
 test "parseArgs: --format flag with value" {

@@ -79,6 +79,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
         graph: DepGraph,
         targets: std.StringHashMapUnmanaged(void),
         rebuild: bool = false,
+        ignore: []const []const u8 = &.{},
 
         pub fn init(allocator: Allocator, reg: *RegistryT) Self {
             return .{
@@ -194,6 +195,13 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                     }
 
                     try visited.put(self.allocator, actual_name, {});
+
+                    // Check if this dependency is in the ignore list.
+                    // Targets are already filtered before reaching the solver,
+                    // so any ignored package here is a dependency we can't skip.
+                    if (!self.targets.contains(actual_name) and self.isIgnoredPkg(actual_name)) {
+                        return error.IgnoredDependency;
+                    }
 
                     // Resolve unknown via full cascade before adding to graph
                     if (actual_resolution.source == .unknown) {
@@ -449,6 +457,13 @@ pub fn SolverImpl(comptime RegistryT: type) type {
             }
 
             return try conflicts.toOwnedSlice(self.allocator);
+        }
+
+        fn isIgnoredPkg(self: *Self, name: []const u8) bool {
+            for (self.ignore) |ignored| {
+                if (std.mem.eql(u8, ignored, name)) return true;
+            }
+            return false;
         }
 
         /// Add an AUR↔AUR conflict pair, deduplicating bidirectional declarations.
@@ -1938,4 +1953,35 @@ test "detectConflicts replaces via installed provider" {
     try testing.expectEqual(@as(usize, 1), plan.conflicts.len);
     try testing.expectEqual(Conflict.Kind.aur_replaces, plan.conflicts[0].kind);
     try testing.expectEqualStrings("old-provider", plan.conflicts[0].conflicts_with);
+}
+
+test "ignored dependency returns IgnoredDependency error" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // foo depends on bar, but bar is ignored
+    mock.addAurPackage("foo", &.{"bar"}, &.{});
+    mock.addAurPackage("bar", &.{}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+    s.ignore = &.{"bar"};
+
+    try testing.expectError(error.IgnoredDependency, s.resolve(&.{"foo"}));
+}
+
+test "ignored package does not affect targets (filtered upstream)" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    mock.addAurPackage("foo", &.{}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+    // foo is in ignore list but also a target — targets are filtered
+    // before reaching the solver, so the solver never sees it as ignored.
+    // This test verifies that targets bypass the ignore check.
+    s.ignore = &.{"foo"};
+
+    const plan = try s.resolve(&.{"foo"});
+    defer plan.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), plan.build_order.len);
 }

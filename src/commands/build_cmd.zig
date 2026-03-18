@@ -165,12 +165,18 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
         return .general_error;
     };
 
+    // Filter ignored targets
+    var ignore_buf: [256][]const u8 = undefined;
+    const filtered = self.filterIgnored(targets, &ignore_buf);
+    if (filtered.len == 0) return .success;
+
     // Phase 1: Resolve
     var s = solver_mod.Solver.init(self.allocator, reg);
     s.rebuild = self.flags.rebuild;
+    s.ignore = self.flags.ignore;
     defer s.deinit();
 
-    const plan = s.resolve(targets) catch |err| {
+    const plan = s.resolve(filtered) catch |err| {
         return handleResolveError(err, self.err_writer, ec);
     };
     defer plan.deinit(self.allocator);
@@ -291,11 +297,17 @@ pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
         return .general_error;
     };
 
+    // Filter ignored targets
+    var ignore_buf: [256][]const u8 = undefined;
+    const filtered = self.filterIgnored(targets, &ignore_buf);
+    if (filtered.len == 0) return .success;
+
     var s = solver_mod.Solver.init(self.allocator, reg);
     s.rebuild = self.flags.rebuild;
+    s.ignore = self.flags.ignore;
     defer s.deinit();
 
-    const plan = s.resolve(targets) catch |err| {
+    const plan = s.resolve(filtered) catch |err| {
         return handleResolveError(err, self.err_writer, ec);
     };
     defer plan.deinit(self.allocator);
@@ -434,6 +446,28 @@ pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
     // --devel: check VCS packages for upstream updates
     if (self.flags.devel) {
         try checkDevelUpgrades(self, to_check, &upgrade_set, &to_upgrade, &outdated_display);
+    }
+
+    // Filter out ignored packages
+    if (self.flags.ignore.len > 0) {
+        var i: usize = 0;
+        while (i < to_upgrade.items.len) {
+            const name = to_upgrade.items[i];
+            if (self.isIgnored(name)) {
+                self.err_writer.print(
+                    "{s}warning:{s} {s} is in IgnorePkg -- skipping\n",
+                    .{ ec.yellow, ec.reset, name },
+                ) catch {};
+                _ = to_upgrade.swapRemove(i);
+                // Also remove from display list
+                var j: usize = 0;
+                while (j < outdated_display.items.len) {
+                    if (std.mem.eql(u8, outdated_display.items[j].name, name)) {
+                        _ = outdated_display.swapRemove(j);
+                    } else j += 1;
+                }
+            } else i += 1;
+        }
     }
 
     if (to_upgrade.items.len == 0) {

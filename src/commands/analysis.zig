@@ -20,10 +20,16 @@ pub fn resolve(self: *Commands, targets: []const []const u8) !ExitCode {
         return .general_error;
     };
 
+    // Filter ignored targets
+    var ignore_buf: [256][]const u8 = undefined;
+    const filtered = self.filterIgnored(targets, &ignore_buf);
+    if (filtered.len == 0) return .success;
+
     var s = solver_mod.Solver.init(self.allocator, reg);
+    s.ignore = self.flags.ignore;
     defer s.deinit();
 
-    const plan = s.resolve(targets) catch |err| {
+    const plan = s.resolve(filtered) catch |err| {
         return handleResolveError(err, self.err_writer, ec);
     };
     defer plan.deinit(self.allocator);
@@ -43,10 +49,16 @@ pub fn buildorder(self: *Commands, targets: []const []const u8) !ExitCode {
         return .general_error;
     };
 
+    // Filter ignored targets
+    var ignore_buf: [256][]const u8 = undefined;
+    const filtered = self.filterIgnored(targets, &ignore_buf);
+    if (filtered.len == 0) return .success;
+
     var s = solver_mod.Solver.init(self.allocator, reg);
+    s.ignore = self.flags.ignore;
     defer s.deinit();
 
-    const plan = s.resolve(targets) catch |err| {
+    const plan = s.resolve(filtered) catch |err| {
         return handleResolveError(err, self.err_writer, ec);
     };
     defer plan.deinit(self.allocator);

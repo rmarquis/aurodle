@@ -39,6 +39,8 @@ pub const Flags = struct {
     sort: ?SortField = null,
     rsort: ?SortField = null,
     format_str: ?[]const u8 = null,
+    ignore: []const []const u8 = &.{},
+    ignore_buf: [64][]const u8 = undefined,
 };
 
 pub const SortField = enum {
@@ -129,6 +131,35 @@ pub const Commands = struct {
             .stdout_color = color.Style.detect(std.posix.STDOUT_FILENO, use_color),
             .stderr_color = color.Style.detect(std.posix.STDERR_FILENO, use_color),
         };
+    }
+
+    /// Filter out ignored packages from a target list.
+    /// Prints a warning for each ignored target on stderr.
+    /// Returns the filtered slice (backed by the provided buffer).
+    pub fn filterIgnored(self: *Commands, targets: []const []const u8, buf: [][]const u8) []const []const u8 {
+        if (self.flags.ignore.len == 0) return targets;
+
+        const ec = self.stderr_color;
+        var count: usize = 0;
+        for (targets) |target| {
+            if (self.isIgnored(target)) {
+                self.err_writer.print(
+                    "{s}warning:{s} {s} is in IgnorePkg -- skipping\n",
+                    .{ ec.yellow, ec.reset, target },
+                ) catch {};
+            } else {
+                buf[count] = target;
+                count += 1;
+            }
+        }
+        return buf[0..count];
+    }
+
+    pub fn isIgnored(self: *Commands, name: []const u8) bool {
+        for (self.flags.ignore) |ignored| {
+            if (std.mem.eql(u8, ignored, name)) return true;
+        }
+        return false;
     }
 
     // ── Query commands ───────────────────────────────────────────────
@@ -497,6 +528,8 @@ pub fn handleResolveError(err: anyerror, err_writer: std.io.AnyWriter, ec: color
         err_writer.print("{s}error:{s} circular dependency detected\n", .{ ec.red, ec.reset }) catch {};
     } else if (err == error.UnresolvableDependency) {
         err_writer.print("{s}error:{s} unresolvable dependency\n", .{ ec.red, ec.reset }) catch {};
+    } else if (err == error.IgnoredDependency) {
+        err_writer.print("{s}error:{s} a required dependency is in the ignore list\n", .{ ec.red, ec.reset }) catch {};
     } else {
         err_writer.print("{s}error:{s} dependency resolution failed: {}\n", .{ ec.red, ec.reset, err }) catch {};
     }
