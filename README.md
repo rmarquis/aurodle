@@ -1,7 +1,28 @@
 # aurodle
 
-A minimalist AUR helper that builds packages into local repositories.
+An AUR helper that builds packages into a local repository.
 Named after Urodela — the salamander order — as a nod to Zig's mascot Suzie.
+
+Packages are built with makepkg and added to a local pacman repo, so pacman handles installs and upgrades natively.
+
+## Dependencies
+
+- zig
+- libalpm (pacman)
+- git
+
+## Usage
+
+```bash
+aurodle sync <package>        # build and install a package
+aurodle search <query>        # search the AUR
+aurodle info <package>        # show package details
+aurodle upgrade               # upgrade outdated AUR packages
+aurodle outdated              # list outdated AUR packages
+aurodle build <package>       # build without installing
+aurodle buildorder <package>  # show dependency build order
+aurodle clean                 # remove stale packages from the local repo
+```
 
 ## Building
 
