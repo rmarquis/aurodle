@@ -151,8 +151,13 @@ pub fn outdated(self: *Commands, filter: []const []const u8) !ExitCode {
     }
 
     // --devel: check VCS packages via makepkg --nobuild + --printsrcinfo
+    var devel_versions: std.ArrayListUnmanaged(devel.VcsVersionResult) = .empty;
+    defer {
+        for (devel_versions.items) |v| v.deinit();
+        devel_versions.deinit(self.allocator);
+    }
     if (self.flags.devel) {
-        try checkDevelPackages(self, to_check, &already_outdated, &outdated_list);
+        try checkDevelPackages(self, to_check, &already_outdated, &outdated_list, &devel_versions);
     }
 
     if (outdated_list.items.len == 0) {
@@ -175,6 +180,7 @@ fn checkDevelPackages(
     packages: []const pacman_mod.InstalledPackage,
     already_outdated: *std.StringHashMapUnmanaged(void),
     outdated_list: *std.ArrayListUnmanaged(OutdatedEntry),
+    devel_versions: *std.ArrayListUnmanaged(devel.VcsVersionResult),
 ) !void {
     const ec2 = self.stderr_color;
     const c_root = self.cache_root orelse blk: {
@@ -185,13 +191,6 @@ fn checkDevelPackages(
     };
     const owns_root = self.cache_root == null;
     defer if (owns_root) self.allocator.free(c_root);
-
-    // Collect allocated version strings for cleanup
-    var devel_versions: std.ArrayListUnmanaged(devel.VcsVersionResult) = .empty;
-    defer {
-        for (devel_versions.items) |v| v.deinit();
-        devel_versions.deinit(self.allocator);
-    }
 
     for (packages) |pkg| {
         if (!devel.isVcsPackage(pkg.name)) continue;

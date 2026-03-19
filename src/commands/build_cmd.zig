@@ -449,8 +449,13 @@ pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
     }
 
     // --devel: check VCS packages for upstream updates
+    var devel_versions: std.ArrayListUnmanaged(devel.VcsVersionResult) = .empty;
+    defer {
+        for (devel_versions.items) |v| v.deinit();
+        devel_versions.deinit(self.allocator);
+    }
     if (self.flags.devel) {
-        try checkDevelUpgrades(self, to_check, &upgrade_set, &to_upgrade, &outdated_display);
+        try checkDevelUpgrades(self, to_check, &upgrade_set, &to_upgrade, &outdated_display, &devel_versions);
     }
 
     // Prompt for ignored packages (matching pacman behavior)
@@ -504,6 +509,7 @@ fn checkDevelUpgrades(
     upgrade_set: *std.StringHashMapUnmanaged(void),
     to_upgrade: *std.ArrayListUnmanaged([]const u8),
     outdated_display: *std.ArrayListUnmanaged(OutdatedEntry),
+    devel_versions: *std.ArrayListUnmanaged(devel.VcsVersionResult),
 ) !void {
     const ec2 = self.stderr_color;
     const c_root = self.cache_root orelse blk: {
@@ -514,13 +520,6 @@ fn checkDevelUpgrades(
     };
     const owns_root = self.cache_root == null;
     defer if (owns_root) self.allocator.free(c_root);
-
-    // Collect allocated version strings for cleanup
-    var devel_versions: std.ArrayListUnmanaged(devel.VcsVersionResult) = .empty;
-    defer {
-        for (devel_versions.items) |v| v.deinit();
-        devel_versions.deinit(self.allocator);
-    }
 
     for (packages) |pkg| {
         if (!devel.isVcsPackage(pkg.name)) continue;
