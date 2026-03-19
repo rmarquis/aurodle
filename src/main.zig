@@ -138,7 +138,7 @@ const Operation = enum {
             .{ "Si", .info },
             .{ "Ss", .search },
             .{ "Qu", .outdated },
-            .{ "U", .upgrade },
+            .{ "Su", .upgrade },
             .{ "Sc", .clean },
         });
         return map.get(s);
@@ -416,7 +416,7 @@ fn printHelp() void {
         \\  resolve                Show dependency tree
         \\  buildorder             Show build order (machine-readable)
         \\  outdated, -Qu          List outdated AUR packages
-        \\  upgrade, -U            Upgrade outdated AUR packages
+        \\  upgrade, -Su           Upgrade outdated AUR packages
         \\  clean, -Sc, -Scc       Remove stale or all cache files
         \\
         \\Global options:
@@ -554,7 +554,7 @@ test "parseArgs: dash-prefixed short aliases" {
     try std.testing.expectEqual(Operation.outdated, parsed4.operation);
 
     var buf5: [256][]const u8 = undefined;
-    const parsed5 = try parseArgs(&.{"-U"}, &buf5);
+    const parsed5 = try parseArgs(&.{"-Su"}, &buf5);
     try std.testing.expectEqual(Operation.upgrade, parsed5.operation);
 
     var buf6: [256][]const u8 = undefined;
