@@ -32,8 +32,11 @@ pub const GitError = error{
 
 // ── Public API ──────────────────────────────────────────────────────────
 
-/// Resolve the default cache root: ~/.cache/aurodle
+/// Resolve the cache root: $AURDEST if set, otherwise ~/.cache/aurodle
 pub fn defaultCacheRoot(allocator: Allocator) ![]u8 {
+    if (std.posix.getenv("AURDEST")) |aurdest| {
+        return allocator.dupe(u8, aurdest);
+    }
     const home = std.posix.getenv("HOME") orelse return error.NoHomeDirectory;
     return std.fs.path.join(allocator, &.{ home, DEFAULT_CACHE_SUBDIR });
 }
