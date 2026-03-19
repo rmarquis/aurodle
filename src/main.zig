@@ -402,7 +402,7 @@ fn runWithFullStack(
 fn printHelp() void {
     const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
     stdout.writeAll(
-        \\aurodle — AUR package manager for Arch Linux
+        \\aurodle — newt your average AUR helper
         \\
         \\Usage: aurodle <command> [options] [targets...]
         \\
