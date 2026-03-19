@@ -139,6 +139,7 @@ const Operation = enum {
             .{ "Ss", .search },
             .{ "Qu", .outdated },
             .{ "U", .upgrade },
+            .{ "Sc", .clean },
         });
         return map.get(s);
     }
@@ -196,12 +197,16 @@ fn parseArgs(args: []const []const u8, target_buf: [][]const u8) ParseError!Pars
 
     // First non-flag argument is the command.
     // Check pacman-style short aliases (-S, -Ss, -Si, etc.) then full names.
-    const operation = if (args[0].len >= 2 and args[0][0] == '-' and args[0][1] != '-')
-        Operation.fromShortAlias(args[0][1..]) orelse return ParseError.UnknownCommand
-    else
-        Operation.fromString(args[0]) orelse return ParseError.UnknownCommand;
-
     var flags = commands.Flags{};
+    const operation = if (args[0].len >= 2 and args[0][0] == '-' and args[0][1] != '-') blk: {
+        const alias = args[0][1..];
+        // -Scc is special: maps to clean --all
+        if (std.mem.eql(u8, alias, "Scc")) {
+            flags.all = true;
+            break :blk Operation.clean;
+        }
+        break :blk Operation.fromShortAlias(alias) orelse return ParseError.UnknownCommand;
+    } else Operation.fromString(args[0]) orelse return ParseError.UnknownCommand;
     var target_count: usize = 0;
     var i: usize = 1;
 
@@ -408,7 +413,7 @@ fn printHelp() void {
         \\  buildorder <pkgs...>      Show build order (machine-readable)
         \\  outdated, -Qu [pkgs...]   List outdated AUR packages
         \\  upgrade, -U [packages...] Upgrade outdated AUR packages
-        \\  clean                     Remove stale cache files
+        \\  clean, -Sc [-Scc for all]  Remove stale cache files
         \\
         \\Global options:
         \\  -h, --help             Show this help
@@ -519,6 +524,8 @@ test "parseArgs: dashless short aliases are rejected" {
     try std.testing.expectError(ParseError.UnknownCommand, testParse(&.{ "Si", "foo" }));
     try std.testing.expectError(ParseError.UnknownCommand, testParse(&.{ "Ss", "foo" }));
     try std.testing.expectError(ParseError.UnknownCommand, testParse(&.{ "G", "foo" }));
+    try std.testing.expectError(ParseError.UnknownCommand, testParse(&.{ "Sc", "foo" }));
+    try std.testing.expectError(ParseError.UnknownCommand, testParse(&.{ "Scc", "foo" }));
 }
 
 test "parseArgs: dash-prefixed short aliases" {
@@ -535,11 +542,11 @@ test "parseArgs: dash-prefixed short aliases" {
     try std.testing.expectEqual(Operation.search, parsed3.operation);
 
     var buf4: [256][]const u8 = undefined;
-    const parsed4 = try parseArgs(&.{ "-Qu" }, &buf4);
+    const parsed4 = try parseArgs(&.{"-Qu"}, &buf4);
     try std.testing.expectEqual(Operation.outdated, parsed4.operation);
 
     var buf5: [256][]const u8 = undefined;
-    const parsed5 = try parseArgs(&.{ "-U" }, &buf5);
+    const parsed5 = try parseArgs(&.{"-U"}, &buf5);
     try std.testing.expectEqual(Operation.upgrade, parsed5.operation);
 
     var buf6: [256][]const u8 = undefined;
@@ -549,6 +556,16 @@ test "parseArgs: dash-prefixed short aliases" {
     var buf7: [256][]const u8 = undefined;
     const parsed7 = try parseArgs(&.{ "-G", "foo" }, &buf7);
     try std.testing.expectEqual(Operation.clone, parsed7.operation);
+
+    var buf8: [256][]const u8 = undefined;
+    const parsed8 = try parseArgs(&.{"-Sc"}, &buf8);
+    try std.testing.expectEqual(Operation.clean, parsed8.operation);
+    try std.testing.expect(!parsed8.flags.all);
+
+    var buf9: [256][]const u8 = undefined;
+    const parsed9 = try parseArgs(&.{"-Scc"}, &buf9);
+    try std.testing.expectEqual(Operation.clean, parsed9.operation);
+    try std.testing.expect(parsed9.flags.all);
 }
 
 test "parseArgs: combined short flags" {
