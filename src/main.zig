@@ -133,7 +133,7 @@ const Operation = enum {
     fn fromShortAlias(s: []const u8) ?Operation {
         const map = std.StaticStringMap(Operation).initComptime(.{
             .{ "S", .sync },
-            .{ "B", .build },
+            .{ "Sw", .build },
             .{ "G", .clone },
             .{ "Si", .info },
             .{ "Ss", .search },
@@ -404,7 +404,7 @@ fn printHelp() void {
         \\
         \\Commands:
         \\  sync,  -S                 Install AUR packages (resolve, clone, build, install)
-        \\  build, -B                 Build packages into local repository
+        \\  build, -Sw                Build packages into local repository
         \\  clone, -G                 Clone AUR package repositories
         \\  info,  -Si                Display AUR package information
         \\  search, -Ss <term>        Search AUR packages
@@ -550,7 +550,7 @@ test "parseArgs: dash-prefixed short aliases" {
     try std.testing.expectEqual(Operation.upgrade, parsed5.operation);
 
     var buf6: [256][]const u8 = undefined;
-    const parsed6 = try parseArgs(&.{ "-B", "foo" }, &buf6);
+    const parsed6 = try parseArgs(&.{ "-Sw", "foo" }, &buf6);
     try std.testing.expectEqual(Operation.build, parsed6.operation);
 
     var buf7: [256][]const u8 = undefined;
