@@ -6,6 +6,7 @@ const git = aurodle.git;
 const pacman_mod = aurodle.pacman;
 const registry_mod = aurodle.registry;
 const repo_mod = aurodle.repo;
+const auth_mod = aurodle.auth;
 const utils = aurodle.utils;
 const Allocator = std.mem.Allocator;
 
@@ -370,6 +371,20 @@ fn runWithFullStack(
         reg.provider_chooser = &utils.promptProviderChoice;
     }
 
+    // Initialize privilege escalation (PACMAN_AUTH → sudo → su)
+    var auth = auth_mod.Auth.init(allocator, repository.makepkg_conf.pacman_auth) catch |err| {
+        const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
+        const w = stderr.deprecatedWriter();
+        if (err == error.NoAuthMethod) {
+            w.writeAll("error: no privilege escalation method found (sudo/su not on PATH)\n") catch {};
+            w.writeAll("hint: set PACMAN_AUTH in makepkg.conf or install sudo/doas\n") catch {};
+        } else {
+            w.print("error: failed to initialize auth: {}\n", .{err}) catch {};
+        }
+        return .general_error;
+    };
+    defer auth.deinit();
+
     // Get cache root for git operations
     const cache_root = git.defaultCacheRoot(allocator) catch {
         const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
@@ -384,6 +399,7 @@ fn runWithFullStack(
         &pm,
         &reg,
         &repository,
+        &auth,
         cache_root,
         flags,
     );

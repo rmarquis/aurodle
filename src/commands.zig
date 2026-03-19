@@ -7,6 +7,7 @@ const repo_mod = @import("repo.zig");
 const pacman_mod = @import("pacman.zig");
 const devel = @import("devel.zig");
 const utils = @import("utils.zig");
+const auth_mod = @import("auth.zig");
 const color = @import("color.zig");
 
 // Sub-modules (pub for test discovery via refAllDecls)
@@ -90,6 +91,7 @@ pub const Commands = struct {
     pacman: ?*pacman_mod.Pacman,
     registry: ?*registry_mod.PackageRegistry,
     repo: ?*repo_mod.Repository,
+    auth: ?*auth_mod.Auth,
     cache_root: ?[]const u8,
     flags: Flags,
     err_writer: std.io.AnyWriter,
@@ -103,6 +105,7 @@ pub const Commands = struct {
             .pacman = null,
             .registry = null,
             .repo = null,
+            .auth = null,
             .cache_root = null,
             .flags = flags,
             .err_writer = defaultErrWriter(),
@@ -117,6 +120,7 @@ pub const Commands = struct {
         pm: *pacman_mod.Pacman,
         reg: *registry_mod.PackageRegistry,
         repository: *repo_mod.Repository,
+        auth: *auth_mod.Auth,
         cache_root: []const u8,
         flags: Flags,
     ) Commands {
@@ -127,6 +131,7 @@ pub const Commands = struct {
             .pacman = pm,
             .registry = reg,
             .repo = repository,
+            .auth = auth,
             .cache_root = cache_root,
             .flags = flags,
             .err_writer = defaultErrWriter(),

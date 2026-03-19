@@ -8,6 +8,7 @@ const solver_mod = @import("../solver.zig");
 const repo_mod = @import("../repo.zig");
 const pacman_mod = @import("../pacman.zig");
 const utils = @import("../utils.zig");
+const auth_mod = @import("../auth.zig");
 const cmds = @import("../commands.zig");
 const query = @import("query.zig");
 const color = @import("../color.zig");
@@ -280,7 +281,7 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
 
     // Refresh sync DB so pacman -S sees the just-built packages.
     if (build_result.succeeded.len > 0) {
-        refreshAurpkgsSyncDb(self.allocator, repository) catch |err| {
+        refreshAurpkgsSyncDb(self.allocator, repository, self.auth.?) catch |err| {
             self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err }) catch {};
         };
     }
@@ -390,7 +391,7 @@ pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
 
     // Final sync DB refresh so the packages are installable via pacman -S.
     if (result.succeeded.len > 0) {
-        refreshAurpkgsSyncDb(self.allocator, repository) catch |err| {
+        refreshAurpkgsSyncDb(self.allocator, repository, self.auth.?) catch |err| {
             self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err }) catch {};
         };
     }
@@ -649,7 +650,7 @@ pub fn clean(self: *Commands) !ExitCode {
     // repo-remove modified the db in repo_dir, but pacman reads from
     // /var/lib/pacman/sync/ which is a separate root-owned copy.
     if (plan.removed_packages.len > 0) {
-        refreshAurpkgsSyncDb(self.allocator, repository) catch |err| {
+        refreshAurpkgsSyncDb(self.allocator, repository, self.auth.?) catch |err| {
             self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err }) catch {};
         };
     }
@@ -667,7 +668,7 @@ fn chrootDir() []const u8 {
 }
 
 /// Ensure a clean chroot exists, creating it with mkarchroot if needed.
-fn ensureChroot(allocator: Allocator, err_writer: anytype, ec: color.Style) !bool {
+fn ensureChroot(allocator: Allocator, auth: *auth_mod.Auth, err_writer: anytype, ec: color.Style) !bool {
     const chroot_path = chrootDir();
     const root_path = std.fmt.allocPrint(allocator, "{s}/root", .{chroot_path}) catch return false;
     defer allocator.free(root_path);
@@ -675,9 +676,8 @@ fn ensureChroot(allocator: Allocator, err_writer: anytype, ec: color.Style) !boo
     // Check if chroot root already exists
     std.fs.accessAbsolute(root_path, .{}) catch {
         err_writer.print("{s}::{s} creating chroot at {s}...\n", .{ ec.blue, ec.reset, chroot_path }) catch {};
-        const exit_code = try utils.runInteractive(
-            allocator,
-            &.{ "sudo", "mkarchroot", root_path, "base-devel" },
+        const exit_code = try auth.runInteractive(
+            &.{ "mkarchroot", root_path, "base-devel" },
             null,
         );
         if (exit_code != 0) {
@@ -705,7 +705,7 @@ fn buildLoop(
 
     // Ensure chroot exists before starting builds
     if (self.flags.chroot) {
-        if (!try ensureChroot(self.allocator, self.err_writer, ec)) {
+        if (!try ensureChroot(self.allocator, self.auth.?, self.err_writer, ec)) {
             return .{
                 .succeeded = try succeeded.toOwnedSlice(self.allocator),
                 .failed = try failed.toOwnedSlice(self.allocator),
@@ -792,7 +792,7 @@ fn buildLoop(
         // repo-add updated the repo dir DB, but pacman's sync cache
         // (/var/lib/pacman/sync/aurpkgs.db) is root-owned and separate.
         if (anySubsequentEntryNeeds(plan.build_order[i + 1 ..], entry.pkgbase)) {
-            refreshAurpkgsSyncDb(self.allocator, repository) catch |err| {
+            refreshAurpkgsSyncDb(self.allocator, repository, self.auth.?) catch |err| {
                 self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err }) catch {};
             };
         }
@@ -941,7 +941,7 @@ fn installAllTargets(self: *Commands, aurpkgs_names: []const []const u8, repo_na
         }
     }
 
-    const exit_code = try utils.runSudoInteractive(self.allocator, argv.items);
+    const exit_code = try self.auth.?.runInteractive(argv.items, null);
 
     if (exit_code != 0) {
         const ec3 = self.stderr_color;
@@ -989,10 +989,10 @@ fn printBuildSummary(result: BuildResult, err_writer: std.io.AnyWriter, ec: colo
 /// Copy the local AUR repo DB to pacman's sync cache so that subsequent
 /// makepkg -s calls (which spawn their own pacman) see just-built packages.
 /// Only touches the local AUR repo entry — official repo DBs are left untouched.
-fn refreshAurpkgsSyncDb(allocator: Allocator, repository: *repo_mod.Repository) !void {
+fn refreshAurpkgsSyncDb(allocator: Allocator, repository: *repo_mod.Repository, auth: *auth_mod.Auth) !void {
     const sync_db_path = try std.fmt.allocPrint(allocator, "/var/lib/pacman/sync/{s}.db", .{repository.repo_name});
     defer allocator.free(sync_db_path);
-    const result = try utils.runSudo(allocator, &.{ "cp", repository.db_path, sync_db_path });
+    const result = try auth.runCaptured(&.{ "cp", repository.db_path, sync_db_path });
     defer result.deinit(allocator);
     if (!result.success()) return error.SyncDbRefreshFailed;
 }
