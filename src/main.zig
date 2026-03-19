@@ -403,17 +403,17 @@ fn printHelp() void {
         \\Usage: aurodle <command> [options] [targets...]
         \\
         \\Commands:
-        \\  sync,  -S                 Install AUR packages (resolve, clone, build, install)
-        \\  build, -Sw                Build packages into local repository
-        \\  clone, -G                 Clone AUR package repositories
-        \\  info,  -Si                Display AUR package information
-        \\  search, -Ss <term>        Search AUR packages
-        \\  show                      Display package build files
-        \\  resolve                   Show dependency tree
-        \\  buildorder                Show build order (machine-readable)
-        \\  outdated, -Qu             List outdated AUR packages
-        \\  upgrade, -U               Upgrade outdated AUR packages
-        \\  clean, -Sc, -Scc          Remove stale or all cache files
+        \\  sync,  -S              Install AUR packages (resolve, clone, build, install)
+        \\  build, -Sw             Build packages into local repository
+        \\  clone, -G              Clone AUR package repositories
+        \\  info,  -Si             Display AUR package information
+        \\  search, -Ss <term>     Search AUR packages
+        \\  show                   Display package build files
+        \\  resolve                Show dependency tree
+        \\  buildorder             Show build order (machine-readable)
+        \\  outdated, -Qu          List outdated AUR packages
+        \\  upgrade, -U            Upgrade outdated AUR packages
+        \\  clean, -Sc, -Scc       Remove stale or all cache files
         \\
         \\Global options:
         \\  -h, --help             Show this help
