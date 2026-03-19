@@ -272,10 +272,6 @@ fn parseArgs(args: []const []const u8, target_buf: [][]const u8) ParseError!Pars
                 if (i >= args.len) return ParseError.MissingArgument;
                 flags.rsort = commands.SortField.fromString(args[i]) orelse
                     return ParseError.UnknownFlag;
-            } else if (std.mem.eql(u8, arg, "--format")) {
-                i += 1;
-                if (i >= args.len) return ParseError.MissingArgument;
-                flags.format_str = args[i];
             } else {
                 return ParseError.UnknownFlag;
             }
@@ -678,13 +674,6 @@ test "parseArgs: --ignore flag with comma-separated packages" {
 
 test "parseArgs: --ignore with missing value returns MissingArgument" {
     try std.testing.expectError(ParseError.MissingArgument, testParse(&.{ "sync", "--ignore" }));
-}
-
-test "parseArgs: --format flag with value" {
-    var buf: [256][]const u8 = undefined;
-    const parsed = try parseArgs(&.{ "info", "--format", "{name} {version}", "foo" }, &buf);
-    try std.testing.expect(parsed.flags.format_str != null);
-    try std.testing.expectEqualStrings("{name} {version}", parsed.flags.format_str.?);
 }
 
 test "parseArgs: --by with missing value returns MissingArgument" {

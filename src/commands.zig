@@ -40,7 +40,6 @@ pub const Flags = struct {
     by: ?aur.SearchField = null,
     sort: ?SortField = null,
     rsort: ?SortField = null,
-    format_str: ?[]const u8 = null,
     ignore: []const []const u8 = &.{},
     ignore_buf: [64][]const u8 = undefined,
 };
