@@ -25,10 +25,12 @@ pub const MakepkgConfig = struct {
     pkgdest: ?[]const u8 = null,
     pkgext: []const u8 = DEFAULT_PKGEXT,
     owns_pkgext: bool = false,
+    pacman_auth: ?[]const u8 = null,
 
     fn deinit(self: MakepkgConfig, allocator: Allocator) void {
         if (self.pkgdest) |p| allocator.free(p);
         if (self.owns_pkgext) allocator.free(self.pkgext);
+        if (self.pacman_auth) |a| allocator.free(a);
     }
 };
 
@@ -565,6 +567,10 @@ fn parseMakepkgConf(allocator: Allocator) !MakepkgConfig {
         config.pkgext = try allocator.dupe(u8, v);
         config.owns_pkgext = true;
     }
+    if (std.posix.getenv("PACMAN_AUTH")) |v| {
+        if (config.pacman_auth) |old| allocator.free(old);
+        config.pacman_auth = try allocator.dupe(u8, v);
+    }
 
     return config;
 }
@@ -590,6 +596,9 @@ pub fn parseMakepkgConfFromFile(allocator: Allocator, path: []const u8, config: 
             if (config.owns_pkgext) allocator.free(config.pkgext);
             config.pkgext = try allocator.dupe(u8, stripQuotes(val));
             config.owns_pkgext = true;
+        } else if (parseAssignment(trimmed, "PACMAN_AUTH")) |val| {
+            if (config.pacman_auth) |old| allocator.free(old);
+            config.pacman_auth = try allocator.dupe(u8, stripBashArray(stripQuotes(val)));
         }
     }
 }
@@ -611,6 +620,16 @@ fn stripQuotes(val: []const u8) []const u8 {
         {
             return val[1 .. val.len - 1];
         }
+    }
+    return val;
+}
+
+/// Strip bash array syntax: "(content)" → "content".
+/// Also strips quotes from the inner content.
+/// Handles: (sudo), ("doas"), ('doas -s'), (sudo --askpass)
+fn stripBashArray(val: []const u8) []const u8 {
+    if (val.len >= 2 and val[0] == '(' and val[val.len - 1] == ')') {
+        return stripQuotes(val[1 .. val.len - 1]);
     }
     return val;
 }
@@ -1182,6 +1201,120 @@ test "parseMakepkgConfFromFile skips comments and empty lines" {
     defer config.deinit(std.testing.allocator);
 
     try std.testing.expectEqualStrings(".pkg.tar.xz", config.pkgext);
+}
+
+test "parseMakepkgConfFromFile reads PACMAN_AUTH with array syntax" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "makepkg.conf",
+        .data =
+        \\PACMAN_AUTH=(sudo)
+        ,
+    });
+
+    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "makepkg.conf");
+    defer std.testing.allocator.free(path);
+
+    var config = MakepkgConfig{};
+    try parseMakepkgConfFromFile(std.testing.allocator, path, &config);
+    defer config.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("sudo", config.pacman_auth.?);
+}
+
+test "parseMakepkgConfFromFile reads PACMAN_AUTH with quoted array" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "makepkg.conf",
+        .data =
+        \\PACMAN_AUTH=("doas")
+        ,
+    });
+
+    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "makepkg.conf");
+    defer std.testing.allocator.free(path);
+
+    var config = MakepkgConfig{};
+    try parseMakepkgConfFromFile(std.testing.allocator, path, &config);
+    defer config.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("doas", config.pacman_auth.?);
+}
+
+test "parseMakepkgConfFromFile reads PACMAN_AUTH with args" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "makepkg.conf",
+        .data =
+        \\PACMAN_AUTH=(sudo --askpass)
+        ,
+    });
+
+    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "makepkg.conf");
+    defer std.testing.allocator.free(path);
+
+    var config = MakepkgConfig{};
+    try parseMakepkgConfFromFile(std.testing.allocator, path, &config);
+    defer config.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("sudo --askpass", config.pacman_auth.?);
+}
+
+test "parseMakepkgConfFromFile reads PACMAN_AUTH plain value" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "makepkg.conf",
+        .data =
+        \\PACMAN_AUTH="doas"
+        ,
+    });
+
+    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "makepkg.conf");
+    defer std.testing.allocator.free(path);
+
+    var config = MakepkgConfig{};
+    try parseMakepkgConfFromFile(std.testing.allocator, path, &config);
+    defer config.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("doas", config.pacman_auth.?);
+}
+
+test "parseMakepkgConfFromFile PACMAN_AUTH last value wins" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "makepkg.conf",
+        .data =
+        \\PACMAN_AUTH=(sudo)
+        \\PACMAN_AUTH=(doas)
+        ,
+    });
+
+    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "makepkg.conf");
+    defer std.testing.allocator.free(path);
+
+    var config = MakepkgConfig{};
+    try parseMakepkgConfFromFile(std.testing.allocator, path, &config);
+    defer config.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("doas", config.pacman_auth.?);
+}
+
+test "stripBashArray strips parens" {
+    try std.testing.expectEqualStrings("sudo", stripBashArray("(sudo)"));
+    try std.testing.expectEqualStrings("doas -s", stripBashArray("(doas -s)"));
+    try std.testing.expectEqualStrings("sudo", stripBashArray("sudo"));
+    try std.testing.expectEqualStrings("doas", stripBashArray("(\"doas\")"));
+    try std.testing.expectEqualStrings("doas", stripBashArray("('doas')"));
 }
 
 test "Repository paths are correct" {
