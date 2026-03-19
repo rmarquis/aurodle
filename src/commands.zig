@@ -36,6 +36,7 @@ pub const Flags = struct {
     asexplicit: bool = false,
     devel: bool = false,
     all: bool = false,
+    recurse: bool = false,
     by: ?aur.SearchField = null,
     sort: ?SortField = null,
     rsort: ?SortField = null,

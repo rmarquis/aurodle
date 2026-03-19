@@ -120,13 +120,41 @@ pub fn clonePackages(self: *Commands, targets: []const []const u8) !ExitCode {
     const owns_root = self.cache_root == null;
     defer if (owns_root) self.allocator.free(c_root);
 
-    // Clone each resolved package
+    // Collect pkgbases to clone: either just targets, or full dep tree with --recurse
+    var bases_to_clone: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer bases_to_clone.deinit(self.allocator);
+
+    if (self.flags.recurse) {
+        const reg = self.registry orelse {
+            self.err_writer.print("{s}error:{s} registry not initialized (--recurse requires full stack)\n", .{ ec.red, ec.reset }) catch {};
+            return .general_error;
+        };
+
+        var s = solver_mod.Solver.init(self.allocator, reg);
+        defer s.deinit();
+
+        const plan = s.resolve(targets) catch |err| {
+            return handleResolveError(err, self.err_writer, ec);
+        };
+        defer plan.deinit(self.allocator);
+
+        // Collect all AUR pkgbases from build order
+        for (plan.build_order) |entry| {
+            try bases_to_clone.append(self.allocator, entry.pkgbase);
+        }
+    } else {
+        for (targets) |target| {
+            if (pkgbase_map.get(target)) |pkgbase| {
+                try bases_to_clone.append(self.allocator, pkgbase);
+            }
+        }
+    }
+
+    // Clone each package
     var cloned_set: std.StringHashMapUnmanaged(void) = .empty;
     defer cloned_set.deinit(self.allocator);
 
-    for (targets) |target| {
-        const pkgbase = pkgbase_map.get(target) orelse continue;
-
+    for (bases_to_clone.items) |pkgbase| {
         if (cloned_set.contains(pkgbase)) continue;
         try cloned_set.put(self.allocator, pkgbase, {});
 
