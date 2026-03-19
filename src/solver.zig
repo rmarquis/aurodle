@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const registry_mod = @import("registry.zig");
 const aur = @import("aur.zig");
 const alpm = @import("alpm.zig");
+const devel = @import("devel.zig");
 const pacman_mod = @import("pacman.zig");
 
 // ── Public Types ─────────────────────────────────────────────────────────
@@ -253,7 +254,11 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                                 alpm.vercmp(pkg.version, local_ver) > 0
                             else
                                 false;
-                            if (dominated or (self.rebuild and !self.needed)) {
+                            // VCS packages (-git, -svn, etc.) always need rebuilding when
+                            // explicitly targeted — their AUR version string is static and
+                            // doesn't reflect the actual upstream HEAD.
+                            const is_vcs = devel.isVcsPackage(actual_name);
+                            if (dominated or is_vcs or (self.rebuild and !self.needed)) {
                                 node.meta.source = .aur;
                                 node.meta.version = pkg.version;
                             }
@@ -1694,6 +1699,23 @@ test "resolve keeps repo_aur target when aurpkgs version matches AUR" {
             try testing.expectEqual(registry_mod.Source.repo_aur, dep.source);
         }
     }
+}
+
+test "resolve reclassifies repo_aur VCS target even when version matches" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // VCS package: same version in aurpkgs and AUR (static AUR version is meaningless)
+    mock.addRepoAurWithAurVersion("pacaur-git", "4.0.0-1", "4.0.0-1", &.{}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"pacaur-git"});
+    defer plan.deinit(testing.allocator);
+
+    // VCS target should be reclassified to .aur and appear in build_order
+    try testing.expectEqual(@as(usize, 1), plan.build_order.len);
+    try testing.expectEqualStrings("pacaur-git", plan.build_order[0].name);
 }
 
 test "rebuild reclassifies satisfied_aur target into build plan" {
