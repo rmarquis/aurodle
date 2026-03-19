@@ -264,6 +264,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                     if (aur_pkg) |pkg| {
                         try self.collectDeps(&next_frontier, &visited, node, pkg.depends, depth);
                         try self.collectDeps(&next_frontier, &visited, node, pkg.makedepends, depth);
+                        try self.collectDeps(&next_frontier, &visited, node, pkg.checkdepends, depth);
                     }
                 }
 
