@@ -187,18 +187,31 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                     // Handle provider redirect (e.g. "auracle" → "auracle-git")
                     if (resolution.provider) |provider_name| {
                         if (!std.mem.eql(u8, provider_name, name)) {
+                            // For explicit targets, prefer the AUR package by exact name
+                            // over a provider redirect. E.g. "pacaur" should build pacaur
+                            // from AUR, not redirect to installed pacaur-git.
                             if (self.targets.contains(name)) {
-                                try self.targets.put(self.allocator, provider_name, {});
-                            }
-                            actual_name = provider_name;
-                            if (visited.contains(provider_name)) {
-                                if (self.graph.getNode(provider_name)) |node| {
-                                    if (depth > node.meta.depth) node.meta.depth = depth;
+                                if (try self.registry.resolveFromAur(name)) |aur_res| {
+                                    actual_resolution = aur_res;
+                                    // Don't redirect — keep the original target name
+                                } else {
+                                    // Target doesn't exist in AUR — accept the provider redirect
+                                    try self.targets.put(self.allocator, provider_name, {});
+                                    actual_name = provider_name;
                                 }
-                                continue;
+                            } else {
+                                actual_name = provider_name;
                             }
-                            // Resolve the provider individually (typically cached or local)
-                            actual_resolution = try self.registry.resolve(provider_name);
+                            if (!std.mem.eql(u8, actual_name, name)) {
+                                if (visited.contains(actual_name)) {
+                                    if (self.graph.getNode(actual_name)) |node| {
+                                        if (depth > node.meta.depth) node.meta.depth = depth;
+                                    }
+                                    continue;
+                                }
+                                // Resolve the provider individually (typically cached or local)
+                                actual_resolution = try self.registry.resolve(actual_name);
+                            }
                         }
                     }
 
@@ -1738,6 +1751,52 @@ test "rebuild reclassifies satisfied_aur target into build plan" {
         if (std.mem.eql(u8, entry.name, "pacaur")) found_pacaur = true;
     }
     try testing.expect(found_pacaur);
+}
+
+test "resolve prefers AUR exact name over provider redirect for targets" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // "pacaur" exists as a provider redirect to "pacaur-git" (e.g. pacaur-git installed, provides pacaur)
+    mock.addProvider("pacaur", "pacaur-git", .satisfied_aur, "4.8.6-2");
+    // But "pacaur" also exists as a real AUR package
+    mock.addAurPackage("pacaur", &.{"auracle-git"}, &.{});
+    mock.addAurPackage("auracle-git", &.{}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"pacaur"});
+    defer plan.deinit(testing.allocator);
+
+    // Should build "pacaur" (the real AUR package), not redirect to "pacaur-git"
+    var found_pacaur = false;
+    var found_pacaur_git = false;
+    for (plan.build_order) |entry| {
+        if (std.mem.eql(u8, entry.name, "pacaur")) found_pacaur = true;
+        if (std.mem.eql(u8, entry.name, "pacaur-git")) found_pacaur_git = true;
+    }
+    try testing.expect(found_pacaur);
+    try testing.expect(!found_pacaur_git);
+}
+
+test "resolve still redirects virtual name when target not in AUR" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // "auracle" is a virtual name, only provided by "auracle-git", not in AUR itself
+    mock.addProvider("auracle", "auracle-git", .satisfied_aur, "r427-1");
+    mock.addSatisfiedWithAurDeps("auracle-git", "r427-1", &.{}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    s.rebuild = true;
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"auracle"});
+    defer plan.deinit(testing.allocator);
+
+    // Should redirect to "auracle-git" since "auracle" doesn't exist in AUR
+    try testing.expectEqual(@as(usize, 1), plan.build_order.len);
+    try testing.expectEqualStrings("auracle-git", plan.build_order[0].name);
+    try testing.expect(plan.build_order[0].is_target);
 }
 
 test "resolve redirects virtual name to provider package" {
