@@ -11,6 +11,7 @@ pub const registry = @import("registry.zig");
 pub const solver = @import("solver.zig");
 pub const devel = @import("devel.zig");
 pub const color = @import("color.zig");
+pub const auth = @import("auth.zig");
 
 test {
     std.testing.refAllDecls(@This());
