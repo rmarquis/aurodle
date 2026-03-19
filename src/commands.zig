@@ -44,6 +44,13 @@ pub const Flags = struct {
     rsort: ?SortField = null,
     ignore: []const []const u8 = &.{},
     ignore_buf: [64][]const u8 = undefined,
+
+    /// Re-anchor the ignore slice to point into our own ignore_buf.
+    /// Must be called after any struct copy (Zig copies the slice pointer
+    /// verbatim, leaving it pointing at the source struct's buffer).
+    pub fn reanchorIgnore(self: *Flags) void {
+        self.ignore = self.ignore_buf[0..self.ignore.len];
+    }
 };
 
 pub const SortField = enum {
@@ -81,6 +88,7 @@ pub const OutdatedEntry = struct {
     name: []const u8,
     installed_version: []const u8,
     aur_version: []const u8,
+    ignored: bool = false,
 };
 
 // ── Commands Struct ──────────────────────────────────────────────────

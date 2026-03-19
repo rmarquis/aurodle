@@ -83,6 +83,7 @@ fn run(allocator: Allocator) !ExitCode {
 
     // Simple commands that only need the AUR client
     var cmds = commands.Commands.init(allocator, &aur_client, parsed.flags);
+    cmds.flags.reanchorIgnore();
 
     return switch (parsed.operation) {
         .info => try cmds.info(parsed.targets),
@@ -340,8 +341,12 @@ fn runWithFullStack(
     };
     defer pm.deinit();
 
-    // Merge IgnorePkg from pacman.conf with --ignore flag
+    // Merge IgnorePkg from pacman.conf with --ignore flag.
+    // Re-anchor first: after struct copies through parseArgs → run → here,
+    // flags.ignore points into parseArgs's dead stack frame.
     var flags = parsed.flags;
+    flags.reanchorIgnore();
+
     if (pm.ignore_pkgs.len > 0) {
         var count: usize = flags.ignore.len;
         for (pm.ignore_pkgs) |pkg| {
@@ -403,6 +408,7 @@ fn runWithFullStack(
         cache_root,
         flags,
     );
+    cmds.flags.reanchorIgnore();
 
     return switch (parsed.operation) {
         .sync => try cmds.sync(parsed.targets),

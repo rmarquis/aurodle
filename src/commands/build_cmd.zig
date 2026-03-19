@@ -180,6 +180,16 @@ pub fn clonePackages(self: *Commands, targets: []const []const u8) !ExitCode {
 
 /// Execute the full sync workflow: resolve -> clone -> review -> build -> install.
 pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
+    // Filter ignored targets (prompt user for each)
+    var ignore_buf: [256][]const u8 = undefined;
+    const filtered = self.filterIgnored(targets, &ignore_buf);
+    if (filtered.len == 0) return .success;
+
+    return syncFiltered(self, filtered);
+}
+
+/// Inner sync workflow operating on pre-filtered targets (no ignore prompting).
+fn syncFiltered(self: *Commands, filtered: []const []const u8) !ExitCode {
     const ec = self.stderr_color;
     const reg = self.registry orelse {
         self.err_writer.print("{s}error:{s} registry not initialized\n", .{ ec.red, ec.reset }) catch {};
@@ -193,11 +203,6 @@ pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
         self.err_writer.print("{s}error:{s} cache root not set\n", .{ ec.red, ec.reset }) catch {};
         return .general_error;
     };
-
-    // Filter ignored targets
-    var ignore_buf: [256][]const u8 = undefined;
-    const filtered = self.filterIgnored(targets, &ignore_buf);
-    if (filtered.len == 0) return .success;
 
     // Phase 1: Resolve
     var s = solver_mod.Solver.init(self.allocator, reg);
@@ -487,29 +492,24 @@ pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
         try checkDevelUpgrades(self, to_check, &upgrade_set, &to_upgrade, &outdated_display, &devel_versions);
     }
 
-    // Prompt for ignored packages (matching pacman behavior)
+    // Remove ignored packages from both upgrade and display lists with a warning
     if (self.flags.ignore.len > 0) {
         var i: usize = 0;
         while (i < to_upgrade.items.len) {
             const name = to_upgrade.items[i];
             if (self.isIgnored(name)) {
-                var msg_buf: [256]u8 = undefined;
-                const msg = std.fmt.bufPrint(&msg_buf, "{s} is in IgnorePkg. Install anyway?", .{name}) catch name;
-                const install = utils.promptYesNoStyled(self.stdout_color, msg) catch false;
-                if (!install) {
-                    self.err_writer.print(
-                        "{s}warning:{s} skipping target: {s}\n",
-                        .{ ec.yellow, ec.reset, name },
-                    ) catch {};
-                    _ = to_upgrade.swapRemove(i);
-                    // Also remove from display list
-                    var j: usize = 0;
-                    while (j < outdated_display.items.len) {
-                        if (std.mem.eql(u8, outdated_display.items[j].name, name)) {
-                            _ = outdated_display.swapRemove(j);
-                        } else j += 1;
-                    }
-                } else i += 1;
+                self.err_writer.print(
+                    "{s}warning:{s} {s}: ignoring package upgrade\n",
+                    .{ ec.yellow, ec.reset, name },
+                ) catch {};
+                _ = to_upgrade.swapRemove(i);
+                // Also remove from display list
+                var j: usize = 0;
+                while (j < outdated_display.items.len) {
+                    if (std.mem.eql(u8, outdated_display.items[j].name, name)) {
+                        _ = outdated_display.swapRemove(j);
+                    } else j += 1;
+                }
             } else i += 1;
         }
     }
@@ -525,8 +525,9 @@ pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
     stdout.print("{s}::{s} {d} package(s) to upgrade:\n", .{ c.blue, c.reset, outdated_display.items.len }) catch {};
     query.formatOutdated(outdated_display.items, c);
 
-    // Delegate to sync for the actual build+install workflow
-    return sync(self, to_upgrade.items);
+    // Delegate to sync for the actual build+install workflow.
+    // Use syncFiltered to skip ignore prompting (already handled above).
+    return syncFiltered(self, to_upgrade.items);
 }
 
 // ── Devel Upgrade Check ──────────────────────────────────────────────

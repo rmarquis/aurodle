@@ -143,6 +143,7 @@ pub fn outdated(self: *Commands, filter: []const []const u8) !ExitCode {
                     .name = pkg.name,
                     .installed_version = pkg.version,
                     .aur_version = aur_ver,
+                    .ignored = self.isIgnored(pkg.name),
                 });
                 try already_outdated.put(self.allocator, pkg.name, {});
             }
@@ -402,15 +403,27 @@ fn displaySearchResults(packages: []const *aur.Package, c: color.Style, local_db
 pub fn formatOutdated(entries: []const OutdatedEntry, c: color.Style) void {
     const stdout = getStdout();
     for (entries) |entry| {
-        stdout.print("{s} {s}{s}{s} -> {s}{s}{s}\n", .{
-            entry.name,
-            c.red,
-            entry.installed_version,
-            c.reset,
-            c.green,
-            entry.aur_version,
-            c.reset,
-        }) catch {};
+        if (entry.ignored) {
+            stdout.print("{s} {s}{s}{s} -> {s}{s}{s} [ignored]\n", .{
+                entry.name,
+                c.red,
+                entry.installed_version,
+                c.reset,
+                c.green,
+                entry.aur_version,
+                c.reset,
+            }) catch {};
+        } else {
+            stdout.print("{s} {s}{s}{s} -> {s}{s}{s}\n", .{
+                entry.name,
+                c.red,
+                entry.installed_version,
+                c.reset,
+                c.green,
+                entry.aur_version,
+                c.reset,
+            }) catch {};
+        }
     }
 }
 
