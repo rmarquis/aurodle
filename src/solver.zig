@@ -231,6 +231,20 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                             return error.UnresolvableDependency;
                         }
                         actual_resolution = full_res;
+
+                        // The full cascade may have found an AUR provider
+                        // (e.g. "auracle" → "auracle-git"). Apply the redirect.
+                        if (full_res.provider) |prov| {
+                            if (!std.mem.eql(u8, prov, actual_name)) {
+                                actual_name = prov;
+                                if (visited.contains(actual_name)) {
+                                    if (self.graph.getNode(actual_name)) |existing| {
+                                        if (depth > existing.meta.depth) existing.meta.depth = depth;
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
                     }
 
                     // Add node to graph
@@ -787,6 +801,9 @@ const MockInstalledSet = struct {
 const MockRegistry = struct {
     packages: std.StringHashMapUnmanaged(MockPackageInfo),
     aur_overrides: std.StringHashMapUnmanaged(MockPackageInfo),
+    /// Names that resolveMany returns as .unknown but resolve() finds
+    /// via provider (simulates AUR provider search fallback).
+    deferred_providers: std.StringHashMapUnmanaged(MockPackageInfo) = .empty,
     arena: std.heap.ArenaAllocator,
     pacman: *MockInstalledSet = undefined,
 
@@ -815,6 +832,7 @@ const MockRegistry = struct {
     fn deinitMock(self: *MockRegistry) void {
         self.packages.deinit(testing.allocator);
         self.aur_overrides.deinit(testing.allocator);
+        self.deferred_providers.deinit(testing.allocator);
         self.pacman.deinit();
         self.arena.deinit();
     }
@@ -1153,6 +1171,51 @@ const MockRegistry = struct {
         }) catch unreachable;
     }
 
+    /// Register a virtual name that resolveMany returns as .unknown but
+    /// resolve() finds via AUR provider search (e.g. "auracle" → "auracle-git"
+    /// when auracle-git is not installed but exists in AUR).
+    fn addDeferredProvider(self: *MockRegistry, virtual_name: []const u8, provider_name: []const u8) void {
+        const alloc = self.arena.allocator();
+        const pkg = alloc.create(aur.Package) catch unreachable;
+        pkg.* = .{
+            .id = 0,
+            .name = provider_name,
+            .pkgbase = provider_name,
+            .pkgbase_id = 0,
+            .version = "1.0-1",
+            .description = null,
+            .url = null,
+            .url_path = null,
+            .maintainer = null,
+            .submitter = null,
+            .votes = 0,
+            .popularity = 0,
+            .first_submitted = 0,
+            .last_modified = 0,
+            .out_of_date = null,
+            .depends = &.{},
+            .makedepends = &.{},
+            .checkdepends = &.{},
+            .optdepends = &.{},
+            .provides = &.{virtual_name},
+            .conflicts = &.{},
+            .replaces = &.{},
+            .groups = &.{},
+            .keywords = &.{},
+            .licenses = &.{},
+            .comaintainers = &.{},
+        };
+        self.deferred_providers.put(testing.allocator, virtual_name, .{
+            .source = .aur,
+            .version = "1.0-1",
+            .pkgbase = provider_name,
+            .depends = &.{},
+            .makedepends = &.{},
+            .aur_pkg = pkg,
+            .provider = provider_name,
+        }) catch unreachable;
+    }
+
     /// Register a virtual name that redirects to a provider package.
     /// Simulates "auracle" → "auracle-git" via provider resolution.
     fn addProvider(self: *MockRegistry, virtual_name: []const u8, provider_name: []const u8, source: registry_mod.Source, version: []const u8) void {
@@ -1184,6 +1247,16 @@ const MockRegistry = struct {
     pub fn resolve(self: *MockRegistry, dep_string: []const u8) !registry_mod.Resolution {
         const spec = registry_mod.parseDep(dep_string);
         const info = self.packages.get(spec.name) orelse {
+            // Check deferred providers (simulates AUR provider search fallback)
+            if (self.deferred_providers.get(spec.name)) |dp| {
+                return .{
+                    .name = spec.name,
+                    .source = dp.source,
+                    .version = dp.version,
+                    .aur_pkg = dp.aur_pkg,
+                    .provider = dp.provider,
+                };
+            }
             return .{ .name = spec.name, .source = .unknown };
         };
         return .{
@@ -1797,6 +1870,32 @@ test "resolve still redirects virtual name when target not in AUR" {
     try testing.expectEqual(@as(usize, 1), plan.build_order.len);
     try testing.expectEqualStrings("auracle-git", plan.build_order[0].name);
     try testing.expect(plan.build_order[0].is_target);
+}
+
+test "resolve redirects deferred AUR provider dependency to real name" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // pacaur depends on "auracle" but only "auracle-git" exists in AUR
+    mock.addAurPackage("pacaur", &.{"auracle"}, &.{});
+    mock.addAurPackage("auracle-git", &.{}, &.{});
+    // auracle is NOT in packages (unknown to resolveMany) but found via AUR provider search
+    mock.addDeferredProvider("auracle", "auracle-git");
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"pacaur"});
+    defer plan.deinit(testing.allocator);
+
+    // Build order should show "auracle-git", not "auracle"
+    var found_auracle_git = false;
+    var found_auracle = false;
+    for (plan.build_order) |entry| {
+        if (std.mem.eql(u8, entry.name, "auracle-git")) found_auracle_git = true;
+        if (std.mem.eql(u8, entry.name, "auracle")) found_auracle = true;
+    }
+    try testing.expect(found_auracle_git);
+    try testing.expect(!found_auracle);
 }
 
 test "resolve redirects virtual name to provider package" {
