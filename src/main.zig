@@ -243,6 +243,8 @@ fn parseArgs(args: []const []const u8, target_buf: [][]const u8) ParseError!Pars
                 flags.all = true;
             } else if (std.mem.eql(u8, arg, "--recurse")) {
                 flags.recurse = true;
+            } else if (std.mem.eql(u8, arg, "--chroot")) {
+                flags.chroot = true;
             } else if (std.mem.eql(u8, arg, "--ignore")) {
                 i += 1;
                 if (i >= args.len) return ParseError.MissingArgument;
@@ -433,6 +435,7 @@ fn printHelp() void {
         \\  --asexplicit           Install as explicitly installed
         \\  --devel                Check VCS packages (-git, -svn, etc.) for updates
         \\  --ignore <pkg,...>     Skip packages (comma-separated)
+        \\  --chroot               Build in clean chroot (requires devtools)
         \\
         \\Clone options:
         \\  --recurse              Recursively clone AUR dependencies

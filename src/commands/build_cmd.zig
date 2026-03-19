@@ -657,6 +657,37 @@ pub fn clean(self: *Commands) !ExitCode {
     return .success;
 }
 
+// ── Chroot Support ───────────────────────────────────────────────────
+
+const DEFAULT_CHROOT_DIR = "/var/lib/aurodle/chroot";
+
+/// Resolve chroot path: $CHROOT_DIR or default.
+fn chrootDir() []const u8 {
+    return std.posix.getenv("CHROOT_DIR") orelse DEFAULT_CHROOT_DIR;
+}
+
+/// Ensure a clean chroot exists, creating it with mkarchroot if needed.
+fn ensureChroot(allocator: Allocator, err_writer: anytype, ec: color.Style) !bool {
+    const chroot_path = chrootDir();
+    const root_path = std.fmt.allocPrint(allocator, "{s}/root", .{chroot_path}) catch return false;
+    defer allocator.free(root_path);
+
+    // Check if chroot root already exists
+    std.fs.accessAbsolute(root_path, .{}) catch {
+        err_writer.print("{s}::{s} creating chroot at {s}...\n", .{ ec.blue, ec.reset, chroot_path }) catch {};
+        const exit_code = try utils.runInteractive(
+            allocator,
+            &.{ "sudo", "mkarchroot", root_path, "base-devel" },
+            null,
+        );
+        if (exit_code != 0) {
+            err_writer.print("{s}error:{s} failed to create chroot (exit {d})\n", .{ ec.red, ec.reset, exit_code }) catch {};
+            return false;
+        }
+    };
+    return true;
+}
+
 // ── Build Loop ───────────────────────────────────────────────────────
 
 fn buildLoop(
@@ -672,6 +703,17 @@ fn buildLoop(
     var failed_bases: std.StringHashMapUnmanaged(void) = .empty;
     defer failed_bases.deinit(self.allocator);
 
+    // Ensure chroot exists before starting builds
+    if (self.flags.chroot) {
+        if (!try ensureChroot(self.allocator, self.err_writer, ec)) {
+            return .{
+                .succeeded = try succeeded.toOwnedSlice(self.allocator),
+                .failed = try failed.toOwnedSlice(self.allocator),
+                .signal_aborted = false,
+            };
+        }
+    }
+
     for (plan.build_order, 0..) |entry, i| {
         // Skip if a dependency failed, propagating failure to downstream entries
         if (hasFailedDep(entry, &failed_bases)) {
@@ -686,16 +728,21 @@ fn buildLoop(
         const ver = if (devel.isVcsPackage(entry.name)) "latest" else entry.version;
         getStdout().print("{s}::{s} building {s} {s}...\n", .{ sc.blue, sc.reset, entry.name, ver }) catch {};
 
-        // Run makepkg -s (--syncdeps installs missing deps as --asdeps)
-        const makepkg_args: []const []const u8 = if (self.flags.rebuild)
-            &.{ "makepkg", "-sf", "--noconfirm" }
-        else
-            &.{ "makepkg", "-s", "--noconfirm" };
-        const exit_code = try utils.runInteractive(
-            self.allocator,
-            makepkg_args,
-            clone_dir,
-        );
+        // Run build command: makechrootpkg in chroot mode, makepkg otherwise
+        const exit_code = if (self.flags.chroot) blk: {
+            const chroot_path = chrootDir();
+            const args: []const []const u8 = if (self.flags.rebuild)
+                &.{ "makechrootpkg", "-c", "-r", chroot_path, "--", "--force" }
+            else
+                &.{ "makechrootpkg", "-c", "-r", chroot_path };
+            break :blk try utils.runInteractive(self.allocator, args, clone_dir);
+        } else blk: {
+            const args: []const []const u8 = if (self.flags.rebuild)
+                &.{ "makepkg", "-sf", "--noconfirm" }
+            else
+                &.{ "makepkg", "-s", "--noconfirm" };
+            break :blk try utils.runInteractive(self.allocator, args, clone_dir);
+        };
 
         if (exit_code != 0) {
             // Signal-killed (e.g., Ctrl+C -> SIGINT -> exit 130)
