@@ -163,7 +163,8 @@ pub fn outdated(self: *Commands, filter: []const []const u8) !ExitCode {
 
     if (outdated_list.items.len == 0) {
         if (!self.flags.quiet) {
-            getStdout().writeAll("all AUR packages are up to date\n") catch {};
+            const c = self.stdout_color;
+            getStdout().print("{s}::{s} there is nothing to do\n", .{ c.blue, c.reset }) catch {};
         }
         return .success;
     }
