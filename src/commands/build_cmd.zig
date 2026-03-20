@@ -30,14 +30,12 @@ const displayPlan = cmds.displayPlan;
 pub fn show(self: *Commands, target: []const u8) !ExitCode {
     const ec = self.stderr_color;
     const c = self.stdout_color;
-    const c_root = self.cache_root orelse blk: {
-        break :blk git.defaultCacheRoot(self.allocator) catch {
-            self.err_writer.print("{s}error:{s} could not determine cache directory (HOME not set)\n", .{ ec.red, ec.reset }) catch {};
-            return .general_error;
-        };
+    const cache = self.resolveCacheRoot() catch {
+        self.err_writer.print("{s}error:{s} could not determine cache directory (HOME not set)\n", .{ ec.red, ec.reset }) catch {};
+        return .general_error;
     };
-    const owns_root = self.cache_root == null;
-    defer if (owns_root) self.allocator.free(c_root);
+    const c_root = cache.path;
+    defer self.freeCacheRoot(cache);
 
     // Resolve pkgname to pkgbase
     const pkgbase = blk: {
@@ -112,14 +110,12 @@ pub fn clonePackages(self: *Commands, targets: []const []const u8) !ExitCode {
     }
 
     // Get cache root
-    const c_root = self.cache_root orelse blk: {
-        break :blk git.defaultCacheRoot(self.allocator) catch {
-            self.err_writer.print("{s}error:{s} could not determine cache directory (HOME not set)\n", .{ ec.red, ec.reset }) catch {};
-            return .general_error;
-        };
+    const cache = self.resolveCacheRoot() catch {
+        self.err_writer.print("{s}error:{s} could not determine cache directory (HOME not set)\n", .{ ec.red, ec.reset }) catch {};
+        return .general_error;
     };
-    const owns_root = self.cache_root == null;
-    defer if (owns_root) self.allocator.free(c_root);
+    const c_root = cache.path;
+    defer self.freeCacheRoot(cache);
 
     // Collect pkgbases to clone: either just targets, or full dep tree with --recurse
     var bases_to_clone: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -449,7 +445,8 @@ pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
     // Batch query AUR
     var names: std.ArrayListUnmanaged([]const u8) = .empty;
     defer names.deinit(self.allocator);
-    for (to_check) |pkg| try names.append(self.allocator, pkg.name);
+    try names.ensureUnusedCapacity(self.allocator, to_check.len);
+    for (to_check) |pkg| names.appendAssumeCapacity(pkg.name);
 
     const aur_pkgs = self.aur_client.multiInfo(names.items) catch |err| {
         try printError(err, self.err_writer, ec);
@@ -544,14 +541,12 @@ fn checkDevelUpgrades(
     devel_versions: *std.ArrayListUnmanaged([]const u8),
 ) !void {
     const ec2 = self.stderr_color;
-    const c_root = self.cache_root orelse blk: {
-        break :blk git.defaultCacheRoot(self.allocator) catch {
-            self.err_writer.print("{s}warning:{s} could not determine cache directory for --devel check\n", .{ ec2.yellow, ec2.reset }) catch {};
-            return;
-        };
+    const cache = self.resolveCacheRoot() catch {
+        self.err_writer.print("{s}warning:{s} could not determine cache directory for --devel check\n", .{ ec2.yellow, ec2.reset }) catch {};
+        return;
     };
-    const owns_root = self.cache_root == null;
-    defer if (owns_root) self.allocator.free(c_root);
+    const c_root = cache.path;
+    defer self.freeCacheRoot(cache);
 
     for (packages) |pkg| {
         if (!devel.isVcsPackage(pkg.name)) continue;
@@ -1026,6 +1021,7 @@ fn resolveConflicts(allocator: Allocator, conflicts: []const solver_mod.Conflict
 
     const w = stdout.deprecatedWriter();
     var removals: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer removals.deinit(allocator); // no-op after toOwnedSlice succeeds
 
     for (conflicts) |conflict| {
         switch (conflict.kind) {
@@ -1048,19 +1044,10 @@ fn resolveConflicts(allocator: Allocator, conflicts: []const solver_mod.Conflict
         }
 
         var buf: [16]u8 = undefined;
-        const n = stdin.read(&buf) catch {
-            removals.deinit(allocator);
-            return null;
-        };
-        if (n == 0) {
-            removals.deinit(allocator);
-            return null;
-        }
+        const n = stdin.read(&buf) catch return null;
+        if (n == 0) return null;
         const response = std.mem.trim(u8, buf[0..n], " \t\n\r");
-        if (response.len == 0 or (response[0] != 'y' and response[0] != 'Y')) {
-            removals.deinit(allocator);
-            return null;
-        }
+        if (response.len == 0 or (response[0] != 'y' and response[0] != 'Y')) return null;
 
         // Track packages accepted for removal (installed conflicts and replaces)
         switch (conflict.kind) {

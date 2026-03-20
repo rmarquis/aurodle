@@ -6,6 +6,7 @@ const solver_mod = @import("solver.zig");
 const repo_mod = @import("repo.zig");
 const pacman_mod = @import("pacman.zig");
 const devel = @import("devel.zig");
+const git = @import("git.zig");
 const utils = @import("utils.zig");
 const auth_mod = @import("auth.zig");
 const color = @import("color.zig");
@@ -178,6 +179,19 @@ pub const Commands = struct {
         return buf[0..count];
     }
 
+    pub const CacheRoot = struct { path: []const u8, owned: bool };
+
+    /// Resolve cache root: use the configured value, or fall back to the default.
+    /// Caller must call `freeCacheRoot` when done.
+    pub fn resolveCacheRoot(self: *Commands) !CacheRoot {
+        if (self.cache_root) |c| return .{ .path = c, .owned = false };
+        return .{ .path = try git.defaultCacheRoot(self.allocator), .owned = true };
+    }
+
+    pub fn freeCacheRoot(self: *Commands, root: CacheRoot) void {
+        if (root.owned) self.allocator.free(root.path);
+    }
+
     pub fn isIgnored(self: *Commands, name: []const u8) bool {
         for (self.flags.ignore) |ignored| {
             if (std.mem.eql(u8, ignored, name)) return true;
@@ -242,9 +256,34 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman, removals
     const stdout = getStdout();
     const verbose = if (pm) |p| p.verbose_pkg_lists else false;
 
-    // Warn about targets being reinstalled with the same version
-    if (pm) |p| {
-        for (plan.build_order) |entry| {
+    // Warn about AUR packages: out-of-date flag + reinstall detection (single pass)
+    for (plan.build_order) |entry| {
+        if (entry.out_of_date) |ts| {
+            const es = std.time.epoch.EpochSeconds{ .secs = @intCast(ts) };
+            const ed = es.getEpochDay();
+            const yd = ed.calculateYearDay();
+            const md = yd.calculateMonthDay();
+            const ds = es.getDaySeconds();
+            err_writer.print(
+                "{s}warning:{s} {s} has been flagged {s}out of date{s} on {s}{d}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z{s}\n",
+                .{
+                    ec.yellow,
+                    ec.reset,
+                    entry.name,
+                    ec.red,
+                    ec.reset,
+                    ec.yellow,
+                    yd.year,
+                    md.month.numeric(),
+                    md.day_index + 1,
+                    ds.getHoursIntoDay(),
+                    ds.getMinutesIntoHour(),
+                    ds.getSecondsIntoMinute(),
+                    ec.reset,
+                },
+            ) catch {};
+        }
+        if (pm) |p| {
             for (entry.target_names) |tname| {
                 if (devel.isVcsPackage(tname)) continue;
                 if (p.installedVersion(tname)) |old| {
@@ -254,6 +293,8 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman, removals
                 }
             }
         }
+    }
+    if (pm) |p| {
         for (plan.repo_targets) |name| {
             if (p.installedVersion(name)) |old| {
                 const new = p.syncVersion(name) orelse continue;
@@ -266,69 +307,34 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman, removals
 
     // Warn about detected conflicts (informational for resolve/buildorder commands;
     // sync/build handle these interactively before reaching displayPlan)
-    if (plan.conflicts.len > 0) {
-        for (plan.conflicts) |conflict| {
-            switch (conflict.kind) {
-                .aur_aur => err_writer.print(
-                    "{s}warning:{s} {s} and {s} are in conflict\n",
-                    .{ ec.yellow, ec.reset, conflict.package, conflict.conflicts_with },
-                ) catch {},
-                .aur_installed => err_writer.print(
-                    "{s}warning:{s} {s} conflicts with installed package {s}\n",
-                    .{ ec.yellow, ec.reset, conflict.package, conflict.conflicts_with },
-                ) catch {},
-                .repo_installed => err_writer.print(
-                    "{s}warning:{s} new dependency {s} conflicts with installed package {s}\n",
-                    .{ ec.yellow, ec.reset, conflict.package, conflict.conflicts_with },
-                ) catch {},
-                .aur_replaces => err_writer.print(
-                    "{s}warning:{s} aur/{s} replaces installed package {s}\n",
-                    .{ ec.yellow, ec.reset, conflict.package, conflict.conflicts_with },
-                ) catch {},
-                .repo_replaces => err_writer.print(
-                    "{s}warning:{s} {s} replaces installed package {s}\n",
-                    .{ ec.yellow, ec.reset, conflict.package, conflict.conflicts_with },
-                ) catch {},
-            }
+    for (plan.conflicts) |conflict| {
+        switch (conflict.kind) {
+            .aur_aur => err_writer.print(
+                "{s}warning:{s} {s} and {s} are in conflict\n",
+                .{ ec.yellow, ec.reset, conflict.package, conflict.conflicts_with },
+            ) catch {},
+            .aur_installed => err_writer.print(
+                "{s}warning:{s} {s} conflicts with installed package {s}\n",
+                .{ ec.yellow, ec.reset, conflict.package, conflict.conflicts_with },
+            ) catch {},
+            .repo_installed => err_writer.print(
+                "{s}warning:{s} new dependency {s} conflicts with installed package {s}\n",
+                .{ ec.yellow, ec.reset, conflict.package, conflict.conflicts_with },
+            ) catch {},
+            .aur_replaces => err_writer.print(
+                "{s}warning:{s} aur/{s} replaces installed package {s}\n",
+                .{ ec.yellow, ec.reset, conflict.package, conflict.conflicts_with },
+            ) catch {},
+            .repo_replaces => err_writer.print(
+                "{s}warning:{s} {s} replaces installed package {s}\n",
+                .{ ec.yellow, ec.reset, conflict.package, conflict.conflicts_with },
+            ) catch {},
         }
     }
 
     // Display provider selections (informational)
-    if (plan.provider_selections.len > 0) {
-        for (plan.provider_selections) |sel| {
-            err_writer.print("{s}::{s} {s} provider: {s}\n", .{ ec.blue, ec.reset, sel.dep_name, sel.chosen }) catch {};
-        }
-    }
-
-    // Warn about packages flagged out-of-date on AUR
-    {
-        for (plan.build_order) |entry| {
-            if (entry.out_of_date) |ts| {
-                const es = std.time.epoch.EpochSeconds{ .secs = @intCast(ts) };
-                const ed = es.getEpochDay();
-                const yd = ed.calculateYearDay();
-                const md = yd.calculateMonthDay();
-                const ds = es.getDaySeconds();
-                err_writer.print(
-                    "{s}warning:{s} {s} has been flagged {s}out of date{s} on {s}{d}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z{s}\n",
-                    .{
-                        ec.yellow,
-                        ec.reset,
-                        entry.name,
-                        ec.red,
-                        ec.reset,
-                        ec.yellow,
-                        yd.year,
-                        md.month.numeric(),
-                        md.day_index + 1,
-                        ds.getHoursIntoDay(),
-                        ds.getMinutesIntoHour(),
-                        ds.getSecondsIntoMinute(),
-                        ec.reset,
-                    },
-                ) catch {};
-            }
-        }
+    for (plan.provider_selections) |sel| {
+        err_writer.print("{s}::{s} {s} provider: {s}\n", .{ ec.blue, ec.reset, sel.dep_name, sel.chosen }) catch {};
     }
 
     stdout.writeAll("resolving dependencies...\n") catch {};

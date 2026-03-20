@@ -115,7 +115,8 @@ pub fn outdated(self: *Commands, filter: []const []const u8) !ExitCode {
     // Batch query AUR for all foreign package names
     var names: std.ArrayListUnmanaged([]const u8) = .empty;
     defer names.deinit(self.allocator);
-    for (to_check) |pkg| try names.append(self.allocator, pkg.name);
+    try names.ensureUnusedCapacity(self.allocator, to_check.len);
+    for (to_check) |pkg| names.appendAssumeCapacity(pkg.name);
 
     const aur_pkgs = self.aur_client.multiInfo(names.items) catch |err| {
         try printError(err, self.err_writer, self.stderr_color);
@@ -181,14 +182,12 @@ fn checkDevelPackages(
     devel_versions: *std.ArrayListUnmanaged([]const u8),
 ) !void {
     const ec2 = self.stderr_color;
-    const c_root = self.cache_root orelse blk: {
-        break :blk git.defaultCacheRoot(self.allocator) catch {
-            self.err_writer.print("{s}warning:{s} could not determine cache directory for --devel check\n", .{ ec2.yellow, ec2.reset }) catch {};
-            return;
-        };
+    const cache = self.resolveCacheRoot() catch {
+        self.err_writer.print("{s}warning:{s} could not determine cache directory for --devel check\n", .{ ec2.yellow, ec2.reset }) catch {};
+        return;
     };
-    const owns_root = self.cache_root == null;
-    defer if (owns_root) self.allocator.free(c_root);
+    const c_root = cache.path;
+    defer self.freeCacheRoot(cache);
 
     for (packages) |pkg| {
         if (!devel.isVcsPackage(pkg.name)) continue;
