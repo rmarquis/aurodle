@@ -415,6 +415,8 @@ pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
 /// With no arguments: upgrade all outdated AUR packages.
 /// With arguments: upgrade only the specified packages.
 pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
+    const sc = self.stdout_color;
+    getStdout().print("{s}::{s} Starting AUR upgrade...\n", .{ sc.blue, sc.reset }) catch {};
     const ec = self.stderr_color;
     const pm = self.pacman orelse {
         self.err_writer.print("{s}error:{s} pacman not initialized\n", .{ ec.red, ec.reset }) catch {};
