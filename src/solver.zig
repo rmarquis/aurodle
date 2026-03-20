@@ -247,6 +247,14 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                         }
                     }
 
+                    // Register alias so edges using the original name resolve correctly
+                    // (e.g. edge "pacaur" → "auracle" can find node "auracle-git").
+                    // Must be after all redirect paths (both provider and unknown cascade).
+                    if (!std.mem.eql(u8, actual_name, name)) {
+                        try self.graph.addAlias(name, actual_name);
+                        try visited.put(self.allocator, name, {});
+                    }
+
                     // Add node to graph
                     const node = try self.graph.addNode(actual_name, .{
                         .source = actual_resolution.source,
@@ -576,7 +584,8 @@ pub fn SolverImpl(comptime RegistryT: type) type {
 
             for (aur_nodes.items) |src_name| {
                 const node = self.graph.getNode(src_name).?;
-                for (node.edges.keys()) |dep_name| {
+                for (node.edges.keys()) |raw_dep| {
+                    const dep_name = self.graph.resolveName(raw_dep);
                     if (reverse.getPtr(dep_name)) |dependents| {
                         try dependents.append(alloc, src_name);
                         in_degree.getPtr(src_name).?.* += 1;
@@ -723,6 +732,8 @@ const NodeMeta = struct {
 
 const DepGraph = struct {
     nodes: std.StringHashMapUnmanaged(Node),
+    /// Maps virtual/provided names to actual node names (e.g. "auracle" → "auracle-git").
+    aliases: std.StringHashMapUnmanaged([]const u8) = .empty,
     allocator: Allocator,
 
     const Node = struct {
@@ -744,6 +755,7 @@ const DepGraph = struct {
             entry.value_ptr.edges.deinit(self.allocator);
         }
         self.nodes.deinit(self.allocator);
+        self.aliases.deinit(self.allocator);
     }
 
     fn addNode(self: *DepGraph, name: []const u8, meta: NodeMeta) !*Node {
@@ -759,8 +771,22 @@ const DepGraph = struct {
         return result.value_ptr;
     }
 
+    /// Register a virtual name as an alias for an actual node name.
+    fn addAlias(self: *DepGraph, virtual_name: []const u8, actual_name: []const u8) !void {
+        try self.aliases.put(self.allocator, virtual_name, actual_name);
+    }
+
+    /// Look up a node by name, following aliases if needed.
     fn getNode(self: *DepGraph, name: []const u8) ?*Node {
-        return self.nodes.getPtr(name);
+        if (self.nodes.getPtr(name)) |node| return node;
+        // Follow alias: "auracle" → "auracle-git"
+        const actual = self.aliases.get(name) orelse return null;
+        return self.nodes.getPtr(actual);
+    }
+
+    /// Resolve a name through aliases (for edge lookups in topoSort).
+    fn resolveName(self: *DepGraph, name: []const u8) []const u8 {
+        return self.aliases.get(name) orelse name;
     }
 };
 
@@ -1888,14 +1914,17 @@ test "resolve redirects deferred AUR provider dependency to real name" {
     defer plan.deinit(testing.allocator);
 
     // Build order should show "auracle-git", not "auracle"
-    var found_auracle_git = false;
-    var found_auracle = false;
-    for (plan.build_order) |entry| {
-        if (std.mem.eql(u8, entry.name, "auracle-git")) found_auracle_git = true;
-        if (std.mem.eql(u8, entry.name, "auracle")) found_auracle = true;
+    try testing.expectEqual(@as(usize, 2), plan.build_order.len);
+    // auracle-git must come before pacaur (dependency ordering)
+    try testing.expectEqualStrings("auracle-git", plan.build_order[0].name);
+    try testing.expectEqualStrings("pacaur", plan.build_order[1].name);
+    // pacaur must know it depends on auracle-git (for sync DB refresh)
+    try testing.expect(plan.build_order[1].aur_dep_bases.len > 0);
+    var has_auracle_git_dep = false;
+    for (plan.build_order[1].aur_dep_bases) |dep_base| {
+        if (std.mem.eql(u8, dep_base, "auracle-git")) has_auracle_git_dep = true;
     }
-    try testing.expect(found_auracle_git);
-    try testing.expect(!found_auracle);
+    try testing.expect(has_auracle_git_dep);
 }
 
 test "resolve redirects virtual name to provider package" {
