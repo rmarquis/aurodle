@@ -12,9 +12,9 @@ const c = @cImport({
 pub const SigLevel = enum(c_int) {
     use_default = 1 << 30,
     package = 1 << 0,
-    package_optional = (1 << 0) | (1 << 1),
+    package_optional = 1 << 1,
     database = 1 << 10,
-    database_optional = (1 << 10) | (1 << 11),
+    database_optional = 1 << 11,
 };
 
 /// Dependency version constraint operator.
@@ -50,7 +50,7 @@ pub const AlpmError = error{
 
 /// Type-safe iterator over alpm_list_t, yielding typed Zig values.
 /// Hides linked-list traversal and void* casting.
-pub fn AlpmListIterator(comptime T: type, comptime extractFn: fn (?*c.alpm_list_t) T) type {
+pub fn AlpmListIterator(comptime T: type, comptime extractFn: fn (*c.alpm_list_t) T) type {
     return struct {
         current: ?*c.alpm_list_t,
 
@@ -62,19 +62,17 @@ pub fn AlpmListIterator(comptime T: type, comptime extractFn: fn (?*c.alpm_list_
     };
 }
 
-fn extractPackage(node: ?*c.alpm_list_t) AlpmPackage {
-    const n = node.?;
-    const raw: *c.alpm_pkg_t = @ptrCast(@alignCast(n.data));
+fn extractPackage(node: *c.alpm_list_t) AlpmPackage {
+    const raw: *c.alpm_pkg_t = @ptrCast(@alignCast(node.data));
     return .{ .raw = raw };
 }
 
-fn extractDependency(node: ?*c.alpm_list_t) Dependency {
-    const n = node.?;
-    const raw: *c.alpm_depend_t = @ptrCast(@alignCast(n.data));
+fn extractDependency(node: *c.alpm_list_t) Dependency {
+    const raw: *c.alpm_depend_t = @ptrCast(@alignCast(node.data));
     return .{
-        .name = sliceFromCStr(raw.name),
-        .version = if (raw.version) |v| sliceFromCStr(v) else "",
-        .desc = if (raw.desc) |d| sliceFromCStr(d) else null,
+        .name = std.mem.span(raw.name),
+        .version = if (raw.version) |v| std.mem.span(v) else "",
+        .desc = if (raw.desc) |d| std.mem.span(d) else null,
         .name_hash = raw.name_hash,
         .mod = @enumFromInt(raw.mod),
     };
@@ -95,8 +93,8 @@ pub const Handle = struct {
     pub fn init(root: []const u8, dbpath: []const u8) AlpmError!Handle {
         var err: c.alpm_errno_t = 0;
 
-        const c_root = toCString(root);
-        const c_dbpath = toCString(dbpath);
+        const c_root = CStringBuf.init(root);
+        const c_dbpath = CStringBuf.init(dbpath);
 
         const handle = c.alpm_initialize(c_root.ptr(), c_dbpath.ptr(), &err);
         if (handle == null) return error.HandleInitFailed;
@@ -115,7 +113,7 @@ pub const Handle = struct {
 
     /// Register a sync database by name (e.g., "core", "extra", "aurpkgs").
     pub fn registerSyncDb(self: Handle, name: []const u8, siglevel: SigLevel) AlpmError!Database {
-        const c_name = toCString(name);
+        const c_name = CStringBuf.init(name);
         const db = c.alpm_register_syncdb(self.raw, c_name.ptr(), @intFromEnum(siglevel));
         if (db == null) return error.DatabaseRegistrationFailed;
         return .{ .raw = db.? };
@@ -144,12 +142,12 @@ pub const Database = struct {
 
     /// Get the database name (e.g., "core", "extra", "local").
     pub fn getName(self: Database) []const u8 {
-        return sliceFromCStr(c.alpm_db_get_name(self.raw).?);
+        return std.mem.span(c.alpm_db_get_name(self.raw).?);
     }
 
     /// Look up a package by exact name. Returns null if not found.
     pub fn getPackage(self: Database, name: []const u8) ?AlpmPackage {
-        const c_name = toCString(name);
+        const c_name = CStringBuf.init(name);
         const pkg = c.alpm_db_get_pkg(self.raw, c_name.ptr());
         if (pkg == null) return null;
         return .{ .raw = pkg.? };
@@ -163,7 +161,7 @@ pub const Database = struct {
     /// Add a mirror server URL to this database.
     /// Required before dbUpdate() can download database files.
     pub fn addServer(self: Database, url: []const u8) AlpmError!void {
-        const c_url = toCString(url);
+        const c_url = CStringBuf.init(url);
         const ret = c.alpm_db_add_server(self.raw, c_url.ptr());
         if (ret != 0) return error.InvalidArgument;
     }
@@ -178,21 +176,21 @@ pub const AlpmPackage = struct {
     raw: *c.alpm_pkg_t,
 
     pub fn getName(self: AlpmPackage) []const u8 {
-        return sliceFromCStr(c.alpm_pkg_get_name(self.raw).?);
+        return std.mem.span(c.alpm_pkg_get_name(self.raw).?);
     }
 
     pub fn getVersion(self: AlpmPackage) []const u8 {
-        return sliceFromCStr(c.alpm_pkg_get_version(self.raw).?);
+        return std.mem.span(c.alpm_pkg_get_version(self.raw).?);
     }
 
     pub fn getBase(self: AlpmPackage) ?[]const u8 {
         const raw = c.alpm_pkg_get_base(self.raw) orelse return null;
-        return sliceFromCStr(raw);
+        return std.mem.span(raw);
     }
 
     pub fn getDesc(self: AlpmPackage) ?[]const u8 {
         const raw = c.alpm_pkg_get_desc(self.raw) orelse return null;
-        return sliceFromCStr(raw);
+        return std.mem.span(raw);
     }
 
     pub fn getDepends(self: AlpmPackage) DepIterator {
@@ -241,8 +239,8 @@ pub const AlpmPackage = struct {
 /// Handles epochs, pkgrel, and alpha/beta suffixes correctly.
 /// Pure function — no handle needed.
 pub fn vercmp(a: []const u8, b: []const u8) i32 {
-    const c_a = toCString(a);
-    const c_b = toCString(b);
+    const c_a = CStringBuf.init(a);
+    const c_b = CStringBuf.init(b);
     return c.alpm_pkg_vercmp(c_a.ptr(), c_b.ptr());
 }
 
@@ -250,7 +248,7 @@ pub fn vercmp(a: []const u8, b: []const u8) i32 {
 /// Uses libalpm's native satisfier which checks both name and provides.
 /// Returns null if no satisfier found.
 pub fn findSatisfier(pkgcache: PackageIterator, depstring: []const u8) ?AlpmPackage {
-    const c_dep = toCString(depstring);
+    const c_dep = CStringBuf.init(depstring);
     const pkg = c.alpm_find_satisfier(pkgcache.current, c_dep.ptr());
     if (pkg == null) return null;
     return .{ .raw = pkg.? };
@@ -258,15 +256,16 @@ pub fn findSatisfier(pkgcache: PackageIterator, depstring: []const u8) ?AlpmPack
 
 // ── Internal Helpers ─────────────────────────────────────────────────────
 
-/// Null-terminated buffer for C string conversion.
+/// Null-terminated stack buffer for Zig slice → C string conversion.
 /// Package names and paths in the alpm API are always short (< 256 bytes).
 const CStringBuf = struct {
     buf: [256]u8 = .{0} ** 256,
+    len: usize = 0,
 
     fn init(s: []const u8) CStringBuf {
-        var result = CStringBuf{};
+        var result = CStringBuf{ .len = s.len };
         if (s.len >= result.buf.len) {
-            @panic("string exceeds alpm toCString buffer (256 bytes)");
+            @panic("string exceeds alpm CStringBuf buffer (256 bytes)");
         }
         @memcpy(result.buf[0..s.len], s);
         // buf is zero-initialized, so buf[s.len] is already 0
@@ -274,21 +273,9 @@ const CStringBuf = struct {
     }
 
     fn ptr(self: *const CStringBuf) [*:0]const u8 {
-        // Find the sentinel position (first zero byte)
-        var len: usize = 0;
-        while (len < self.buf.len and self.buf[len] != 0) : (len += 1) {}
-        return @ptrCast(self.buf[0..len :0]);
+        return @ptrCast(self.buf[0..self.len :0]);
     }
 };
-
-fn toCString(s: []const u8) CStringBuf {
-    return CStringBuf.init(s);
-}
-
-/// Convert a C null-terminated string to a Zig slice.
-fn sliceFromCStr(ptr: [*:0]const u8) []const u8 {
-    return std.mem.span(ptr);
-}
 
 // ── Tests ────────────────────────────────────────────────────────────────
 // These are integration tests — they require libalpm.so and a real
@@ -516,16 +503,16 @@ test "vercmp: transitivity property" {
     }
 }
 
-test "toCString roundtrip preserves content" {
+test "CStringBuf roundtrip preserves content" {
     const input = "test-package";
-    const cstr = toCString(input);
-    const back = sliceFromCStr(cstr.ptr());
+    const cstr = CStringBuf.init(input);
+    const back = std.mem.span(cstr.ptr());
     try std.testing.expectEqualStrings(input, back);
 }
 
-test "toCString handles empty string" {
-    const cstr = toCString("");
-    const back = sliceFromCStr(cstr.ptr());
+test "CStringBuf handles empty string" {
+    const cstr = CStringBuf.init("");
+    const back = std.mem.span(cstr.ptr());
     try std.testing.expectEqualStrings("", back);
 }
 
