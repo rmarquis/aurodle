@@ -99,9 +99,9 @@ pub const Auth = struct {
     /// Spawn a background thread that refreshes credentials periodically.
     /// No-op if the auth tool doesn't support credential caching (e.g. su).
     pub fn startKeepalive(self: *Auth) void {
-        if (self.validationArgv() == null) return;
+        const argv = self.validationArgv() orelse return;
         self.stop_keepalive.store(false, .release);
-        self.keepalive_thread = std.Thread.spawn(.{}, keepaliveLoop, .{self}) catch return;
+        self.keepalive_thread = std.Thread.spawn(.{}, keepaliveLoop, .{ self, argv }) catch return;
     }
 
     /// Signal the keepalive thread to stop and wait for it to exit.
@@ -217,13 +217,13 @@ pub const Auth = struct {
     }
 };
 
-/// Background loop that refreshes credentials every 150 seconds.
+const keepalive_interval_secs = 150;
+
+/// Background loop that refreshes credentials periodically.
 /// Checks the stop flag each second for responsive shutdown.
-fn keepaliveLoop(auth: *Auth) void {
-    const argv = auth.validationArgv() orelse return;
+fn keepaliveLoop(auth: *Auth, argv: []const []const u8) void {
     while (!auth.stop_keepalive.load(.acquire)) {
-        // Sleep in 1-second increments so we can respond to stop quickly.
-        for (0..150) |_| {
+        for (0..keepalive_interval_secs) |_| {
             if (auth.stop_keepalive.load(.acquire)) return;
             std.Thread.sleep(std.time.ns_per_s);
         }
