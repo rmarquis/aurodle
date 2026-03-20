@@ -85,10 +85,7 @@ pub const Repository = struct {
         const repo_name = derived_name orelse DEFAULT_REPO_NAME;
         const owns_name = derived_name != null;
 
-        const db_filename = try std.fmt.allocPrint(allocator, "{s}.db.tar.xz", .{repo_name});
-        defer allocator.free(db_filename);
-
-        const db_path = try std.fs.path.join(allocator, &.{ repo_dir, db_filename });
+        const db_path = try std.fmt.allocPrint(allocator, "{s}/{s}.db.tar.xz", .{ repo_dir, repo_name });
         errdefer allocator.free(db_path);
 
         return .{
@@ -262,67 +259,22 @@ pub const Repository = struct {
             try uninstalled.put(self.allocator, name, {});
         }
 
-        // Find stale clones: directories in cache_dir matching uninstalled packages
-        var stale_clones: std.ArrayList([]const u8) = .empty;
-        errdefer {
-            for (stale_clones.items) |s| self.allocator.free(s);
-            stale_clones.deinit(self.allocator);
-        }
-
-        if (std.fs.cwd().openDir(self.cache_dir, .{ .iterate = true })) |dir_handle| {
-            var cache = dir_handle;
-            defer cache.close();
-
-            var it = cache.iterate();
-            while (try it.next()) |entry| {
-                if (entry.kind != .directory) continue;
-                if (std.mem.eql(u8, entry.name, self.repo_name)) continue;
-
-                if (uninstalled.contains(entry.name)) {
-                    try stale_clones.append(self.allocator, try self.allocator.dupe(u8, entry.name));
-                }
-            }
-        } else |_| {}
-
-        // Find stale package files in repo_dir matching uninstalled packages
-        var stale_packages: std.ArrayList([]const u8) = .empty;
-        errdefer {
-            for (stale_packages.items) |s| self.allocator.free(s);
-            stale_packages.deinit(self.allocator);
-        }
-
-        if (std.fs.cwd().openDir(self.repo_dir, .{ .iterate = true })) |dir_handle| {
-            var repo_dir = dir_handle;
-            defer repo_dir.close();
-
-            var it = repo_dir.iterate();
-            while (try it.next()) |entry| {
-                if (entry.kind != .file) continue;
-                if (std.mem.indexOf(u8, entry.name, ".pkg.tar.") == null) continue;
-                if (self.isDbFile(entry.name)) continue;
-
-                if (parsePackageFilename(entry.name)) |parsed| {
-                    if (uninstalled.contains(parsed.name)) {
-                        try stale_packages.append(self.allocator, try self.allocator.dupe(u8, entry.name));
-                    }
-                }
-            }
-        } else |_| {}
-
-        return .{
-            .removed_clones = try stale_clones.toOwnedSlice(self.allocator),
-            .removed_packages = try stale_packages.toOwnedSlice(self.allocator),
-            .bytes_freed = 0,
-        };
+        return self.collectCleanResult(&uninstalled);
     }
 
     /// Identify ALL artifacts for removal — every clone dir and package file.
     /// Returns a plan — actual deletion is done by cleanExecute().
     pub fn cleanAll(self: *const Repository) !CleanResult {
-        var all_clones: std.ArrayList([]const u8) = .empty;
+        return self.collectCleanResult(null);
+    }
+
+    /// Shared implementation for clean/cleanAll. When `filter` is non-null,
+    /// only collects entries whose names are in the set; otherwise collects all.
+    fn collectCleanResult(self: *const Repository, filter: ?*const std.StringHashMapUnmanaged(void)) !CleanResult {
+        var clones: std.ArrayList([]const u8) = .empty;
         errdefer {
-            for (all_clones.items) |s| self.allocator.free(s);
-            all_clones.deinit(self.allocator);
+            for (clones.items) |s| self.allocator.free(s);
+            clones.deinit(self.allocator);
         }
 
         if (std.fs.cwd().openDir(self.cache_dir, .{ .iterate = true })) |dir_handle| {
@@ -333,14 +285,17 @@ pub const Repository = struct {
             while (try it.next()) |entry| {
                 if (entry.kind != .directory) continue;
                 if (std.mem.eql(u8, entry.name, self.repo_name)) continue;
-                try all_clones.append(self.allocator, try self.allocator.dupe(u8, entry.name));
+                if (filter) |f| {
+                    if (!f.contains(entry.name)) continue;
+                }
+                try clones.append(self.allocator, try self.allocator.dupe(u8, entry.name));
             }
         } else |_| {}
 
-        var all_packages: std.ArrayList([]const u8) = .empty;
+        var packages: std.ArrayList([]const u8) = .empty;
         errdefer {
-            for (all_packages.items) |s| self.allocator.free(s);
-            all_packages.deinit(self.allocator);
+            for (packages.items) |s| self.allocator.free(s);
+            packages.deinit(self.allocator);
         }
 
         if (std.fs.cwd().openDir(self.repo_dir, .{ .iterate = true })) |dir_handle| {
@@ -352,13 +307,17 @@ pub const Repository = struct {
                 if (entry.kind != .file) continue;
                 if (std.mem.indexOf(u8, entry.name, ".pkg.tar.") == null) continue;
                 if (self.isDbFile(entry.name)) continue;
-                try all_packages.append(self.allocator, try self.allocator.dupe(u8, entry.name));
+                if (filter) |f| {
+                    const parsed = parsePackageFilename(entry.name) orelse continue;
+                    if (!f.contains(parsed.name)) continue;
+                }
+                try packages.append(self.allocator, try self.allocator.dupe(u8, entry.name));
             }
         } else |_| {}
 
         return .{
-            .removed_clones = try all_clones.toOwnedSlice(self.allocator),
-            .removed_packages = try all_packages.toOwnedSlice(self.allocator),
+            .removed_clones = try clones.toOwnedSlice(self.allocator),
+            .removed_packages = try packages.toOwnedSlice(self.allocator),
             .bytes_freed = 0,
         };
     }
