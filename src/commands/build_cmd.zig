@@ -245,7 +245,7 @@ fn syncFiltered(self: *Commands, filtered: []const []const u8) !ExitCode {
             }
         }
         if (aurpkgs_targets.items.len > 0 or plan.repo_targets.len > 0) {
-            try installAllTargets(self, aurpkgs_targets.items, plan.repo_targets, removals);
+            try installAllTargets(self, aurpkgs_targets.items, plan.repo_targets);
         }
         if (aurpkgs_targets.items.len == 0 and plan.repo_targets.len == 0) {
             getStdout().writeAll(" nothing to do -- all targets are up to date\n") catch {};
@@ -302,13 +302,13 @@ fn syncFiltered(self: *Commands, filtered: []const []const u8) !ExitCode {
     }
 
     if (build_result.failed.len == 0) {
-        try installAllTargets(self, aur_targets.items, plan.repo_targets, removals);
+        try installAllTargets(self, aur_targets.items, plan.repo_targets);
     } else {
         // Install only targets whose builds succeeded
         const installable = try filterInstallable(self, aur_targets.items, build_result);
         defer self.allocator.free(installable);
         if (installable.len > 0 or plan.repo_targets.len > 0) {
-            try installAllTargets(self, installable, plan.repo_targets, removals);
+            try installAllTargets(self, installable, plan.repo_targets);
         }
         printBuildSummary(build_result, self.err_writer, ec);
         return .build_failed;
@@ -892,7 +892,7 @@ fn getEditor() []const u8 {
 
 /// Install AUR targets (from aurpkgs) and repo targets (from their sync db)
 /// in a single `pacman -S` transaction.
-fn installAllTargets(self: *Commands, aurpkgs_names: []const []const u8, repo_names: []const []const u8, removals: []const []const u8) !void {
+fn installAllTargets(self: *Commands, aurpkgs_names: []const []const u8, repo_names: []const []const u8) !void {
     var argv: std.ArrayListUnmanaged([]const u8) = .empty;
     defer argv.deinit(self.allocator);
 
@@ -908,16 +908,10 @@ fn installAllTargets(self: *Commands, aurpkgs_names: []const []const u8, repo_na
         try argv.append(self.allocator, "--needed");
     }
 
-    if (self.flags.noconfirm) {
-        try argv.append(self.allocator, "--noconfirm");
-    }
-
-    // When we have pre-resolved conflicts/replacements, tell pacman to skip
-    // re-prompting. --ask 36 = 4 (auto-accept conflicts) + 32 (auto-accept replacements).
-    if (removals.len > 0) {
-        try argv.append(self.allocator, "--ask");
-        try argv.append(self.allocator, "36");
-    }
+    // Always pass --noconfirm and --ask 36: the user already confirmed via
+    // aurodle's "Proceed with installation?" prompt, so pacman should not
+    // re-prompt. --ask 36 = 4 (auto-accept conflicts) + 32 (auto-accept replacements).
+    try argv.appendSlice(self.allocator, &.{ "--noconfirm", "--ask", "36" });
 
     var qualified_names: std.ArrayListUnmanaged([]const u8) = .empty;
     defer {
