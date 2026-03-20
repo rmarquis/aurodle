@@ -521,12 +521,6 @@ pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
         return .success;
     }
 
-    // Display what will be upgraded
-    const stdout = getStdout();
-    const c = self.stdout_color;
-    stdout.print("{s}::{s} {d} package(s) to upgrade:\n", .{ c.blue, c.reset, outdated_display.items.len }) catch {};
-    query.formatOutdated(outdated_display.items, c);
-
     // Delegate to sync for the actual build+install workflow.
     // Use syncFiltered to skip ignore prompting (already handled above).
     return syncFiltered(self, to_upgrade.items);
