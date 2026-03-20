@@ -275,6 +275,9 @@ fn syncFiltered(self: *Commands, filtered: []const []const u8) !ExitCode {
         try reviewPackages(self, plan.build_order, c_root);
     }
 
+    // Phase 4.5: Acquire credentials now that the user has committed
+    if (try acquireAuth(self)) |exit| return exit;
+
     // Phase 5: Build
     try repository.ensureExists();
     const build_result = try buildLoop(self, plan, repository, c_root);
@@ -386,6 +389,9 @@ pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
     if (!self.flags.noshow) {
         try reviewPackages(self, plan.build_order, c_root);
     }
+
+    // Acquire credentials now that the user has committed
+    if (try acquireAuth(self)) |exit| return exit;
 
     // Build
     try repository.ensureExists();
@@ -982,6 +988,22 @@ fn printBuildSummary(result: BuildResult, err_writer: std.io.AnyWriter, ec: colo
             f.exit_code,
         }) catch {};
     }
+}
+
+/// Acquire privilege credentials and start the keepalive thread.
+/// Called after the user has confirmed the plan and reviewed PKGBUILDs,
+/// so we don't prompt for a password if they're going to bail out anyway.
+/// Returns an ExitCode if acquisition failed, null on success.
+fn acquireAuth(self: *Commands) !?ExitCode {
+    const auth = self.auth orelse return null;
+    const ec = self.stderr_color;
+    const cred_exit = auth.acquireCredentials() catch 0;
+    if (cred_exit != 0) {
+        self.err_writer.print("{s}error:{s} credential acquisition failed\n", .{ ec.red, ec.reset }) catch {};
+        return .general_error;
+    }
+    auth.startKeepalive();
+    return null;
 }
 
 /// Copy the local AUR repo DB to pacman's sync cache so that subsequent

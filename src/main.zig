@@ -390,16 +390,10 @@ fn runWithFullStack(
     };
     defer auth.deinit();
 
-    // Acquire credentials upfront so long builds don't hit a surprise prompt
-    if (parsed.operation.isBuildOperation()) {
-        const cred_exit = auth.acquireCredentials() catch 0;
-        if (cred_exit != 0) {
-            const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
-            stderr.deprecatedWriter().writeAll("error: credential acquisition failed\n") catch {};
-            return .general_error;
-        }
-        auth.startKeepalive();
-    }
+    // Note: credential acquisition is deferred to build_cmd.zig, after the user
+    // has confirmed the plan and reviewed PKGBUILDs.  Auth.init() is still done
+    // here so the struct is available; acquireCredentials()+startKeepalive() are
+    // called just before the build loop begins.
 
     // Get cache root for git operations
     const cache_root = git.defaultCacheRoot(allocator) catch {
