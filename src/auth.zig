@@ -17,6 +17,10 @@ pub const Auth = struct {
     prefix: []const []const u8,
     /// For substitute mode: index of the token containing %c.
     subst_index: ?usize,
+    /// Background thread that periodically refreshes credentials.
+    keepalive_thread: ?std.Thread = null,
+    /// Signal for the keepalive thread to exit.
+    stop_keepalive: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     const Kind = enum {
         /// sudo-style: prefix ++ command argv
@@ -34,7 +38,8 @@ pub const Auth = struct {
         return initFromPath(allocator);
     }
 
-    pub fn deinit(self: Auth) void {
+    pub fn deinit(self: *Auth) void {
+        self.stopKeepalive();
         for (self.prefix) |tok| self.allocator.free(tok);
         self.allocator.free(self.prefix);
     }
@@ -79,6 +84,42 @@ pub const Auth = struct {
         const wrapped = try self.wrap(argv);
         defer self.freeWrapped(wrapped);
         return utils.runInteractive(self.allocator, wrapped, cwd);
+    }
+
+    // ── Credential keepalive ───────────────────────────────────────
+
+    /// Prompt for credentials upfront by running a no-op validation command.
+    /// Returns the exit code (0 = success). For tools without a validation
+    /// command (su), this is a no-op that returns 0.
+    pub fn acquireCredentials(self: *Auth) !u8 {
+        const argv = self.validationArgv() orelse return 0;
+        return utils.runInteractive(self.allocator, argv, null);
+    }
+
+    /// Spawn a background thread that refreshes credentials periodically.
+    /// No-op if the auth tool doesn't support credential caching (e.g. su).
+    pub fn startKeepalive(self: *Auth) void {
+        if (self.validationArgv() == null) return;
+        self.stop_keepalive.store(false, .release);
+        self.keepalive_thread = std.Thread.spawn(.{}, keepaliveLoop, .{self}) catch return;
+    }
+
+    /// Signal the keepalive thread to stop and wait for it to exit.
+    pub fn stopKeepalive(self: *Auth) void {
+        const thread = self.keepalive_thread orelse return;
+        self.stop_keepalive.store(true, .release);
+        thread.join();
+        self.keepalive_thread = null;
+    }
+
+    /// Return the argv to validate/refresh credentials, or null if the
+    /// auth tool has no credential cache (su, run0, unknown).
+    fn validationArgv(self: Auth) ?[]const []const u8 {
+        if (self.prefix.len == 0) return null;
+        const tool = self.prefix[0];
+        if (std.mem.eql(u8, tool, "sudo")) return &.{ "sudo", "-v" };
+        if (std.mem.eql(u8, tool, "doas")) return &.{ "doas", "true" };
+        return null;
     }
 
     // ── Internal ─────────────────────────────────────────────────────
@@ -175,6 +216,22 @@ pub const Auth = struct {
         }
     }
 };
+
+/// Background loop that refreshes credentials every 150 seconds.
+/// Checks the stop flag each second for responsive shutdown.
+fn keepaliveLoop(auth: *Auth) void {
+    const argv = auth.validationArgv() orelse return;
+    while (!auth.stop_keepalive.load(.acquire)) {
+        // Sleep in 1-second increments so we can respond to stop quickly.
+        for (0..150) |_| {
+            if (auth.stop_keepalive.load(.acquire)) return;
+            std.Thread.sleep(std.time.ns_per_s);
+        }
+        // Silently refresh credentials.
+        const result = utils.runCommand(auth.allocator, argv) catch continue;
+        result.deinit(auth.allocator);
+    }
+}
 
 /// Check if a binary exists on PATH.
 fn findOnPath(name: []const u8) bool {
@@ -373,6 +430,41 @@ test "Auth.init empty config returns error" {
 test "Auth.init whitespace-only config returns error" {
     const alloc = std.testing.allocator;
     try std.testing.expectError(error.EmptyPacmanAuth, Auth.init(alloc, "   "));
+}
+
+test "validationArgv returns sudo -v for sudo" {
+    const alloc = std.testing.allocator;
+    var auth = try Auth.init(alloc, "sudo");
+    defer auth.deinit();
+    const argv = auth.validationArgv().?;
+    try std.testing.expectEqual(@as(usize, 2), argv.len);
+    try std.testing.expectEqualStrings("sudo", argv[0]);
+    try std.testing.expectEqualStrings("-v", argv[1]);
+}
+
+test "validationArgv returns doas true for doas" {
+    const alloc = std.testing.allocator;
+    var auth = try Auth.init(alloc, "doas");
+    defer auth.deinit();
+    const argv = auth.validationArgv().?;
+    try std.testing.expectEqual(@as(usize, 2), argv.len);
+    try std.testing.expectEqualStrings("doas", argv[0]);
+    try std.testing.expectEqualStrings("true", argv[1]);
+}
+
+test "validationArgv returns null for su" {
+    const alloc = std.testing.allocator;
+    var auth = try Auth.init(alloc, "su -c %c");
+    defer auth.deinit();
+    try std.testing.expectEqual(@as(?[]const []const u8, null), auth.validationArgv());
+}
+
+test "stopKeepalive is safe when no thread started" {
+    const alloc = std.testing.allocator;
+    var auth = try Auth.init(alloc, "su -c %c");
+    defer auth.deinit();
+    auth.stopKeepalive(); // should not crash
+    try std.testing.expectEqual(@as(?std.Thread, null), auth.keepalive_thread);
 }
 
 test "findOnPath finds existing binary" {

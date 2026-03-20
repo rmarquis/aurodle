@@ -390,6 +390,17 @@ fn runWithFullStack(
     };
     defer auth.deinit();
 
+    // Acquire credentials upfront so long builds don't hit a surprise prompt
+    if (parsed.operation.isBuildOperation()) {
+        const cred_exit = auth.acquireCredentials() catch 0;
+        if (cred_exit != 0) {
+            const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
+            stderr.deprecatedWriter().writeAll("error: credential acquisition failed\n") catch {};
+            return .general_error;
+        }
+        auth.startKeepalive();
+    }
+
     // Get cache root for git operations
     const cache_root = git.defaultCacheRoot(allocator) catch {
         const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
