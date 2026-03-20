@@ -517,9 +517,7 @@ pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
     }
 
     if (to_upgrade.items.len == 0) {
-        const stdout = getStdout();
-        const c = self.stdout_color;
-        stdout.print("{s}::{s} there is nothing to do\n", .{ c.blue, c.reset }) catch {};
+        getStdout().writeAll(" there is nothing to do\n") catch {};
         return .success;
     }
 
