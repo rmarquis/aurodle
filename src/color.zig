@@ -56,6 +56,7 @@ test "enabled style has non-empty escape codes" {
     try testing.expect(s.green.len > 0);
     try testing.expect(s.yellow.len > 0);
     try testing.expect(s.blue.len > 0);
+    try testing.expect(s.magenta.len > 0);
     try testing.expect(s.cyan.len > 0);
     try testing.expect(s.bold.len > 0);
     try testing.expect(s.reset.len > 0);
@@ -67,6 +68,7 @@ test "disabled style has empty strings" {
     try testing.expectEqualStrings("", s.green);
     try testing.expectEqualStrings("", s.yellow);
     try testing.expectEqualStrings("", s.blue);
+    try testing.expectEqualStrings("", s.magenta);
     try testing.expectEqualStrings("", s.cyan);
     try testing.expectEqualStrings("", s.bold);
     try testing.expectEqualStrings("", s.reset);
