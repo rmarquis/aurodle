@@ -257,12 +257,7 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
 
         fn resolveAur(self: *Self, name: []const u8) !?Resolution {
             const pkg = try self.aur_client.info(name) orelse return null;
-            return .{
-                .name = pkg.name,
-                .source = .aur,
-                .version = pkg.version,
-                .aur_pkg = pkg,
-            };
+            return makeAurResolution(pkg, null);
         }
 
         fn resolveProvider(self: *Self, name: []const u8) !?Resolution {
@@ -271,58 +266,52 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
                 return self.resolveProviderByName(name, chosen_name);
             }
 
-            // Use findAllProviders if available, otherwise fall back to findProvider
-            if (comptime @hasDecl(PacmanT, "findAllProviders")) {
-                const all = try self.pacman.findAllProviders(self.allocator, name);
-                defer self.allocator.free(all);
+            const all = try self.pacman.findAllProviders(self.allocator, name);
+            defer self.allocator.free(all);
 
-                if (all.len == 0) return null;
+            if (all.len == 0) return null;
 
-                // Auto-select if exactly one is installed
-                if (all.len > 1) {
-                    var installed_idx: ?usize = null;
-                    var installed_count: usize = 0;
-                    for (all, 0..) |match, i| {
-                        if (self.pacman.isInstalled(match.provider_name)) {
-                            installed_idx = i;
-                            installed_count += 1;
-                        }
-                    }
-                    if (installed_count == 1) {
-                        const provider = all[installed_idx.?];
-                        try self.cacheProviderChoice(name, provider.provider_name);
-                        return self.makeProviderResolution(name, provider);
+            // Auto-select if exactly one is installed
+            if (all.len > 1) {
+                var installed_idx: ?usize = null;
+                var installed_count: usize = 0;
+                for (all, 0..) |match, i| {
+                    if (self.pacman.isInstalled(match.provider_name)) {
+                        installed_idx = i;
+                        installed_count += 1;
                     }
                 }
-
-                // Single match or no chooser — use first
-                if (all.len == 1 or self.provider_chooser == null) {
-                    const provider = all[0];
-                    if (all.len > 1) {
-                        try self.cacheProviderChoice(name, provider.provider_name);
-                    }
+                if (installed_count == 1) {
+                    const provider = all[installed_idx.?];
+                    try self.cacheProviderChoice(name, provider.provider_name);
                     return self.makeProviderResolution(name, provider);
                 }
+            }
 
-                // Multiple matches + chooser — prompt user
-                var candidates: std.ArrayListUnmanaged(ProviderCandidate) = .empty;
-                defer candidates.deinit(self.allocator);
-                for (all) |match| {
-                    try candidates.append(self.allocator, .{
-                        .name = match.provider_name,
-                        .version = match.provider_version,
-                        .db_name = match.db_name,
-                    });
+            // Single match or no chooser — use first
+            if (all.len == 1 or self.provider_chooser == null) {
+                const provider = all[0];
+                if (all.len > 1) {
+                    try self.cacheProviderChoice(name, provider.provider_name);
                 }
-
-                const idx = self.provider_chooser.?(name, candidates.items) orelse 0;
-                const provider = all[idx];
-                try self.cacheProviderChoice(name, provider.provider_name);
-                return self.makeProviderResolution(name, provider);
-            } else {
-                const provider = self.pacman.findProvider(name) orelse return null;
                 return self.makeProviderResolution(name, provider);
             }
+
+            // Multiple matches + chooser — prompt user
+            var candidates: std.ArrayListUnmanaged(ProviderCandidate) = .empty;
+            defer candidates.deinit(self.allocator);
+            for (all) |match| {
+                try candidates.append(self.allocator, .{
+                    .name = match.provider_name,
+                    .version = match.provider_version,
+                    .db_name = match.db_name,
+                });
+            }
+
+            const idx = self.provider_chooser.?(name, candidates.items) orelse 0;
+            const provider = all[idx];
+            try self.cacheProviderChoice(name, provider.provider_name);
+            return self.makeProviderResolution(name, provider);
         }
 
         fn makeProviderResolution(self: *Self, name: []const u8, provider: pacman_mod.ProviderMatch) Resolution {
@@ -348,13 +337,11 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
                 return self.makeProviderResolution(dep_name, provider);
             }
             // If the cached name doesn't match the first provider, scan all
-            if (comptime @hasDecl(PacmanT, "findAllProviders")) {
-                const all = self.pacman.findAllProviders(self.allocator, dep_name) catch return null;
-                defer self.allocator.free(all);
-                for (all) |match| {
-                    if (std.mem.eql(u8, match.provider_name, provider_name)) {
-                        return self.makeProviderResolution(dep_name, match);
-                    }
+            const all = self.pacman.findAllProviders(self.allocator, dep_name) catch return null;
+            defer self.allocator.free(all);
+            for (all) |match| {
+                if (std.mem.eql(u8, match.provider_name, provider_name)) {
+                    return self.makeProviderResolution(dep_name, match);
                 }
             }
             return null;
@@ -373,13 +360,7 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
             if (self.provider_choices.get(name)) |chosen_name| {
                 // Try to find the chosen package in AUR
                 if (try self.aur_client.info(chosen_name)) |pkg| {
-                    return .{
-                        .name = pkg.name,
-                        .source = .aur,
-                        .version = pkg.version,
-                        .aur_pkg = pkg,
-                        .provider = pkg.name,
-                    };
+                    return makeAurResolution(pkg, pkg.name);
                 }
             }
 
@@ -393,13 +374,7 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
                 if (results.len > 1) {
                     try self.cacheProviderChoice(name, provider_pkg.name);
                 }
-                return .{
-                    .name = provider_pkg.name,
-                    .source = .aur,
-                    .version = provider_pkg.version,
-                    .aur_pkg = provider_pkg,
-                    .provider = provider_pkg.name,
-                };
+                return makeAurResolution(provider_pkg, provider_pkg.name);
             }
 
             // Multiple AUR providers — prompt user
@@ -416,13 +391,7 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
             const idx = self.provider_chooser.?(name, candidates.items) orelse 0;
             const provider_pkg = results[idx];
             try self.cacheProviderChoice(name, provider_pkg.name);
-            return .{
-                .name = provider_pkg.name,
-                .source = .aur,
-                .version = provider_pkg.version,
-                .aur_pkg = provider_pkg,
-                .provider = provider_pkg.name,
-            };
+            return makeAurResolution(provider_pkg, provider_pkg.name);
         }
 
         fn flushPendingAur(self: *Self) !void {
@@ -433,15 +402,20 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
             defer self.allocator.free(packages);
 
             for (packages) |pkg| {
-                try self.cacheResult(pkg.name, .{
-                    .name = pkg.name,
-                    .source = .aur,
-                    .version = pkg.version,
-                    .aur_pkg = pkg,
-                });
+                try self.cacheResult(pkg.name, makeAurResolution(pkg, null));
             }
 
             self.pending_aur.clearRetainingCapacity();
+        }
+
+        fn makeAurResolution(pkg: *aur.Package, provider_name: ?[]const u8) Resolution {
+            return .{
+                .name = pkg.name,
+                .source = .aur,
+                .version = pkg.version,
+                .aur_pkg = pkg,
+                .provider = provider_name,
+            };
         }
 
         fn cacheResult(self: *Self, name: []const u8, res: Resolution) !void {
