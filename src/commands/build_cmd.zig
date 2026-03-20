@@ -725,7 +725,7 @@ fn buildLoop(
         defer self.allocator.free(clone_dir);
 
         const ver = if (devel.isVcsPackage(entry.name)) "latest" else entry.version;
-        getStdout().print("{s}::{s} building {s} {s}...\n", .{ sc.blue, sc.reset, entry.name, ver }) catch {};
+        getStdout().print("{s}::{s} Building {s} {s}...\n", .{ sc.blue, sc.reset, entry.name, ver }) catch {};
 
         // Run build command: makechrootpkg in chroot mode, makepkg otherwise
         const exit_code = if (self.flags.chroot) blk: {
