@@ -71,20 +71,12 @@ pub const Pacman = struct {
         const conf = try registerSyncDbs(allocator, handle);
         errdefer allocator.free(conf.sync_dbs);
 
-        var aurpkgs_db: ?alpm.Database = null;
-        for (conf.sync_dbs) |db| {
-            if (std.mem.eql(u8, db.getName(), aur_repo_name)) {
-                aurpkgs_db = db;
-                break;
-            }
-        }
-
         return .{
             .allocator = allocator,
             .handle = handle,
             .local_db = handle.getLocalDb(),
             .sync_dbs = conf.sync_dbs,
-            .aurpkgs_db = aurpkgs_db,
+            .aurpkgs_db = findAurpkgsDb(conf.sync_dbs, aur_repo_name),
             .aur_repo_name = aur_repo_name,
             .owns_sync_dbs = true,
             .verbose_pkg_lists = conf.verbose_pkg_lists,
@@ -110,20 +102,12 @@ pub const Pacman = struct {
         sync_dbs: []alpm.Database,
         aur_repo_name: []const u8,
     ) Pacman {
-        var aurpkgs_db: ?alpm.Database = null;
-        for (sync_dbs) |db| {
-            if (std.mem.eql(u8, db.getName(), aur_repo_name)) {
-                aurpkgs_db = db;
-                break;
-            }
-        }
-
         return .{
             .allocator = allocator,
             .handle = handle,
             .local_db = handle.getLocalDb(),
             .sync_dbs = sync_dbs,
-            .aurpkgs_db = aurpkgs_db,
+            .aurpkgs_db = findAurpkgsDb(sync_dbs, aur_repo_name),
             .aur_repo_name = aur_repo_name,
             .owns_sync_dbs = false,
         };
@@ -164,11 +148,7 @@ pub const Pacman = struct {
 
     /// Is this package available in an official sync database (excludes aurpkgs)?
     pub fn isInOfficialSyncDb(self: Pacman, name: []const u8) bool {
-        for (self.sync_dbs) |db| {
-            if (std.mem.eql(u8, db.getName(), self.aur_repo_name)) continue;
-            if (db.getPackage(name) != null) return true;
-        }
-        return false;
+        return self.findInOfficialDbs(name) != null;
     }
 
     /// Which sync database provides this package? Returns db name or null.
@@ -218,11 +198,8 @@ pub const Pacman = struct {
 
     /// What version is available in official sync databases (excludes aurpkgs)?
     pub fn officialSyncVersion(self: Pacman, name: []const u8) ?[]const u8 {
-        for (self.sync_dbs) |db| {
-            if (std.mem.eql(u8, db.getName(), self.aur_repo_name)) continue;
-            if (db.getPackage(name)) |pkg| return pkg.getVersion();
-        }
-        return null;
+        const pkg = self.findInOfficialDbs(name) orelse return null;
+        return pkg.getVersion();
     }
 
     // ── Sync Package Conflict Queries ─────────────────────────────────────
@@ -231,47 +208,27 @@ pub const Pacman = struct {
     /// Returns the name of the first installed package that conflicts, or null.
     /// Only checks official repos (skips aurpkgs).
     pub fn syncPkgConflictsWithInstalled(self: Pacman, name: []const u8) ?[]const u8 {
-        // Find the package in official sync dbs
-        var pkg: ?alpm.AlpmPackage = null;
-        for (self.sync_dbs) |db| {
-            if (std.mem.eql(u8, db.getName(), self.aur_repo_name)) continue;
-            if (db.getPackage(name)) |p| {
-                pkg = p;
-                break;
-            }
-        }
-        const sync_pkg = pkg orelse return null;
-
-        // Check each declared conflict against installed packages
-        var conflicts = sync_pkg.getConflicts();
-        while (conflicts.next()) |dep| {
-            // Direct name check
-            if (self.isInstalled(dep.name)) return dep.name;
-            // Provider check: is the conflict target provided by something installed?
-            const local_pkgs = self.local_db.getPkgcache();
-            if (alpm.findSatisfier(local_pkgs, dep.name)) |satisfier| {
-                return satisfier.getName();
-            }
-        }
-        return null;
+        return self.syncPkgDepViolatesInstalled(name, .conflicts);
     }
 
     /// Check if a sync db package replaces any installed package.
     /// Returns the name of the first installed package that would be replaced, or null.
     /// Only checks official repos (skips aurpkgs).
     pub fn syncPkgReplacesInstalled(self: Pacman, name: []const u8) ?[]const u8 {
-        var pkg: ?alpm.AlpmPackage = null;
-        for (self.sync_dbs) |db| {
-            if (std.mem.eql(u8, db.getName(), self.aur_repo_name)) continue;
-            if (db.getPackage(name)) |p| {
-                pkg = p;
-                break;
-            }
-        }
-        const sync_pkg = pkg orelse return null;
+        return self.syncPkgDepViolatesInstalled(name, .replaces);
+    }
 
-        var replaces = sync_pkg.getReplaces();
-        while (replaces.next()) |dep| {
+    const DepListKind = enum { conflicts, replaces };
+
+    /// Shared implementation for conflict/replaces checking against installed packages.
+    fn syncPkgDepViolatesInstalled(self: Pacman, name: []const u8, kind: DepListKind) ?[]const u8 {
+        const sync_pkg = self.findInOfficialDbs(name) orelse return null;
+
+        var it = switch (kind) {
+            .conflicts => sync_pkg.getConflicts(),
+            .replaces => sync_pkg.getReplaces(),
+        };
+        while (it.next()) |dep| {
             if (self.isInstalled(dep.name)) return dep.name;
             const local_pkgs = self.local_db.getPkgcache();
             if (alpm.findSatisfier(local_pkgs, dep.name)) |satisfier| {
@@ -342,34 +299,30 @@ pub const Pacman = struct {
 
     /// Find a package satisfying a dependency string in the given database set.
     pub fn findDbsSatisfier(self: Pacman, db_set: DbSet, depstring: []const u8) ?[]const u8 {
-        const dbs = switch (db_set) {
-            .all_sync => self.sync_dbs,
+        return switch (db_set) {
+            .all_sync => self.findSatisfierInDbs(self.sync_dbs, depstring),
             .official_only => blk: {
-                // Filter out aurpkgs — iterate sync_dbs checking names
                 for (self.sync_dbs) |db| {
                     if (std.mem.eql(u8, db.getName(), self.aur_repo_name)) continue;
-                    const pkgcache = db.getPkgcache();
-                    if (alpm.findSatisfier(pkgcache, depstring)) |pkg| {
-                        return pkg.getName();
+                    if (alpm.findSatisfier(db.getPkgcache(), depstring)) |pkg| {
+                        break :blk pkg.getName();
                     }
                 }
-                break :blk &.{};
+                break :blk null;
             },
             .aurpkgs_only => blk: {
-                if (self.aurpkgs_db) |aurdb| {
-                    const pkgcache = aurdb.getPkgcache();
-                    if (alpm.findSatisfier(pkgcache, depstring)) |pkg| {
-                        return pkg.getName();
-                    }
+                const aurdb = self.aurpkgs_db orelse break :blk null;
+                if (alpm.findSatisfier(aurdb.getPkgcache(), depstring)) |pkg| {
+                    break :blk pkg.getName();
                 }
-                break :blk &.{};
+                break :blk null;
             },
         };
+    }
 
-        // all_sync path
+    fn findSatisfierInDbs(_: Pacman, dbs: []alpm.Database, depstring: []const u8) ?[]const u8 {
         for (dbs) |db| {
-            const pkgcache = db.getPkgcache();
-            if (alpm.findSatisfier(pkgcache, depstring)) |pkg| {
+            if (alpm.findSatisfier(db.getPkgcache(), depstring)) |pkg| {
                 return pkg.getName();
             }
         }
@@ -418,15 +371,7 @@ pub const Pacman = struct {
         var it = self.local_db.getPkgcache();
         while (it.next()) |pkg| {
             const name = pkg.getName();
-            const in_official = blk: {
-                for (self.sync_dbs) |db| {
-                    if (std.mem.eql(u8, db.getName(), self.aur_repo_name)) continue;
-                    if (db.getPackage(name) != null) break :blk true;
-                }
-                break :blk false;
-            };
-
-            if (!in_official) {
+            if (!self.isInOfficialSyncDb(name)) {
                 try foreign.append(self.allocator, .{
                     .name = name,
                     .version = pkg.getVersion(),
@@ -436,9 +381,26 @@ pub const Pacman = struct {
 
         return try foreign.toOwnedSlice(self.allocator);
     }
+
+    /// Find a package by name in official sync databases (skips aurpkgs).
+    fn findInOfficialDbs(self: Pacman, name: []const u8) ?alpm.AlpmPackage {
+        for (self.sync_dbs) |db| {
+            if (std.mem.eql(u8, db.getName(), self.aur_repo_name)) continue;
+            if (db.getPackage(name)) |pkg| return pkg;
+        }
+        return null;
+    }
 };
 
 // ── Internal Helpers ─────────────────────────────────────────────────────
+
+/// Find the AUR repo database among sync databases by name.
+fn findAurpkgsDb(sync_dbs: []alpm.Database, aur_repo_name: []const u8) ?alpm.Database {
+    for (sync_dbs) |db| {
+        if (std.mem.eql(u8, db.getName(), aur_repo_name)) return db;
+    }
+    return null;
+}
 
 /// Check if `version` satisfies `constraint` using libalpm's vercmp.
 pub fn checkVersion(version: []const u8, constraint: VersionConstraint) bool {
@@ -452,30 +414,36 @@ pub fn checkVersion(version: []const u8, constraint: VersionConstraint) bool {
     };
 }
 
+/// Parse a "Key = Value" config line, returning trimmed value if key matches.
+fn parseDirectiveValue(line: []const u8, key: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, line, key)) return null;
+    const eq_pos = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    return std.mem.trim(u8, line[eq_pos + 1 ..], " \t");
+}
+
+/// Check if a package matches a dependency by name or provides list.
+fn packageMatchesDep(pkg: alpm.AlpmPackage, dep: []const u8) bool {
+    if (std.mem.eql(u8, pkg.getName(), dep)) return true;
+    var dep_it = pkg.getProvides();
+    while (dep_it.next()) |prov| {
+        if (std.mem.eql(u8, prov.name, dep)) return true;
+    }
+    return false;
+}
+
+fn providerMatchFromPkg(pkg: alpm.AlpmPackage, db: alpm.Database) ProviderMatch {
+    return .{
+        .provider_name = pkg.getName(),
+        .provider_version = pkg.getVersion(),
+        .db_name = db.getName(),
+    };
+}
+
 /// Search a single database for a package that provides `dep`.
 fn findProviderInDb(db: alpm.Database, dep: []const u8) ?ProviderMatch {
     var it = db.getPkgcache();
     while (it.next()) |pkg| {
-        // Check direct name match
-        if (std.mem.eql(u8, pkg.getName(), dep)) {
-            return .{
-                .provider_name = pkg.getName(),
-                .provider_version = pkg.getVersion(),
-                .db_name = db.getName(),
-            };
-        }
-
-        // Check provides list
-        var dep_it = pkg.getProvides();
-        while (dep_it.next()) |prov| {
-            if (std.mem.eql(u8, prov.name, dep)) {
-                return .{
-                    .provider_name = pkg.getName(),
-                    .provider_version = pkg.getVersion(),
-                    .db_name = db.getName(),
-                };
-            }
-        }
+        if (packageMatchesDep(pkg, dep)) return providerMatchFromPkg(pkg, db);
     }
     return null;
 }
@@ -484,30 +452,8 @@ fn findProviderInDb(db: alpm.Database, dep: []const u8) ?ProviderMatch {
 fn findAllProvidersInDb(allocator: Allocator, db: alpm.Database, dep: []const u8, matches: *std.ArrayList(ProviderMatch)) !void {
     var it = db.getPkgcache();
     while (it.next()) |pkg| {
-        var found = false;
-
-        // Check direct name match
-        if (std.mem.eql(u8, pkg.getName(), dep)) {
-            found = true;
-        }
-
-        // Check provides list
-        if (!found) {
-            var dep_it = pkg.getProvides();
-            while (dep_it.next()) |prov| {
-                if (std.mem.eql(u8, prov.name, dep)) {
-                    found = true;
-                    break;
-                }
-            }
-        }
-
-        if (found) {
-            try matches.append(allocator, .{
-                .provider_name = pkg.getName(),
-                .provider_version = pkg.getVersion(),
-                .db_name = db.getName(),
-            });
+        if (packageMatchesDep(pkg, dep)) {
+            try matches.append(allocator, providerMatchFromPkg(pkg, db));
         }
     }
 }
@@ -570,9 +516,7 @@ fn registerSyncDbs(allocator: Allocator, handle: alpm.Handle) !PacmanConf {
         if (in_options) {
             if (std.mem.eql(u8, trimmed, "VerbosePkgLists")) verbose_pkg_lists = true;
             if (std.mem.eql(u8, trimmed, "Color")) color_opt = true;
-            if (std.mem.startsWith(u8, trimmed, "IgnorePkg")) {
-                const eq_pos = std.mem.indexOfScalar(u8, trimmed, '=') orelse continue;
-                const value = std.mem.trim(u8, trimmed[eq_pos + 1 ..], " \t");
+            if (parseDirectiveValue(trimmed, "IgnorePkg")) |value| {
                 var it = std.mem.tokenizeAny(u8, value, " \t");
                 while (it.next()) |pkg| {
                     try ignore_pkgs.append(allocator, try allocator.dupe(u8, pkg));
@@ -580,18 +524,13 @@ fn registerSyncDbs(allocator: Allocator, handle: alpm.Handle) !PacmanConf {
             }
         }
 
-        // Include directive: add servers from mirrorlist file
-        if (current_repo != null and std.mem.startsWith(u8, trimmed, "Include")) {
-            const eq_pos = std.mem.indexOfScalar(u8, trimmed, '=') orelse continue;
-            const path = std.mem.trim(u8, trimmed[eq_pos + 1 ..], " \t");
-            addServersFromMirrorlist(current_repo.?, path);
-        }
-
-        // Direct Server directive
-        if (current_repo != null and std.mem.startsWith(u8, trimmed, "Server")) {
-            const eq_pos = std.mem.indexOfScalar(u8, trimmed, '=') orelse continue;
-            const url = std.mem.trim(u8, trimmed[eq_pos + 1 ..], " \t");
-            current_repo.?.addServer(url) catch {};
+        if (current_repo) |repo| {
+            if (parseDirectiveValue(trimmed, "Include")) |path| {
+                addServersFromMirrorlist(repo, path);
+            }
+            if (parseDirectiveValue(trimmed, "Server")) |url| {
+                repo.addServer(url) catch {};
+            }
         }
     }
 
@@ -618,9 +557,7 @@ fn addServersFromMirrorlist(db: alpm.Database, path: []const u8) void {
 
         if (trimmed.len == 0 or trimmed[0] == '#') continue;
 
-        if (std.mem.startsWith(u8, trimmed, "Server")) {
-            const eq_pos = std.mem.indexOfScalar(u8, trimmed, '=') orelse continue;
-            const url = std.mem.trim(u8, trimmed[eq_pos + 1 ..], " \t");
+        if (parseDirectiveValue(trimmed, "Server")) |url| {
             db.addServer(url) catch {};
         }
     }
