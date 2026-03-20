@@ -179,7 +179,7 @@ pub const Client = struct {
         defer self.allocator.free(response_body);
 
         const response = try self.parseResponse(response_body);
-        try self.checkError(response);
+        try Client.checkError(response);
 
         if (response.resultcount == 0) return null;
 
@@ -244,18 +244,7 @@ pub const Client = struct {
         const response_body = try self.httpGet(url);
         defer self.allocator.free(response_body);
 
-        const response = try self.parseResponse(response_body);
-        try self.checkError(response);
-
-        var results: std.ArrayList(*Package) = .empty;
-        defer results.deinit(self.allocator);
-        try results.ensureTotalCapacity(self.allocator, response.resultcount);
-
-        for (response.results) |rpc_pkg| {
-            results.appendAssumeCapacity(try self.mapPackage(rpc_pkg));
-        }
-
-        return try results.toOwnedSlice(self.allocator);
+        return self.parseAndMapResults(response_body);
     }
 
     /// Issues a single multi-info request for a batch of names.
@@ -277,8 +266,22 @@ pub const Client = struct {
         );
         defer self.allocator.free(response_body);
 
+        return self.parseAndMapResults(response_body);
+    }
+
+    fn parseResponse(self: *Client, body: []const u8) !RpcResponse {
+        return std.json.parseFromSliceLeaky(
+            RpcResponse,
+            self.arena.allocator(),
+            body,
+            .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+        ) catch return error.MalformedResponse;
+    }
+
+    /// Parse a response body and map all results to Package pointers.
+    fn parseAndMapResults(self: *Client, response_body: []const u8) ![]*Package {
         const response = try self.parseResponse(response_body);
-        try self.checkError(response);
+        try Client.checkError(response);
 
         var results: std.ArrayList(*Package) = .empty;
         defer results.deinit(self.allocator);
@@ -291,16 +294,7 @@ pub const Client = struct {
         return try results.toOwnedSlice(self.allocator);
     }
 
-    fn parseResponse(self: *Client, body: []const u8) !RpcResponse {
-        return std.json.parseFromSliceLeaky(
-            RpcResponse,
-            self.arena.allocator(),
-            body,
-            .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
-        ) catch return error.MalformedResponse;
-    }
-
-    fn checkError(_: *Client, response: RpcResponse) !void {
+    fn checkError(response: RpcResponse) !void {
         if (response.@"error") |err_msg| {
             if (std.mem.indexOf(u8, err_msg, "Too many requests") != null) {
                 return error.RateLimited;
@@ -345,31 +339,27 @@ pub const Client = struct {
     }
 
     fn httpGet(self: *Client, url: []const u8) ![]u8 {
-        var aw: std.Io.Writer.Allocating = .init(self.allocator);
-        errdefer aw.deinit();
-
-        const result = self.http_client.fetch(.{
-            .location = .{ .url = url },
-            .response_writer = &aw.writer,
-        }) catch return error.NetworkError;
-
-        if (result.status == .too_many_requests) return error.RateLimited;
-        if (result.status != .ok) return error.NetworkError;
-
-        return aw.toOwnedSlice() catch return error.NetworkError;
+        return self.httpFetch(url, null);
     }
 
-    fn httpPost(self: *Client, url: []const u8, body: []const u8) ![]u8 {
+    fn httpPost(self: *Client, url: []const u8, payload: []const u8) ![]u8 {
+        return self.httpFetch(url, payload);
+    }
+
+    fn httpFetch(self: *Client, url: []const u8, payload: ?[]const u8) ![]u8 {
         var aw: std.Io.Writer.Allocating = .init(self.allocator);
         errdefer aw.deinit();
 
+        var headers: std.http.Client.Request.Headers = .{};
+        if (payload != null) {
+            headers.content_type = .{ .override = "application/x-www-form-urlencoded" };
+        }
+
         const result = self.http_client.fetch(.{
             .location = .{ .url = url },
-            .method = .POST,
-            .payload = body,
-            .headers = .{
-                .content_type = .{ .override = "application/x-www-form-urlencoded" },
-            },
+            .method = if (payload != null) .POST else .GET,
+            .payload = payload,
+            .headers = headers,
             .response_writer = &aw.writer,
         }) catch return error.NetworkError;
 
@@ -448,7 +438,7 @@ test "parse error response returns ApiError" {
     defer client.deinit();
 
     const response = try client.parseResponse(fixture);
-    try std.testing.expectError(error.ApiError, client.checkError(response));
+    try std.testing.expectError(error.ApiError, Client.checkError(response));
 }
 
 test "parse rate limit response returns RateLimited" {
@@ -460,7 +450,7 @@ test "parse rate limit response returns RateLimited" {
     defer client.deinit();
 
     const response = try client.parseResponse(fixture);
-    try std.testing.expectError(error.RateLimited, client.checkError(response));
+    try std.testing.expectError(error.RateLimited, Client.checkError(response));
 }
 
 test "malformed JSON returns MalformedResponse" {
@@ -607,5 +597,5 @@ test "checkError passes for successful response" {
     };
 
     // Should not return an error
-    try client.checkError(response);
+    try Client.checkError(response);
 }
