@@ -14,31 +14,16 @@ pub fn isVcsPackage(name: []const u8) bool {
     return false;
 }
 
-/// Result of a VCS version check.
-pub const VcsVersionResult = struct {
-    version: []const u8,
-    allocator: Allocator,
-
-    pub fn deinit(self: VcsVersionResult) void {
-        self.allocator.free(self.version);
-    }
-};
-
-pub const VcsCheckError = error{
-    CloneFailed,
-    NoBuildFailed,
-    SrcinfoParseFailed,
-};
-
 /// Clone/update an AUR package, run `makepkg --nobuild` to execute pkgver(),
 /// then run `makepkg --printsrcinfo` to get the resulting version string.
 ///
 /// Returns the full version string (epoch:pkgver-pkgrel) or null on failure.
+/// Caller owns the returned string.
 pub fn checkVersion(
     allocator: Allocator,
     cache_root: []const u8,
     pkgbase: []const u8,
-) !?VcsVersionResult {
+) !?[]const u8 {
     // Ensure clone exists and is up to date
     _ = git.cloneOrUpdate(allocator, cache_root, pkgbase) catch {
         return null;
@@ -58,7 +43,7 @@ pub fn checkVersion(
     // --nobuild may exit non-zero (e.g. missing deps), but pkgver() still ran
     // if sources were already extracted. We try --printsrcinfo regardless,
     // but if it fails too, we try without --noextract.
-    if (nobuild_result.exit_code != 0) {
+    if (!nobuild_result.success()) {
         // Retry without --noextract to allow full source preparation
         const retry_result = try utils.runCommandIn(
             allocator,
@@ -77,17 +62,10 @@ pub fn checkVersion(
     );
     defer srcinfo_result.deinit(allocator);
 
-    if (srcinfo_result.exit_code != 0) return null;
+    if (!srcinfo_result.success()) return null;
 
     // Parse the version from SRCINFO output
-    const version = parseSrcinfoVersion(allocator, srcinfo_result.stdout) catch {
-        return null;
-    };
-
-    return .{
-        .version = version,
-        .allocator = allocator,
-    };
+    return parseSrcinfoVersion(allocator, srcinfo_result.stdout) catch null;
 }
 
 /// Parse a full version string (epoch:pkgver-pkgrel) from SRCINFO content.
@@ -116,7 +94,8 @@ pub fn parseSrcinfoVersion(allocator: Allocator, srcinfo: []const u8) ![]const u
             epoch = val;
         }
 
-        // Stop at the first pkgname section (fields after that are per-package overrides)
+        // Stop once required fields found, or at first pkgname section
+        if (pkgver != null and pkgrel != null) break;
         if (std.mem.startsWith(u8, trimmed, "pkgname")) break;
     }
 

@@ -491,9 +491,9 @@ pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
     }
 
     // --devel: check VCS packages for upstream updates
-    var devel_versions: std.ArrayListUnmanaged(devel.VcsVersionResult) = .empty;
+    var devel_versions: std.ArrayListUnmanaged([]const u8) = .empty;
     defer {
-        for (devel_versions.items) |v| v.deinit();
+        for (devel_versions.items) |v| self.allocator.free(v);
         devel_versions.deinit(self.allocator);
     }
     if (self.flags.devel) {
@@ -541,7 +541,7 @@ fn checkDevelUpgrades(
     upgrade_set: *std.StringHashMapUnmanaged(void),
     to_upgrade: *std.ArrayListUnmanaged([]const u8),
     outdated_display: *std.ArrayListUnmanaged(OutdatedEntry),
-    devel_versions: *std.ArrayListUnmanaged(devel.VcsVersionResult),
+    devel_versions: *std.ArrayListUnmanaged([]const u8),
 ) !void {
     const ec2 = self.stderr_color;
     const c_root = self.cache_root orelse blk: {
@@ -566,16 +566,16 @@ fn checkDevelUpgrades(
             continue;
         };
 
-        const result = vcs_result orelse continue;
-        try devel_versions.append(self.allocator, result);
+        const version = vcs_result orelse continue;
+        try devel_versions.append(self.allocator, version);
 
-        if (alpm.vercmp(pkg.version, result.version) < 0) {
+        if (alpm.vercmp(pkg.version, version) < 0) {
             try to_upgrade.append(self.allocator, pkg.name);
             try upgrade_set.put(self.allocator, pkg.name, {});
             try outdated_display.append(self.allocator, .{
                 .name = pkg.name,
                 .installed_version = pkg.version,
-                .aur_version = result.version,
+                .aur_version = version,
             });
         }
     }

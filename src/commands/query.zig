@@ -152,9 +152,9 @@ pub fn outdated(self: *Commands, filter: []const []const u8) !ExitCode {
     }
 
     // --devel: check VCS packages via makepkg --nobuild + --printsrcinfo
-    var devel_versions: std.ArrayListUnmanaged(devel.VcsVersionResult) = .empty;
+    var devel_versions: std.ArrayListUnmanaged([]const u8) = .empty;
     defer {
-        for (devel_versions.items) |v| v.deinit();
+        for (devel_versions.items) |v| self.allocator.free(v);
         devel_versions.deinit(self.allocator);
     }
     if (self.flags.devel) {
@@ -178,7 +178,7 @@ fn checkDevelPackages(
     packages: []const pacman_mod.InstalledPackage,
     already_outdated: *std.StringHashMapUnmanaged(void),
     outdated_list: *std.ArrayListUnmanaged(OutdatedEntry),
-    devel_versions: *std.ArrayListUnmanaged(devel.VcsVersionResult),
+    devel_versions: *std.ArrayListUnmanaged([]const u8),
 ) !void {
     const ec2 = self.stderr_color;
     const c_root = self.cache_root orelse blk: {
@@ -203,14 +203,14 @@ fn checkDevelPackages(
             continue;
         };
 
-        const result = vcs_result orelse continue;
-        try devel_versions.append(self.allocator, result);
+        const version = vcs_result orelse continue;
+        try devel_versions.append(self.allocator, version);
 
-        if (alpm.vercmp(pkg.version, result.version) < 0) {
+        if (alpm.vercmp(pkg.version, version) < 0) {
             try outdated_list.append(self.allocator, .{
                 .name = pkg.name,
                 .installed_version = pkg.version,
-                .aur_version = result.version,
+                .aur_version = version,
             });
         }
     }
