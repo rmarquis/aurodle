@@ -634,10 +634,7 @@ fn stripBashArray(val: []const u8) []const u8 {
     return val;
 }
 
-fn dirExists(path: []const u8) bool {
-    const stat = std.fs.cwd().statFile(path) catch return false;
-    return stat.kind == .directory;
-}
+const dirExists = utils.dirExists;
 
 // ── Tests ────────────────────────────────────────────────────────────────
 

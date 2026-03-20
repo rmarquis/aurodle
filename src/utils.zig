@@ -183,6 +183,12 @@ pub fn expandHome(allocator: Allocator, path: []const u8) ![]u8 {
     return try allocator.dupe(u8, path);
 }
 
+/// Check if a path exists and is a directory.
+pub fn dirExists(path: []const u8) bool {
+    const stat = std.fs.cwd().statFile(path) catch return false;
+    return stat.kind == .directory;
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────
 
 test "runCommand captures stdout and stderr" {

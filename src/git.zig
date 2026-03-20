@@ -48,9 +48,7 @@ pub fn cloneDir(allocator: Allocator, cache_root: []const u8, pkgbase: []const u
 
 /// Check if a package has been cloned (directory exists with .git/).
 pub fn isCloned(allocator: Allocator, cache_root: []const u8, pkgbase: []const u8) !bool {
-    const dest = try cloneDir(allocator, cache_root, pkgbase);
-    defer allocator.free(dest);
-    const git_dir = try std.fs.path.join(allocator, &.{ dest, ".git" });
+    const git_dir = try std.fs.path.join(allocator, &.{ cache_root, pkgbase, ".git" });
     defer allocator.free(git_dir);
     return dirExists(git_dir);
 }
@@ -84,7 +82,7 @@ pub fn clone(allocator: Allocator, cache_root: []const u8, pkgbase: []const u8) 
     };
     defer result.deinit(allocator);
 
-    if (result.exit_code != 0) {
+    if (!result.success()) {
         std.fs.cwd().deleteTree(dest) catch {};
         return error.CloneFailed;
     }
@@ -99,21 +97,7 @@ pub fn update(allocator: Allocator, cache_root: []const u8, pkgbase: []const u8)
     defer allocator.free(dest);
 
     if (!dirExists(dest)) return error.NotCloned;
-
-    const old_head = try getHead(allocator, dest);
-    defer allocator.free(old_head);
-
-    const result = try utils.runCommandIn(allocator, &.{
-        "git", "pull", "--ff-only",
-    }, dest);
-    defer result.deinit(allocator);
-
-    if (result.exit_code != 0) return error.PullFailed;
-
-    const new_head = try getHead(allocator, dest);
-    defer allocator.free(new_head);
-
-    return if (std.mem.eql(u8, old_head, new_head)) .up_to_date else .updated;
+    return updateIn(allocator, dest);
 }
 
 /// Clone if not present, update if already cloned.
@@ -122,7 +106,7 @@ pub fn cloneOrUpdate(allocator: Allocator, cache_root: []const u8, pkgbase: []co
     defer allocator.free(dest);
 
     if (dirExists(dest)) {
-        return switch (try update(allocator, cache_root, pkgbase)) {
+        return switch (try updateIn(allocator, dest)) {
             .updated => .updated,
             .up_to_date => .up_to_date,
         };
@@ -143,7 +127,7 @@ pub fn listFiles(allocator: Allocator, cache_root: []const u8, pkgbase: []const 
     const result = try utils.runCommandIn(allocator, &.{ "git", "ls-files" }, dest);
     defer result.deinit(allocator);
 
-    if (result.exit_code != 0) return error.InvalidRepository;
+    if (!result.success()) return error.InvalidRepository;
 
     var entries: std.ArrayListUnmanaged(FileEntry) = .empty;
     errdefer {
@@ -225,10 +209,27 @@ pub fn hasOrigHead(allocator: Allocator, cache_root: []const u8, pkgbase: []cons
     }, dest);
     defer result.deinit(allocator);
 
-    return result.exit_code == 0;
+    return result.success();
 }
 
 // ── Internal Helpers ────────────────────────────────────────────────────
+
+fn updateIn(allocator: Allocator, dest: []const u8) !UpdateResult {
+    const old_head = try getHead(allocator, dest);
+    defer allocator.free(old_head);
+
+    const result = try utils.runCommandIn(allocator, &.{
+        "git", "pull", "--ff-only",
+    }, dest);
+    defer result.deinit(allocator);
+
+    if (!result.success()) return error.PullFailed;
+
+    const new_head = try getHead(allocator, dest);
+    defer allocator.free(new_head);
+
+    return if (std.mem.eql(u8, old_head, new_head)) .up_to_date else .updated;
+}
 
 fn getHead(allocator: Allocator, repo_path: []const u8) ![]u8 {
     const result = try utils.runCommandIn(allocator, &.{
@@ -236,7 +237,7 @@ fn getHead(allocator: Allocator, repo_path: []const u8) ![]u8 {
     }, repo_path);
     defer result.deinit(allocator);
 
-    if (result.exit_code != 0) return error.InvalidRepository;
+    if (!result.success()) return error.InvalidRepository;
 
     const trimmed = std.mem.trim(u8, result.stdout, " \t\n");
     return try allocator.dupe(u8, trimmed);
@@ -253,10 +254,7 @@ fn validateFilePath(filename: []const u8) !void {
     }
 }
 
-fn dirExists(path: []const u8) bool {
-    const stat = std.fs.cwd().statFile(path) catch return false;
-    return stat.kind == .directory;
-}
+const dirExists = utils.dirExists;
 
 // ── Tests ───────────────────────────────────────────────────────────────
 
