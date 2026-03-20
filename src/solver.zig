@@ -175,9 +175,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                 for (frontier.items, resolutions) |name, resolution| {
                     // Skip if already fully processed (diamond deps)
                     if (visited.contains(name)) {
-                        if (self.graph.getNode(name)) |node| {
-                            if (depth > node.meta.depth) node.meta.depth = depth;
-                        }
+                        self.graph.updateDepth(name, depth);
                         continue;
                     }
 
@@ -204,9 +202,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                             }
                             if (!std.mem.eql(u8, actual_name, name)) {
                                 if (visited.contains(actual_name)) {
-                                    if (self.graph.getNode(actual_name)) |node| {
-                                        if (depth > node.meta.depth) node.meta.depth = depth;
-                                    }
+                                    self.graph.updateDepth(actual_name, depth);
                                     continue;
                                 }
                                 // Resolve the provider individually (typically cached or local)
@@ -238,9 +234,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                             if (!std.mem.eql(u8, prov, actual_name)) {
                                 actual_name = prov;
                                 if (visited.contains(actual_name)) {
-                                    if (self.graph.getNode(actual_name)) |existing| {
-                                        if (depth > existing.meta.depth) existing.meta.depth = depth;
-                                    }
+                                    self.graph.updateDepth(actual_name, depth);
                                     continue;
                                 }
                             }
@@ -330,10 +324,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                 if (!visited.contains(dep_name)) {
                     try next_frontier.append(self.allocator, dep_name);
                 } else {
-                    // Update depth for already-visited nodes (diamond deps)
-                    if (self.graph.getNode(dep_name)) |dep_node| {
-                        if (depth + 1 > dep_node.meta.depth) dep_node.meta.depth = depth + 1;
-                    }
+                    self.graph.updateDepth(dep_name, depth + 1);
                 }
             }
         }
@@ -370,137 +361,49 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                 seen_pairs.deinit(self.allocator);
             }
 
+            // Single pass over all nodes: AUR conflicts + replaces, repo conflicts + replaces
             var graph_it = self.graph.nodes.iterator();
             while (graph_it.next()) |entry| {
                 const node = entry.value_ptr;
-                const pkg = node.meta.aur_pkg orelse continue;
 
-                for (pkg.conflicts) |conflict_dep| {
-                    const conflict_name = registry_mod.parseDep(conflict_dep).name;
+                // AUR nodes: check conflicts and replaces arrays
+                if (node.meta.aur_pkg) |pkg| {
+                    for (pkg.conflicts) |conflict_dep| {
+                        const conflict_name = registry_mod.parseDep(conflict_dep).name;
+                        if (std.mem.eql(u8, conflict_name, node.meta.name)) continue;
 
-                    // Skip self-conflicts (package conflicts with its own name,
-                    // common pattern for -git packages conflicting with stable)
-                    if (std.mem.eql(u8, conflict_name, node.meta.name)) continue;
+                        // Resolve conflict target: direct graph node or provides lookup
+                        const resolved_name = if (self.graph.getNode(conflict_name)) |_|
+                            conflict_name
+                        else if (provides_map.get(conflict_name)) |provider|
+                            provider
+                        else
+                            conflict_name;
 
-                    // Resolve conflict target: direct graph node or provides lookup
-                    const resolved_name = if (self.graph.getNode(conflict_name)) |_|
-                        conflict_name
-                    else if (provides_map.get(conflict_name)) |provider|
-                        provider
-                    else
-                        conflict_name;
-
-                    // AUR↔AUR: conflict target (or its provider) is a different node in the graph
-                    if (!std.mem.eql(u8, resolved_name, node.meta.name)) {
-                        if (self.graph.getNode(resolved_name)) |conflict_node| {
-                            if (conflict_node.meta.aur_pkg != null) {
-                                _ = try self.addConflictPair(&seen_pairs, &conflicts, node.meta.name, resolved_name);
-                                continue;
-                            }
-                        }
-                    }
-
-                    // AUR↔installed: conflict target is installed (by name or provider).
-                    // This catches cases like foo-git provides+conflicts "foo" when
-                    // "foo" is actually installed — the provides self-reference doesn't
-                    // suppress the installed conflict check.
-                    if (self.registry.pacman.isInstalled(conflict_name)) {
-                        try conflicts.append(self.allocator, .{
-                            .package = node.meta.name,
-                            .conflicts_with = conflict_name,
-                            .kind = .aur_installed,
-                        });
-                    } else if (@hasDecl(@TypeOf(self.registry.pacman.*), "findProvider")) {
-                        if (self.registry.pacman.findProvider(conflict_name)) |provider| {
-                            // Skip self-conflict via provides (e.g. auracle-git provides+conflicts
-                            // "auracle" and auracle-git is the installed provider of "auracle")
-                            if (std.mem.eql(u8, provider.provider_name, node.meta.name)) continue;
-                            if (self.registry.pacman.isInstalled(provider.provider_name)) {
-                                try conflicts.append(self.allocator, .{
-                                    .package = node.meta.name,
-                                    .conflicts_with = provider.provider_name,
-                                    .kind = .aur_installed,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-
-            // AUR replaces: check if AUR packages replace any installed package.
-            {
-                var repl_it = self.graph.nodes.iterator();
-                while (repl_it.next()) |entry| {
-                    const node = entry.value_ptr;
-                    const pkg = node.meta.aur_pkg orelse continue;
-
-                    for (pkg.replaces) |replace_dep| {
-                        const replace_name = registry_mod.parseDep(replace_dep).name;
-
-                        // Skip self-replacement (package replaces its own name)
-                        if (std.mem.eql(u8, replace_name, node.meta.name)) continue;
-
-                        if (self.registry.pacman.isInstalled(replace_name)) {
-                            try conflicts.append(self.allocator, .{
-                                .package = node.meta.name,
-                                .conflicts_with = replace_name,
-                                .kind = .aur_replaces,
-                            });
-                        } else if (@hasDecl(@TypeOf(self.registry.pacman.*), "findProvider")) {
-                            if (self.registry.pacman.findProvider(replace_name)) |provider| {
-                                if (std.mem.eql(u8, provider.provider_name, node.meta.name)) continue;
-                                if (self.registry.pacman.isInstalled(provider.provider_name)) {
-                                    try conflicts.append(self.allocator, .{
-                                        .package = node.meta.name,
-                                        .conflicts_with = provider.provider_name,
-                                        .kind = .aur_replaces,
-                                    });
+                        // AUR↔AUR: conflict target (or its provider) is a different node in the graph
+                        if (!std.mem.eql(u8, resolved_name, node.meta.name)) {
+                            if (self.graph.getNode(resolved_name)) |conflict_node| {
+                                if (conflict_node.meta.aur_pkg != null) {
+                                    _ = try self.addConflictPair(&seen_pairs, &conflicts, node.meta.name, resolved_name);
+                                    continue;
                                 }
                             }
                         }
+
+                        // AUR↔installed: conflict target is installed (by name or provider)
+                        try self.checkInstalledConflict(&conflicts, node.meta.name, conflict_name, .aur_installed);
+                    }
+
+                    for (pkg.replaces) |replace_dep| {
+                        const replace_name = registry_mod.parseDep(replace_dep).name;
+                        if (std.mem.eql(u8, replace_name, node.meta.name)) continue;
+                        try self.checkInstalledConflict(&conflicts, node.meta.name, replace_name, .aur_replaces);
                     }
                 }
-            }
 
-            // Repo↔installed: new repo dependencies that conflict with installed packages.
-            // Only checked when pacman has syncPkgConflictsWithInstalled (production, not mock).
-            if (@hasDecl(@TypeOf(self.registry.pacman.*), "syncPkgConflictsWithInstalled")) {
-                var repo_it = self.graph.nodes.iterator();
-                while (repo_it.next()) |entry| {
-                    const node = entry.value_ptr;
-                    // Only check new repo deps (not already installed)
-                    if (node.meta.source != .repos) continue;
-
-                    if (self.registry.pacman.syncPkgConflictsWithInstalled(node.meta.name)) |installed_name| {
-                        // Don't warn if the conflicting installed package is also being
-                        // replaced/upgraded as part of this transaction
-                        if (self.graph.getNode(installed_name) != null) continue;
-
-                        try conflicts.append(self.allocator, .{
-                            .package = node.meta.name,
-                            .conflicts_with = installed_name,
-                            .kind = .repo_installed,
-                        });
-                    }
-                }
-            }
-
-            // Repo replaces: new repo dependencies that replace installed packages.
-            if (@hasDecl(@TypeOf(self.registry.pacman.*), "syncPkgReplacesInstalled")) {
-                var repo_repl_it = self.graph.nodes.iterator();
-                while (repo_repl_it.next()) |entry| {
-                    const node = entry.value_ptr;
-                    if (node.meta.source != .repos) continue;
-
-                    if (self.registry.pacman.syncPkgReplacesInstalled(node.meta.name)) |installed_name| {
-                        if (self.graph.getNode(installed_name) != null) continue;
-
-                        try conflicts.append(self.allocator, .{
-                            .package = node.meta.name,
-                            .conflicts_with = installed_name,
-                            .kind = .repo_replaces,
-                        });
-                    }
+                // Repo nodes: check sync DB conflicts and replaces (production only)
+                if (node.meta.source == .repos) {
+                    try self.checkRepoVsInstalled(&conflicts, node.meta.name);
                 }
             }
 
@@ -523,14 +426,9 @@ pub fn SolverImpl(comptime RegistryT: type) type {
             pkg_name: []const u8,
             resolved_name: []const u8,
         ) !bool {
-            const a = if (std.mem.order(u8, pkg_name, resolved_name) == .lt)
-                pkg_name
-            else
-                resolved_name;
-            const b = if (std.mem.order(u8, pkg_name, resolved_name) == .lt)
-                resolved_name
-            else
-                pkg_name;
+            const is_lt = std.mem.order(u8, pkg_name, resolved_name) == .lt;
+            const a = if (is_lt) pkg_name else resolved_name;
+            const b = if (is_lt) resolved_name else pkg_name;
             const pair_key = try std.mem.concat(self.allocator, u8, &.{ a, "\x00", b });
             const gop = try seen_pairs.getOrPut(self.allocator, pair_key);
             if (gop.found_existing) {
@@ -543,6 +441,57 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                 .kind = .aur_aur,
             });
             return false;
+        }
+
+        /// Check if `dep_name` (or its installed provider) conflicts with an installed package.
+        fn checkInstalledConflict(
+            self: *Self,
+            conflicts: *std.ArrayListUnmanaged(Conflict),
+            pkg_name: []const u8,
+            dep_name: []const u8,
+            kind: Conflict.Kind,
+        ) !void {
+            if (self.registry.pacman.isInstalled(dep_name)) {
+                try conflicts.append(self.allocator, .{
+                    .package = pkg_name,
+                    .conflicts_with = dep_name,
+                    .kind = kind,
+                });
+            } else if (@hasDecl(@TypeOf(self.registry.pacman.*), "findProvider")) {
+                if (self.registry.pacman.findProvider(dep_name)) |provider| {
+                    if (std.mem.eql(u8, provider.provider_name, pkg_name)) return;
+                    if (self.registry.pacman.isInstalled(provider.provider_name)) {
+                        try conflicts.append(self.allocator, .{
+                            .package = pkg_name,
+                            .conflicts_with = provider.provider_name,
+                            .kind = kind,
+                        });
+                    }
+                }
+            }
+        }
+
+        /// Check repo node against installed packages for conflicts and replaces.
+        fn checkRepoVsInstalled(
+            self: *Self,
+            conflicts: *std.ArrayListUnmanaged(Conflict),
+            name: []const u8,
+        ) !void {
+            const PacmanType = @TypeOf(self.registry.pacman.*);
+            if (@hasDecl(PacmanType, "syncPkgConflictsWithInstalled")) {
+                if (self.registry.pacman.syncPkgConflictsWithInstalled(name)) |installed_name| {
+                    if (self.graph.getNode(installed_name) == null) {
+                        try conflicts.append(self.allocator, .{ .package = name, .conflicts_with = installed_name, .kind = .repo_installed });
+                    }
+                }
+            }
+            if (@hasDecl(PacmanType, "syncPkgReplacesInstalled")) {
+                if (self.registry.pacman.syncPkgReplacesInstalled(name)) |installed_name| {
+                    if (self.graph.getNode(installed_name) == null) {
+                        try conflicts.append(self.allocator, .{ .package = name, .conflicts_with = installed_name, .kind = .repo_replaces });
+                    }
+                }
+            }
         }
 
         // ── Phase 2: Topological Sort (Kahn's Algorithm) ────────────────
@@ -787,6 +736,13 @@ const DepGraph = struct {
     /// Resolve a name through aliases (for edge lookups in topoSort).
     fn resolveName(self: *DepGraph, name: []const u8) []const u8 {
         return self.aliases.get(name) orelse name;
+    }
+
+    /// Update a node's depth to the maximum of its current depth and the given depth.
+    fn updateDepth(self: *DepGraph, name: []const u8, depth: u32) void {
+        if (self.getNode(name)) |node| {
+            if (depth > node.meta.depth) node.meta.depth = depth;
+        }
     }
 };
 
