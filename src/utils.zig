@@ -87,14 +87,8 @@ pub fn promptYesNo(message: []const u8) !bool {
 }
 
 pub fn promptYesNoStyled(c: color.Style, message: []const u8) !bool {
+    const stdin = getTerminalStdin() orelse return false;
     const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
-    const stdin: std.fs.File = .{ .handle = std.posix.STDIN_FILENO };
-
-    // Check if stdin is a terminal
-    if (!std.posix.isatty(stdin.handle)) {
-        return false;
-    }
-
     const w = stdout.deprecatedWriter();
     try w.print("{s}::{s} {s} [Y/n] ", .{ c.blue, c.reset, message });
 
@@ -107,25 +101,11 @@ pub fn promptYesNoStyled(c: color.Style, message: []const u8) !bool {
     return response[0] != 'n' and response[0] != 'N';
 }
 
-/// Prompt the user with [y/N] (default No). Returns true only if 'y' or 'Y'.
-pub fn promptNoYes(message: []const u8) !bool {
-    const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
+/// Return stdin as a File if it's a terminal, null otherwise.
+fn getTerminalStdin() ?std.fs.File {
     const stdin: std.fs.File = .{ .handle = std.posix.STDIN_FILENO };
-
-    if (!std.posix.isatty(stdin.handle)) {
-        return false;
-    }
-
-    const w = stdout.deprecatedWriter();
-    try w.print(":: {s} [y/N] ", .{message});
-
-    var buf: [16]u8 = undefined;
-    const n = stdin.read(&buf) catch return false;
-    if (n == 0) return false;
-
-    const response = std.mem.trim(u8, buf[0..n], " \t\n\r");
-    if (response.len == 0) return false;
-    return response[0] == 'y' or response[0] == 'Y';
+    if (!std.posix.isatty(stdin.handle)) return null;
+    return stdin;
 }
 
 const registry_mod = @import("registry.zig");
@@ -144,11 +124,8 @@ pub fn promptProviderChoice(
     dep_name: []const u8,
     candidates: []const registry_mod.ProviderCandidate,
 ) ?usize {
+    const stdin = getTerminalStdin() orelse return 0;
     const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
-    const stdin: std.fs.File = .{ .handle = std.posix.STDIN_FILENO };
-
-    if (!std.posix.isatty(stdin.handle)) return 0;
-
     const w = stderr.deprecatedWriter();
     w.print(":: There are {d} providers available for {s}:\n", .{ candidates.len, dep_name }) catch {};
 
