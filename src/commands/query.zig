@@ -162,11 +162,7 @@ pub fn outdated(self: *Commands, filter: []const []const u8) !ExitCode {
     }
 
     if (outdated_list.items.len == 0) {
-        if (!self.flags.quiet) {
-            const c = self.stdout_color;
-            getStdout().print("{s}::{s} there is nothing to do\n", .{ c.blue, c.reset }) catch {};
-        }
-        return .success;
+        return .general_error;
     }
 
     formatOutdated(outdated_list.items, self.stdout_color);
