@@ -261,8 +261,13 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                     // Determine AUR package info for dependency traversal.
                     // For targets that are satisfied/in repos, fetch from AUR
                     // so we can resolve their build dependencies.
+                    // Also fetch for provider-redirected packages (actual_name != name):
+                    // the provider/search resolution may return an aur_pkg with empty
+                    // dep arrays (AUR search endpoint omits dependency fields).
                     var aur_pkg = actual_resolution.aur_pkg;
-                    if (aur_pkg == null and self.targets.contains(actual_name)) {
+                    const is_provider_redirect = !std.mem.eql(u8, actual_name, name);
+                    const is_aur_source = actual_resolution.source == .aur or actual_resolution.source == .repo_aur or actual_resolution.source == .satisfied_aur;
+                    if (self.targets.contains(actual_name) or (is_provider_redirect and is_aur_source)) {
                         if (try self.registry.resolveFromAur(actual_name)) |aur_res| {
                             aur_pkg = aur_res.aur_pkg;
                         }
@@ -1901,6 +1906,64 @@ test "resolve redirects virtual name to provider package" {
     try testing.expectEqual(@as(usize, 1), plan.build_order.len);
     try testing.expectEqualStrings("auracle-git", plan.build_order[0].name);
     try testing.expect(plan.build_order[0].is_target);
+}
+
+test "resolve discovers dependencies of provider-redirected packages" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // pacaur depends on "auracle", which is provided by "auracle-git"
+    mock.addAurPackage("pacaur", &.{"auracle"}, &.{});
+    // auracle-git has its own AUR deps (meson) and repo deps (expac)
+    mock.addSatisfiedWithAurDeps("auracle-git", "r427-1", &.{"dep-a"}, &.{"dep-b"});
+    mock.addProvider("auracle", "auracle-git", .satisfied_aur, "r427-1");
+    mock.addRepoPackage("dep-a", "1.0");
+    mock.addRepoPackage("dep-b", "1.0");
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"pacaur"});
+    defer plan.deinit(testing.allocator);
+
+    // auracle-git's deps (dep-a, dep-b) must appear in repo_deps
+    try testing.expect(plan.repo_deps.len >= 2);
+    var found_a = false;
+    var found_b = false;
+    for (plan.repo_deps) |dep| {
+        if (std.mem.eql(u8, dep, "dep-a")) found_a = true;
+        if (std.mem.eql(u8, dep, "dep-b")) found_b = true;
+    }
+    try testing.expect(found_a);
+    try testing.expect(found_b);
+}
+
+test "resolve discovers deps of deferred AUR provider (search returns empty deps)" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // pacaur depends on "auracle" (virtual name, not in AUR by exact name)
+    mock.addAurPackage("pacaur", &.{"auracle"}, &.{});
+    // "auracle" found via AUR provider search → auracle-git (search returns empty deps)
+    mock.addDeferredProvider("auracle", "auracle-git");
+    // auracle-git info (full metadata) has real deps
+    mock.addSatisfiedWithAurDeps("auracle-git", "r427-1", &.{"dep-a"}, &.{"dep-b"});
+    mock.addRepoPackage("dep-a", "1.0");
+    mock.addRepoPackage("dep-b", "1.0");
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"pacaur"});
+    defer plan.deinit(testing.allocator);
+
+    // auracle-git's deps must appear in repo_deps
+    var found_a = false;
+    var found_b = false;
+    for (plan.repo_deps) |dep| {
+        if (std.mem.eql(u8, dep, "dep-a")) found_a = true;
+        if (std.mem.eql(u8, dep, "dep-b")) found_b = true;
+    }
+    try testing.expect(found_a);
+    try testing.expect(found_b);
 }
 
 test "resolve does not version-check repo_aur dependencies" {
