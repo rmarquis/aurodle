@@ -108,6 +108,20 @@ fn getTerminalStdin() ?std.fs.File {
     return stdin;
 }
 
+/// Check if a binary exists on PATH.
+pub fn findOnPath(name: []const u8) bool {
+    const path_env = std.posix.getenv("PATH") orelse return false;
+    var iter = std.mem.tokenizeScalar(u8, path_env, ':');
+    while (iter.next()) |dir| {
+        // Use a stack buffer to avoid allocation.
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const full = std.fmt.bufPrint(&buf, "{s}/{s}", .{ dir, name }) catch continue;
+        std.fs.accessAbsolute(full, .{}) catch continue;
+        return true;
+    }
+    return false;
+}
+
 const registry_mod = @import("registry.zig");
 
 /// Prompt the user to choose a provider, matching pacman's format:
@@ -289,4 +303,13 @@ test "expandHome does not expand ~user syntax" {
     defer std.testing.allocator.free(result);
 
     try std.testing.expectEqualStrings("~nobody/foo", result);
+}
+
+test "findOnPath finds existing binary" {
+    // /usr/bin/env should exist on any POSIX system.
+    try std.testing.expect(findOnPath("env"));
+}
+
+test "findOnPath returns false for nonexistent binary" {
+    try std.testing.expect(!findOnPath("this_binary_should_not_exist_xyz_42"));
 }

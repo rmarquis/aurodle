@@ -159,7 +159,7 @@ pub const Auth = struct {
 
     fn initFromPath(allocator: Allocator) !Auth {
         // Check for sudo first, then su (matching makepkg behavior).
-        if (findOnPath("sudo")) {
+        if (utils.findOnPath("sudo")) {
             const tokens = try allocator.alloc([]const u8, 1);
             tokens[0] = try allocator.dupe(u8, "sudo");
             return .{
@@ -169,7 +169,7 @@ pub const Auth = struct {
                 .subst_index = null,
             };
         }
-        if (findOnPath("su")) {
+        if (utils.findOnPath("su")) {
             const tokens = try allocator.alloc([]const u8, 2);
             tokens[0] = try allocator.dupe(u8, "su");
             tokens[1] = try allocator.dupe(u8, "-c");
@@ -231,20 +231,6 @@ fn keepaliveLoop(auth: *Auth, argv: []const []const u8) void {
         const result = utils.runCommand(auth.allocator, argv) catch continue;
         result.deinit(auth.allocator);
     }
-}
-
-/// Check if a binary exists on PATH.
-pub fn findOnPath(name: []const u8) bool {
-    const path_env = std.posix.getenv("PATH") orelse return false;
-    var iter = std.mem.tokenizeScalar(u8, path_env, ':');
-    while (iter.next()) |dir| {
-        // Use a stack buffer to avoid allocation.
-        var buf: [std.fs.max_path_bytes]u8 = undefined;
-        const full = std.fmt.bufPrint(&buf, "{s}/{s}", .{ dir, name }) catch continue;
-        std.fs.accessAbsolute(full, .{}) catch continue;
-        return true;
-    }
-    return false;
 }
 
 /// Join argv into a single shell-safe string.
@@ -350,7 +336,7 @@ test "Auth.init substitute mode with %c" {
 
 test "Auth.init detects sudo on PATH" {
     // This test only runs if sudo is available (typical on Arch/dev machines).
-    if (!findOnPath("sudo")) return error.SkipZigTest;
+    if (!utils.findOnPath("sudo")) return error.SkipZigTest;
 
     const alloc = std.testing.allocator;
     var auth = try Auth.init(alloc, null);
@@ -465,13 +451,4 @@ test "stopKeepalive is safe when no thread started" {
     defer auth.deinit();
     auth.stopKeepalive(); // should not crash
     try std.testing.expectEqual(@as(?std.Thread, null), auth.keepalive_thread);
-}
-
-test "findOnPath finds existing binary" {
-    // /usr/bin/env should exist on any POSIX system.
-    try std.testing.expect(findOnPath("env"));
-}
-
-test "findOnPath returns false for nonexistent binary" {
-    try std.testing.expect(!findOnPath("this_binary_should_not_exist_xyz_42"));
 }

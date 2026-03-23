@@ -668,7 +668,7 @@ fn chrootDir() []const u8 {
 /// Ensure a clean chroot exists, creating it with mkarchroot if needed.
 fn ensureChroot(allocator: Allocator, auth: *auth_mod.Auth, err_writer: anytype, ec: color.Style) !bool {
     // Check that devtools is installed
-    if (!auth_mod.findOnPath("makechrootpkg")) {
+    if (!utils.findOnPath("makechrootpkg")) {
         err_writer.print("{s}error:{s} makechrootpkg not found -- install devtools: pacman -S devtools\n", .{ ec.red, ec.reset }) catch {};
         return false;
     }
