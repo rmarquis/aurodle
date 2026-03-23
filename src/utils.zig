@@ -123,11 +123,12 @@ const registry_mod = @import("registry.zig");
 pub fn promptProviderChoice(
     dep_name: []const u8,
     candidates: []const registry_mod.ProviderCandidate,
+    c: color.Style,
 ) ?usize {
     const stdin = getTerminalStdin() orelse return 0;
     const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
     const w = stderr.deprecatedWriter();
-    w.print(":: There are {d} providers available for {s}:\n", .{ candidates.len, dep_name }) catch {};
+    w.print("{s}::{s} There are {d} providers available for {s}:\n", .{ c.blue, c.reset, candidates.len, dep_name }) catch {};
 
     // Group by db_name and display
     var num: usize = 1;
@@ -135,7 +136,7 @@ pub fn promptProviderChoice(
     for (candidates) |cand| {
         if (!std.mem.eql(u8, cand.db_name, current_db)) {
             current_db = cand.db_name;
-            w.print(":: Repository {s}\n   ", .{current_db}) catch {};
+            w.print("{s}::{s} Repository {s}\n   ", .{ c.blue, c.reset, current_db }) catch {};
         }
         w.print(" {d}) {s}", .{ num, cand.name }) catch {};
         num += 1;

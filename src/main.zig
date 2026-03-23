@@ -375,6 +375,7 @@ fn runWithFullStack(
     if (!parsed.flags.noconfirm) {
         reg.provider_chooser = &utils.promptProviderChoice;
     }
+    reg.stderr_color = aurodle.color.Style.detect(std.posix.STDERR_FILENO, pm.color);
 
     // Initialize privilege escalation (PACMAN_AUTH → sudo → su)
     var auth = auth_mod.Auth.init(allocator, repository.makepkg_conf.pacman_auth) catch |err| {

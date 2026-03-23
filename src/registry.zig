@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const aur = @import("aur.zig");
+const color = @import("color.zig");
 const pacman_mod = @import("pacman.zig");
 
 // ── Provider Selection Types ─────────────────────────────────────────────
@@ -14,6 +15,7 @@ pub const ProviderCandidate = struct {
 pub const ProviderChooserFn = *const fn (
     dep_name: []const u8,
     candidates: []const ProviderCandidate,
+    stderr_color: color.Style,
 ) ?usize;
 
 pub const ProviderSelection = struct {
@@ -61,6 +63,7 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
         cache: std.StringHashMapUnmanaged(Resolution),
         pending_aur: std.StringArrayHashMapUnmanaged(void),
         provider_chooser: ?ProviderChooserFn = null,
+        stderr_color: color.Style = color.Style.disabled,
         provider_choices: std.StringHashMapUnmanaged([]const u8) = .empty,
         provider_selections: std.ArrayListUnmanaged(ProviderSelection) = .empty,
 
@@ -308,7 +311,7 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
                 });
             }
 
-            const idx = self.provider_chooser.?(name, candidates.items) orelse 0;
+            const idx = self.provider_chooser.?(name, candidates.items, self.stderr_color) orelse 0;
             const provider = all[idx];
             try self.cacheProviderChoice(name, provider.provider_name);
             return self.makeProviderResolution(name, provider);
@@ -388,7 +391,7 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
                 });
             }
 
-            const idx = self.provider_chooser.?(name, candidates.items) orelse 0;
+            const idx = self.provider_chooser.?(name, candidates.items, self.stderr_color) orelse 0;
             const provider_pkg = results[idx];
             try self.cacheProviderChoice(name, provider_pkg.name);
             return makeAurResolution(provider_pkg, provider_pkg.name);
@@ -1163,18 +1166,18 @@ test "resolve returns unknown when no provider exists anywhere" {
 
 // ── Provider Selection Tests ────────────────────────────────────────────
 
-fn testChooserSecond(_: []const u8, candidates: []const ProviderCandidate) ?usize {
+fn testChooserSecond(_: []const u8, candidates: []const ProviderCandidate, _: color.Style) ?usize {
     if (candidates.len >= 2) return 1;
     return 0;
 }
 
-fn testChooserFirst(_: []const u8, _: []const ProviderCandidate) ?usize {
+fn testChooserFirst(_: []const u8, _: []const ProviderCandidate, _: color.Style) ?usize {
     return 0;
 }
 
 var test_chooser_call_count: usize = 0;
 
-fn testChooserCounting(_: []const u8, _: []const ProviderCandidate) ?usize {
+fn testChooserCounting(_: []const u8, _: []const ProviderCandidate, _: color.Style) ?usize {
     test_chooser_call_count += 1;
     return 0;
 }
