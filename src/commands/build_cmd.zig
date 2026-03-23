@@ -667,6 +667,12 @@ fn chrootDir() []const u8 {
 
 /// Ensure a clean chroot exists, creating it with mkarchroot if needed.
 fn ensureChroot(allocator: Allocator, auth: *auth_mod.Auth, err_writer: anytype, ec: color.Style) !bool {
+    // Check that devtools is installed
+    if (!auth_mod.findOnPath("makechrootpkg")) {
+        err_writer.print("{s}error:{s} makechrootpkg not found -- install devtools: pacman -S devtools\n", .{ ec.red, ec.reset }) catch {};
+        return false;
+    }
+
     const chroot_path = chrootDir();
     const root_path = std.fmt.allocPrint(allocator, "{s}/root", .{chroot_path}) catch return false;
     defer allocator.free(root_path);
@@ -712,6 +718,19 @@ fn buildLoop(
         }
     }
 
+    // Track built package paths per pkgbase for chroot -I injection.
+    // In chroot mode, built AUR deps must be explicitly installed into the
+    // clean chroot via makechrootpkg -I since it has no aurpkgs repo.
+    var built_pkg_paths: std.StringHashMapUnmanaged([]const []const u8) = .empty;
+    defer {
+        var it = built_pkg_paths.iterator();
+        while (it.next()) |kv| {
+            for (kv.value_ptr.*) |p| self.allocator.free(p);
+            self.allocator.free(kv.value_ptr.*);
+        }
+        built_pkg_paths.deinit(self.allocator);
+    }
+
     for (plan.build_order, 0..) |entry, i| {
         // Skip if a dependency failed, propagating failure to downstream entries
         if (hasFailedDep(entry, &failed_bases)) {
@@ -728,12 +747,7 @@ fn buildLoop(
 
         // Run build command: makechrootpkg in chroot mode, makepkg otherwise
         const exit_code = if (self.flags.chroot) blk: {
-            const chroot_path = chrootDir();
-            const args: []const []const u8 = if (self.flags.rebuild)
-                &.{ "makechrootpkg", "-c", "-r", chroot_path, "--", "--force" }
-            else
-                &.{ "makechrootpkg", "-c", "-r", chroot_path };
-            break :blk try utils.runInteractive(self.allocator, args, clone_dir);
+            break :blk try runChrootBuild(self, entry, &built_pkg_paths, clone_dir);
         } else blk: {
             const args: []const []const u8 = if (self.flags.rebuild)
                 &.{ "makepkg", "-sf", "--noconfirm" }
@@ -781,14 +795,22 @@ fn buildLoop(
             try failed_bases.put(self.allocator, entry.pkgbase, {});
             continue;
         };
-        defer {
-            for (added) |p| self.allocator.free(p);
-            self.allocator.free(added);
+
+        // In chroot mode, remember built paths so downstream builds can use -I.
+        if (self.flags.chroot) {
+            try built_pkg_paths.put(self.allocator, entry.pkgbase, added);
+        } else {
+            defer {
+                for (added) |p| self.allocator.free(p);
+                self.allocator.free(added);
+            }
         }
 
         // Refresh aurpkgs sync DB only when a subsequent build needs this package.
         // repo-add updated the repo dir DB, but pacman's sync cache
         // (/var/lib/pacman/sync/aurpkgs.db) is root-owned and separate.
+        // In chroot mode the chroot is isolated, but the host DB still needs
+        // refreshing for the final install step.
         if (anySubsequentEntryNeeds(plan.build_order[i + 1 ..], entry.pkgbase)) {
             refreshAurpkgsSyncDb(self.allocator, repository, self.auth.?) catch |err| {
                 self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err }) catch {};
@@ -803,6 +825,39 @@ fn buildLoop(
         .failed = try failed.toOwnedSlice(self.allocator),
         .signal_aborted = false,
     };
+}
+
+/// Build a package inside a clean chroot using makechrootpkg.
+/// Injects previously-built AUR dependencies via -I flags so the
+/// isolated chroot can satisfy AUR-to-AUR dependency chains.
+fn runChrootBuild(
+    self: *const Commands,
+    entry: solver_mod.BuildEntry,
+    built_pkg_paths: *const std.StringHashMapUnmanaged([]const []const u8),
+    clone_dir: []const u8,
+) !u8 {
+    const chroot_path = chrootDir();
+
+    // Build argv: makechrootpkg -c -u -r <chroot> [-I dep1.pkg ...] [-- --force]
+    var argv: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer argv.deinit(self.allocator);
+
+    try argv.appendSlice(self.allocator, &.{ "makechrootpkg", "-c", "-u", "-r", chroot_path });
+
+    // Inject previously-built AUR deps so they're available inside the chroot
+    for (entry.aur_dep_bases) |dep_base| {
+        if (built_pkg_paths.get(dep_base)) |paths| {
+            for (paths) |pkg_path| {
+                try argv.appendSlice(self.allocator, &.{ "-I", pkg_path });
+            }
+        }
+    }
+
+    if (self.flags.rebuild) {
+        try argv.appendSlice(self.allocator, &.{ "--", "--force" });
+    }
+
+    return self.auth.?.runInteractive(argv.items, clone_dir);
 }
 
 pub fn hasFailedDep(

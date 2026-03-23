@@ -463,7 +463,7 @@ fn printHelp() void {
         \\  --asexplicit           Install as explicitly installed
         \\  --devel                Check VCS packages (-git, -svn, etc.) for updates
         \\  --ignore <pkg,...>     Skip packages (comma-separated)
-        \\  --chroot               Build in clean chroot (requires devtools)
+        \\  --chroot               Build in a clean chroot
         \\
         \\Clone options:
         \\  --recurse              Recursively clone AUR dependencies

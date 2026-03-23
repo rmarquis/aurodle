@@ -234,7 +234,7 @@ fn keepaliveLoop(auth: *Auth, argv: []const []const u8) void {
 }
 
 /// Check if a binary exists on PATH.
-fn findOnPath(name: []const u8) bool {
+pub fn findOnPath(name: []const u8) bool {
     const path_env = std.posix.getenv("PATH") orelse return false;
     var iter = std.mem.tokenizeScalar(u8, path_env, ':');
     while (iter.next()) |dir| {
