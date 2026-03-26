@@ -255,6 +255,14 @@ pub const Pacman = struct {
         return alpm.findSatisfier(local_pkgs, depstring) != null;
     }
 
+    /// Find the installed package that satisfies a dependency (by name or provides).
+    /// Returns the satisfier's name, or null if nothing installed satisfies it.
+    pub fn findLocalSatisfier(self: Pacman, depstring: []const u8) ?[]const u8 {
+        const local_pkgs = self.local_db.getPkgcache();
+        const pkg = alpm.findSatisfier(local_pkgs, depstring) orelse return null;
+        return pkg.getName();
+    }
+
     // ── Provider Resolution ──────────────────────────────────────────────
 
     /// Find a package that provides the given dependency.

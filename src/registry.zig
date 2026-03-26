@@ -231,17 +231,34 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
         // ── Private Resolution Tiers ────────────────────────────────────
 
         fn resolveLocal(self: *Self, name: []const u8, constraint: ?pacman_mod.VersionConstraint) ?Resolution {
-            if (!self.pacman.isInstalled(name)) return null;
+            if (self.pacman.isInstalled(name)) {
+                if (constraint) |c| {
+                    if (!self.pacman.satisfies(name, c)) return null;
+                }
 
-            if (constraint) |c| {
-                if (!self.pacman.satisfies(name, c)) return null;
+                return .{
+                    .name = name,
+                    .source = if (self.pacman.isInOfficialSyncDb(name)) .satisfied_repos else .satisfied_aur,
+                    .version = self.pacman.installedVersion(name),
+                };
             }
 
-            return .{
-                .name = name,
-                .source = if (self.pacman.isInOfficialSyncDb(name)) .satisfied_repos else .satisfied_aur,
-                .version = self.pacman.installedVersion(name),
-            };
+            // Check if an installed package provides this dependency
+            // (e.g. nodejs-lts-jod provides nodejs)
+            if (self.pacman.findLocalSatisfier(name)) |provider_name| {
+                if (constraint) |c| {
+                    if (!self.pacman.satisfies(provider_name, c)) return null;
+                }
+
+                return .{
+                    .name = name,
+                    .source = if (self.pacman.isInOfficialSyncDb(provider_name)) .satisfied_repos else .satisfied_aur,
+                    .version = self.pacman.installedVersion(provider_name),
+                    .provider = provider_name,
+                };
+            }
+
+            return null;
         }
 
         fn resolveSync(self: *Self, name: []const u8, constraint: ?pacman_mod.VersionConstraint) ?Resolution {
@@ -553,6 +570,16 @@ const MockPacman = struct {
     pub fn satisfies(self: MockPacman, name: []const u8, constraint: pacman_mod.VersionConstraint) bool {
         const version = self.installed.get(name) orelse return false;
         return pacman_mod.checkVersion(version, constraint);
+    }
+
+    pub fn findLocalSatisfier(self: MockPacman, dep: []const u8) ?[]const u8 {
+        // Exact name installed?
+        if (self.installed.contains(dep)) return dep;
+        // Check if a registered provider for this dep is installed
+        if (self.providers.get(dep)) |match| {
+            if (self.installed.contains(match.provider_name)) return match.provider_name;
+        }
+        return null;
     }
 
     pub fn findProvider(self: MockPacman, dep: []const u8) ?pacman_mod.ProviderMatch {
