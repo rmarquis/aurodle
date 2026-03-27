@@ -246,7 +246,7 @@ fn syncFiltered(self: *Commands, filtered: []const []const u8) !ExitCode {
             defer all_names.deinit(self.allocator);
             try all_names.appendSlice(self.allocator, aurpkgs_targets.items);
             try all_names.appendSlice(self.allocator, plan.repo_targets);
-            cmds.displayInstallList(all_names.items, self.pacman, self.stdout_color);
+            cmds.displayInstallList(all_names.items, self.pacman, self.err_writer, self.stdout_color, self.stderr_color);
 
             if (!self.flags.noconfirm) {
                 if (!try utils.promptYesNoStyled(self.stdout_color, "Proceed with installation?")) {

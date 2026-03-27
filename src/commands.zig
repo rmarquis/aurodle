@@ -523,10 +523,22 @@ fn displayPlanVerbose(
 
 /// Display an install-only package list (all packages from sync dbs),
 /// respecting VerbosePkgLists from pacman.conf.
-pub fn displayInstallList(names: []const []const u8, pm: ?*pacman_mod.Pacman, c: color.Style) void {
+pub fn displayInstallList(names: []const []const u8, pm: ?*pacman_mod.Pacman, err_writer: std.io.AnyWriter, c: color.Style, ec: color.Style) void {
     if (names.len == 0) return;
     const stdout = getStdout();
     const verbose = if (pm) |p| p.verbose_pkg_lists else false;
+
+    // Warn about reinstalls (matches displayPlan behaviour)
+    if (pm) |p| {
+        for (names) |name| {
+            if (p.installedVersion(name)) |old| {
+                const new = p.syncVersion(name) orelse continue;
+                if (std.mem.eql(u8, old, new)) {
+                    err_writer.print("{s}warning:{s} {s}-{s} is up to date -- reinstalling\n", .{ ec.yellow, ec.reset, name, old }) catch {};
+                }
+            }
+        }
+    }
 
     if (verbose) {
         // Reuse the same table format as displayPlanVerbose for repo packages
