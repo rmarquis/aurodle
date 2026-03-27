@@ -377,9 +377,12 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                         const conflict_name = registry_mod.parseDep(conflict_dep).name;
                         if (std.mem.eql(u8, conflict_name, node.meta.name)) continue;
 
-                        // Resolve conflict target: direct graph node or provides lookup
-                        const resolved_name = if (self.graph.getNode(conflict_name)) |_|
-                            conflict_name
+                        // Resolve conflict target: direct graph node or provides lookup.
+                        // Use n.meta.name (not conflict_name) so alias "auracle" → "auracle-git"
+                        // yields "auracle-git", letting the self-conflict check below suppress
+                        // auracle-git conflicting with its own provided name "auracle".
+                        const resolved_name = if (self.graph.getNode(conflict_name)) |n|
+                            n.meta.name
                         else if (provides_map.get(conflict_name)) |provider|
                             provider
                         else
@@ -2137,6 +2140,26 @@ test "detectConflicts skips self-conflict via provides" {
     defer s.deinit();
 
     const plan = try s.resolve(&.{"foo-git"});
+    defer plan.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), plan.conflicts.len);
+}
+
+test "detectConflicts skips self-conflict via alias (provider redirect)" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // pacaur depends on "foo"; "foo" doesn't exist standalone but foo-git provides it.
+    // foo-git also conflicts with "foo" (standard -git PKGBUILD pattern).
+    // After solving pacaur, an alias "foo" → "foo-git" is registered.
+    // detectConflicts must not report foo-git conflicting with itself via that alias.
+    mock.addAurPackageFull("foo-git", &.{}, &.{"foo"}, &.{"foo"});
+    mock.addProvider("foo", "foo-git", .aur, "r1-1");
+    mock.addAurPackage("pacaur", &.{"foo"}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"pacaur"});
     defer plan.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 0), plan.conflicts.len);
