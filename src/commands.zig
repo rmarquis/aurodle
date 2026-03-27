@@ -521,6 +521,70 @@ fn displayPlanVerbose(
     }
 }
 
+/// Display an install-only package list (all packages from sync dbs),
+/// respecting VerbosePkgLists from pacman.conf.
+pub fn displayInstallList(names: []const []const u8, pm: ?*pacman_mod.Pacman, c: color.Style) void {
+    if (names.len == 0) return;
+    const stdout = getStdout();
+    const verbose = if (pm) |p| p.verbose_pkg_lists else false;
+
+    if (verbose) {
+        // Reuse the same table format as displayPlanVerbose for repo packages
+        var name_col: usize = hdr_pkg.len + countDigits(names.len);
+        var old_col: usize = hdr_old_ver.len;
+        var has_old_version = false;
+        for (names) |name| {
+            const repo = if (pm) |p| p.syncDbFor(name) else null;
+            const w = if (repo) |r| r.len + 1 + name.len else name.len;
+            if (w > name_col) name_col = w;
+            if (pm) |p| {
+                if (p.installedVersion(name)) |v| {
+                    has_old_version = true;
+                    if (v.len > old_col) old_col = v.len;
+                }
+            }
+        }
+        stdout.writeByte('\n') catch {};
+        stdout.print(hdr_pkg[0 .. hdr_pkg.len - 1] ++ "{d})", .{names.len}) catch {};
+        pad(stdout, countDigits(names.len) + hdr_pkg.len, name_col);
+        if (has_old_version) {
+            stdout.writeAll(hdr_old_ver) catch {};
+            pad(stdout, hdr_old_ver.len, old_col);
+        }
+        stdout.writeAll(hdr_new_ver ++ "\n\n") catch {};
+        for (names) |name| {
+            const repo = if (pm) |p| p.syncDbFor(name) else null;
+            const ver = if (pm) |p| p.syncVersion(name) orelse "?" else "?";
+            const w = if (repo) |r| blk: {
+                stdout.print("{s}{s}/{s}{s}", .{ c.magenta, r, c.reset, name }) catch {};
+                break :blk r.len + 1 + name.len;
+            } else blk: {
+                stdout.writeAll(name) catch {};
+                break :blk name.len;
+            };
+            pad(stdout, w, name_col);
+            if (has_old_version) {
+                const old_ver = if (pm) |p| p.installedVersion(name) orelse "-" else "-";
+                if (!std.mem.eql(u8, old_ver, "-")) {
+                    stdout.print("{s}{s}{s}", .{ c.red, old_ver, c.reset }) catch {};
+                } else {
+                    stdout.writeAll(old_ver) catch {};
+                }
+                pad(stdout, old_ver.len, old_col);
+            }
+            stdout.print("{s}{s}{s}\n", .{ c.green, ver, c.reset }) catch {};
+        }
+    } else {
+        stdout.print("\nPackages ({d})", .{names.len}) catch {};
+        for (names) |name| {
+            printCompactRepoPkg(pm, name, stdout, c);
+        }
+        stdout.writeByte('\n') catch {};
+    }
+
+    stdout.writeByte('\n') catch {};
+}
+
 fn pad(writer: anytype, current: usize, col: usize) void {
     const spaces = (col + 2) -| current;
     writer.writeByteNTimes(' ', if (spaces < 2) 2 else spaces) catch {};

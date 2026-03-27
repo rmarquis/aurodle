@@ -241,26 +241,12 @@ fn syncFiltered(self: *Commands, filtered: []const []const u8) !ExitCode {
             }
         }
         if (aurpkgs_targets.items.len > 0 or plan.repo_targets.len > 0) {
-            // Display what will be installed and prompt for confirmation
-            const stdout = getStdout();
-            const sc = self.stdout_color;
-            const aur_repo_name = if (self.repo) |r| r.repo_name else repo_mod.DEFAULT_REPO_NAME;
-            const total = aurpkgs_targets.items.len + plan.repo_targets.len;
-            stdout.print("\nPackages ({d})", .{total}) catch {};
-            for (aurpkgs_targets.items) |name| {
-                const ver = if (self.pacman) |pm| pm.syncVersion(name) orelse "?" else "?";
-                stdout.print(" {s}{s}/{s}{s}-{s}", .{ sc.magenta, aur_repo_name, sc.reset, name, ver }) catch {};
-            }
-            for (plan.repo_targets) |name| {
-                const db = if (self.pacman) |pm| pm.syncDbFor(name) else null;
-                const ver = if (self.pacman) |pm| pm.syncVersion(name) orelse "?" else "?";
-                if (db) |r| {
-                    stdout.print(" {s}{s}/{s}{s}-{s}", .{ sc.magenta, r, sc.reset, name, ver }) catch {};
-                } else {
-                    stdout.print(" {s}-{s}", .{ name, ver }) catch {};
-                }
-            }
-            stdout.writeAll("\n\n") catch {};
+            // Build combined name list and display with compact/verbose support
+            var all_names: std.ArrayListUnmanaged([]const u8) = .empty;
+            defer all_names.deinit(self.allocator);
+            try all_names.appendSlice(self.allocator, aurpkgs_targets.items);
+            try all_names.appendSlice(self.allocator, plan.repo_targets);
+            cmds.displayInstallList(all_names.items, self.pacman, self.stdout_color);
 
             if (!self.flags.noconfirm) {
                 if (!try utils.promptYesNoStyled(self.stdout_color, "Proceed with installation?")) {
