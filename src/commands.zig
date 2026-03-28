@@ -652,9 +652,17 @@ pub fn printError(err: anytype, err_writer: std.io.AnyWriter, ec: color.Style) !
     }
 }
 
-pub fn defaultErrWriter() std.io.AnyWriter {
+/// Module-level stderr DeprecatedWriter — lives at static address so the
+/// AnyWriter returned by .any() holds a valid pointer for the entire
+/// process lifetime.  (Constructing a DeprecatedWriter on the stack and
+/// calling .any() returns a dangling pointer once the frame is gone.)
+const stderr_writer_static: std.fs.File.DeprecatedWriter = blk: {
     const f: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
-    return f.deprecatedWriter().any();
+    break :blk f.deprecatedWriter();
+};
+
+pub fn defaultErrWriter() std.io.AnyWriter {
+    return stderr_writer_static.any();
 }
 
 // ── I/O Helpers ──────────────────────────────────────────────────────
