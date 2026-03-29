@@ -433,15 +433,15 @@ fn printHelp() void {
         \\Commands:
         \\  sync,  -S              Install AUR packages (resolve, clone, build, install)
         \\  build, -Sw             Build packages into local repository
-        \\  clone                  Clone AUR package repositories
-        \\  info,  -Si             Display AUR package information
+        \\  upgrade, -Su           Upgrade outdated AUR packages
         \\  search, -Ss <term>     Search AUR packages
+        \\  info,  -Si             Display AUR package information
+        \\  outdated, -Qu          List outdated AUR packages
+        \\  clean, -Sc, -Scc       Remove stale or all cache files
+        \\  clone                  Clone AUR package repositories
         \\  show                   Display package build files
         \\  resolve                Show dependency tree
         \\  buildorder             Show build order (machine-readable)
-        \\  outdated, -Qu          List outdated AUR packages
-        \\  upgrade, -Su           Upgrade outdated AUR packages
-        \\  clean, -Sc, -Scc       Remove stale or all cache files
         \\
         \\Global options:
         \\  -h, --help             Show this help
