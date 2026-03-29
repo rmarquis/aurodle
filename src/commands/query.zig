@@ -166,7 +166,7 @@ pub fn outdated(self: *Commands, filter: []const []const u8) !ExitCode {
         return .general_error;
     }
 
-    formatOutdated(outdated_list.items, self.stdout_color);
+    formatOutdated(outdated_list.items, self.stdout_color, self.flags.quiet);
     return .success;
 }
 
@@ -396,10 +396,12 @@ fn displaySearchResults(packages: []const *aur.Package, c: color.Style, local_db
     }
 }
 
-pub fn formatOutdated(entries: []const OutdatedEntry, c: color.Style) void {
+pub fn formatOutdated(entries: []const OutdatedEntry, c: color.Style, quiet: bool) void {
     const stdout = getStdout();
     for (entries) |entry| {
-        if (entry.ignored) {
+        if (quiet) {
+            stdout.print("{s}\n", .{entry.name}) catch {};
+        } else if (entry.ignored) {
             stdout.print("{s} {s}{s}{s} -> {s}{s}{s} [ignored]\n", .{
                 entry.name,
                 c.red,
