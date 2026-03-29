@@ -136,7 +136,6 @@ const Operation = enum {
         const map = std.StaticStringMap(Operation).initComptime(.{
             .{ "S", .sync },
             .{ "Sw", .build },
-            .{ "G", .clone },
             .{ "Si", .info },
             .{ "Ss", .search },
             .{ "Qu", .outdated },
@@ -206,11 +205,6 @@ fn parseArgs(args: []const []const u8, target_buf: [][]const u8) ParseError!Pars
         if (std.mem.eql(u8, alias, "Scc")) {
             flags.all = true;
             break :blk Operation.clean;
-        }
-        // -Gr is special: maps to clone --recurse
-        if (std.mem.eql(u8, alias, "Gr")) {
-            flags.recurse = true;
-            break :blk Operation.clone;
         }
         break :blk Operation.fromShortAlias(alias) orelse return ParseError.UnknownCommand;
     } else Operation.fromString(args[0]) orelse return ParseError.UnknownCommand;
@@ -439,7 +433,7 @@ fn printHelp() void {
         \\Commands:
         \\  sync,  -S              Install AUR packages (resolve, clone, build, install)
         \\  build, -Sw             Build packages into local repository
-        \\  clone, -G, -Gr         Clone AUR package repositories
+        \\  clone                  Clone AUR package repositories
         \\  info,  -Si             Display AUR package information
         \\  search, -Ss <term>     Search AUR packages
         \\  show                   Display package build files
@@ -561,8 +555,7 @@ test "parseArgs: dashless short aliases are rejected" {
     try std.testing.expectError(ParseError.UnknownCommand, testParse(&.{ "S", "foo" }));
     try std.testing.expectError(ParseError.UnknownCommand, testParse(&.{ "Si", "foo" }));
     try std.testing.expectError(ParseError.UnknownCommand, testParse(&.{ "Ss", "foo" }));
-    try std.testing.expectError(ParseError.UnknownCommand, testParse(&.{ "G", "foo" }));
-    try std.testing.expectError(ParseError.UnknownCommand, testParse(&.{ "Gr", "foo" }));
+
     try std.testing.expectError(ParseError.UnknownCommand, testParse(&.{ "Sc", "foo" }));
     try std.testing.expectError(ParseError.UnknownCommand, testParse(&.{ "Scc", "foo" }));
 }
@@ -593,23 +586,14 @@ test "parseArgs: dash-prefixed short aliases" {
     try std.testing.expectEqual(Operation.build, parsed6.operation);
 
     var buf7: [256][]const u8 = undefined;
-    const parsed7 = try parseArgs(&.{ "-G", "foo" }, &buf7);
-    try std.testing.expectEqual(Operation.clone, parsed7.operation);
+    const parsed7 = try parseArgs(&.{"-Sc"}, &buf7);
+    try std.testing.expectEqual(Operation.clean, parsed7.operation);
+    try std.testing.expect(!parsed7.flags.all);
 
     var buf8: [256][]const u8 = undefined;
-    const parsed8 = try parseArgs(&.{"-Sc"}, &buf8);
+    const parsed8 = try parseArgs(&.{"-Scc"}, &buf8);
     try std.testing.expectEqual(Operation.clean, parsed8.operation);
-    try std.testing.expect(!parsed8.flags.all);
-
-    var buf9: [256][]const u8 = undefined;
-    const parsed9 = try parseArgs(&.{"-Scc"}, &buf9);
-    try std.testing.expectEqual(Operation.clean, parsed9.operation);
-    try std.testing.expect(parsed9.flags.all);
-
-    var buf10: [256][]const u8 = undefined;
-    const parsed10 = try parseArgs(&.{ "-Gr", "foo" }, &buf10);
-    try std.testing.expectEqual(Operation.clone, parsed10.operation);
-    try std.testing.expect(parsed10.flags.recurse);
+    try std.testing.expect(parsed8.flags.all);
 }
 
 test "parseArgs: --recurse flag" {
