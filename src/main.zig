@@ -461,15 +461,15 @@ fn printHelp() void {
         \\  --rebuild              Force rebuild
         \\  --asdeps               Install as dependency
         \\  --asexplicit           Install as explicitly installed
-        \\  --devel                Check VCS packages (-git, -svn, etc.) for updates
-        \\  --ignore <pkg,...>     Skip packages (comma-separated)
+        \\  --devel                Check VCS packages for updates
+        \\  --ignore <pkg,...>     Skip packages
         \\  --chroot               Build in a clean chroot
         \\
         \\Clone options:
         \\  --recurse              Recursively clone AUR dependencies
         \\
         \\Clean options:
-        \\  --all                  Remove all built packages (not just uninstalled)
+        \\  --all                  Remove all built packages
         \\
         \\Search options:
         \\  --by <field>           Search by: name, name-desc, maintainer
