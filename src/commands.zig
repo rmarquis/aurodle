@@ -374,12 +374,19 @@ fn displayPlanCompact(
     stdout: anytype,
     c: color.Style,
 ) void {
-    const total = plan.build_order.len + plan.repo_deps.len + plan.repo_targets.len;
+    var aur_count: usize = 0;
+    for (plan.build_order) |entry| {
+        aur_count += if (entry.target_names.len > 0) entry.target_names.len else 1;
+    }
+    const total = aur_count + plan.repo_deps.len + plan.repo_targets.len;
     if (total == 0) return;
 
     stdout.print("\nPackages ({d})", .{total}) catch {};
     for (plan.build_order) |entry| {
-        stdout.print(" {s}aur/{s}{s}-{s}", .{ c.magenta, c.reset, entry.name, displayVersion(entry) }) catch {};
+        const display_names: []const []const u8 = if (entry.target_names.len > 0) entry.target_names else &.{entry.name};
+        for (display_names) |tname| {
+            stdout.print(" {s}aur/{s}{s}-{s}", .{ c.magenta, c.reset, tname, displayVersion(entry) }) catch {};
+        }
     }
     for (plan.repo_targets) |name| {
         printCompactRepoPkg(pm, name, stdout, c);
@@ -411,7 +418,11 @@ fn displayPlanVerbose(
     stdout: anytype,
     c: color.Style,
 ) void {
-    const total = plan.build_order.len + removals.len + plan.repo_deps.len + plan.repo_targets.len;
+    var aur_count: usize = 0;
+    for (plan.build_order) |entry| {
+        aur_count += if (entry.target_names.len > 0) entry.target_names.len else 1;
+    }
+    const total = aur_count + removals.len + plan.repo_deps.len + plan.repo_targets.len;
     if (total == 0) return;
 
     // Compute column widths, seeded from header
@@ -421,11 +432,14 @@ fn displayPlanVerbose(
 
     const aur_prefix = "aur/";
     for (plan.build_order) |entry| {
-        if (aur_prefix.len + entry.name.len > name_col) name_col = aur_prefix.len + entry.name.len;
-        if (pm) |p| {
-            if (p.installedVersion(entry.name)) |v| {
-                has_old_version = true;
-                if (v.len > old_col) old_col = v.len;
+        const display_names: []const []const u8 = if (entry.target_names.len > 0) entry.target_names else &.{entry.name};
+        for (display_names) |tname| {
+            if (aur_prefix.len + tname.len > name_col) name_col = aur_prefix.len + tname.len;
+            if (pm) |p| {
+                if (p.installedVersion(tname)) |v| {
+                    has_old_version = true;
+                    if (v.len > old_col) old_col = v.len;
+                }
             }
         }
     }
@@ -480,18 +494,21 @@ fn displayPlanVerbose(
 
     // AUR packages being built/installed
     for (plan.build_order) |entry| {
-        stdout.print("{s}{s}{s}{s}", .{ c.magenta, aur_prefix, c.reset, entry.name }) catch {};
-        pad(stdout, aur_prefix.len + entry.name.len, name_col);
-        if (has_old_version) {
-            const old_ver = if (pm) |p| p.installedVersion(entry.name) orelse "" else "";
-            if (old_ver.len > 0) {
-                stdout.print("{s}{s}{s}", .{ c.red, old_ver, c.reset }) catch {};
-                pad(stdout, old_ver.len, old_col);
-            } else {
-                pad(stdout, 0, old_col);
+        const display_names: []const []const u8 = if (entry.target_names.len > 0) entry.target_names else &.{entry.name};
+        for (display_names) |tname| {
+            stdout.print("{s}{s}{s}{s}", .{ c.magenta, aur_prefix, c.reset, tname }) catch {};
+            pad(stdout, aur_prefix.len + tname.len, name_col);
+            if (has_old_version) {
+                const old_ver = if (pm) |p| p.installedVersion(tname) orelse "" else "";
+                if (old_ver.len > 0) {
+                    stdout.print("{s}{s}{s}", .{ c.red, old_ver, c.reset }) catch {};
+                    pad(stdout, old_ver.len, old_col);
+                } else {
+                    pad(stdout, 0, old_col);
+                }
             }
+            stdout.print("{s}{s}{s}\n", .{ c.green, displayVersion(entry), c.reset }) catch {};
         }
-        stdout.print("{s}{s}{s}\n", .{ c.green, displayVersion(entry), c.reset }) catch {};
     }
 
     // Repo packages (targets + deps)
