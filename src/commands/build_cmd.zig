@@ -51,32 +51,17 @@ pub fn show(self: *Commands, target: []const u8) !ExitCode {
         return .general_error;
     }
 
-    const files = try git.listFiles(self.allocator, c_root, pkgbase);
-    defer {
-        for (files) |f| self.allocator.free(f.name);
-        self.allocator.free(files);
-    }
+    const clone_dir = try git.cloneDir(self.allocator, c_root, pkgbase);
+    defer self.allocator.free(clone_dir);
 
-    const stdout = getStdout();
-
-    // Display file listing
-    stdout.print("{s}::{s} {s} build files:\n", .{ c.blue, c.reset, pkgbase }) catch {};
-    for (files) |file| {
-        const marker: []const u8 = if (file.is_pkgbuild) " (PKGBUILD)" else "";
-        stdout.print("  {s}{s}\n", .{ file.name, marker }) catch {};
-    }
-    stdout.writeByte('\n') catch {};
-
-    // Display PKGBUILD content
-    const pkgbuild_content = git.readFile(self.allocator, c_root, pkgbase, "PKGBUILD") catch |err| {
-        self.err_writer.print("{s}error:{s} could not read PKGBUILD: {}\n", .{ ec.red, ec.reset, err }) catch {};
+    const viewer = getViewer();
+    const exit_code = utils.runInteractive(self.allocator, &.{ viewer, clone_dir }, null) catch |err| {
+        self.err_writer.print("{s}error:{s} could not open viewer ({s}): {}\n", .{ ec.red, ec.reset, viewer, err }) catch {};
         return .general_error;
     };
-    defer self.allocator.free(pkgbuild_content);
 
-    stdout.print("{s}::{s} PKGBUILD:\n{s}\n", .{ c.blue, c.reset, pkgbuild_content }) catch {};
-
-    return .success;
+    _ = c;
+    return if (exit_code == 0) .success else .general_error;
 }
 
 // ── Clone Command ────────────────────────────────────────────────────
@@ -902,7 +887,7 @@ fn reviewPackages(
 ) !void {
     const stdout = getStdout();
     const sc = self.stdout_color;
-    const editor = getEditor();
+    const editor = getViewer();
 
     for (entries) |entry| {
         const clone_dir = try git.cloneDir(self.allocator, c_root, entry.pkgbase);
@@ -951,7 +936,8 @@ fn reviewPackages(
     }
 }
 
-fn getEditor() []const u8 {
+fn getViewer() []const u8 {
+    if (std.posix.getenv("PAGER")) |p| if (p.len > 0) return p;
     if (std.posix.getenv("VISUAL")) |v| if (v.len > 0) return v;
     if (std.posix.getenv("EDITOR")) |e| if (e.len > 0) return e;
     return "vim";
