@@ -125,6 +125,10 @@ pub const Repository = struct {
     /// Handles split packages: one PKGBUILD may produce multiple .pkg.tar.* files.
     pub fn addBuiltPackages(self: *const Repository) ![]const []const u8 {
         const pkg_files = try self.findBuiltPackages(self.repo_dir);
+        errdefer {
+            for (pkg_files) |p| self.allocator.free(p);
+            self.allocator.free(pkg_files);
+        }
 
         if (pkg_files.len == 0) return error.PackageNotFound;
 
