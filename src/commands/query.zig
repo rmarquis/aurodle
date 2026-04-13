@@ -78,7 +78,7 @@ pub fn search(self: *Commands, query_str: []const u8) !ExitCode {
     const alpm_handle = alpm.Handle.init("/", "/var/lib/pacman/") catch null;
     defer if (alpm_handle) |h| h.deinit();
     const local_db = if (alpm_handle) |h| h.getLocalDb() else null;
-    displaySearchResults(sorted, self.stdout_color, local_db);
+    displaySearchResults(sorted, self.stdout_color, local_db, self.flags.quiet);
 
     return .success;
 }
@@ -361,10 +361,15 @@ fn displayInfo(pkg: *aur.Package, installed_version: ?[]const u8, c: color.Style
     stdout.writeByte('\n') catch {};
 }
 
-fn displaySearchResults(packages: []const *aur.Package, c: color.Style, local_db: ?alpm.Database) void {
+fn displaySearchResults(packages: []const *aur.Package, c: color.Style, local_db: ?alpm.Database, quiet: bool) void {
     const stdout = getStdout();
 
     for (packages) |pkg| {
+        if (quiet) {
+            stdout.print("{s}\n", .{pkg.name}) catch {};
+            continue;
+        }
+
         const ver_color = if (pkg.out_of_date != null) c.red else c.green;
         stdout.print("{s}aur/{s}{s} {s}{s}{s} (+{d}, {d:.2})", .{
             c.magenta,
