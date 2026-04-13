@@ -33,7 +33,6 @@ pub const Flags = struct {
     needed: bool = false,
     rebuild: bool = false,
     quiet: bool = false,
-    raw: bool = false,
     asdeps: bool = false,
     asexplicit: bool = false,
     devel: bool = false,

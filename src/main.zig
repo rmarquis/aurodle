@@ -227,8 +227,6 @@ fn parseArgs(args: []const []const u8, target_buf: [][]const u8) ParseError!Pars
                 flags.rebuild = true;
             } else if (std.mem.eql(u8, arg, "--quiet")) {
                 flags.quiet = true;
-            } else if (std.mem.eql(u8, arg, "--raw")) {
-                flags.raw = true;
             } else if (std.mem.eql(u8, arg, "--asdeps")) {
                 flags.asdeps = true;
             } else if (std.mem.eql(u8, arg, "--asexplicit")) {
@@ -469,7 +467,6 @@ fn printHelp() void {
         \\  --by <field>           Search by: name, name-desc, maintainer
         \\  --sort <field>         Sort by: name, votes, popularity
         \\  --rsort <field>        Reverse sort
-        \\  --raw                  Output raw JSON
         \\
     ) catch {};
 }
@@ -635,12 +632,6 @@ test "parseArgs: --rebuild flag" {
     var buf: [256][]const u8 = undefined;
     const parsed = try parseArgs(&.{ "build", "--rebuild", "foo" }, &buf);
     try std.testing.expect(parsed.flags.rebuild);
-}
-
-test "parseArgs: --raw flag" {
-    var buf: [256][]const u8 = undefined;
-    const parsed = try parseArgs(&.{ "info", "--raw", "foo" }, &buf);
-    try std.testing.expect(parsed.flags.raw);
 }
 
 test "parseArgs: --noshow flag" {
