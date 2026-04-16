@@ -15,13 +15,16 @@ Packages are built with makepkg and added to a local pacman repo, so pacman hand
 
 ```bash
 aurodle sync <package>        # build and install a package
+aurodle build <package>       # build without installing
+aurodle upgrade               # upgrade outdated AUR packages
 aurodle search <query>        # search the AUR
 aurodle info <package>        # show package details
-aurodle upgrade               # upgrade outdated AUR packages
 aurodle outdated              # list outdated AUR packages
-aurodle build <package>       # build without installing
-aurodle buildorder <package>  # show dependency build order
 aurodle clean                 # remove stale packages from the local repo
+aurodle clone <package>       # clone AUR package repositories
+aurodle show <package>        # display package build files
+aurodle resolve <package>     # show dependency tree
+aurodle buildorder <package>  # show build order (machine-readable)
 ```
 
 ## Building
