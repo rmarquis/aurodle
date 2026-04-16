@@ -9,6 +9,7 @@ const repo_mod = @import("../repo.zig");
 const pacman_mod = @import("../pacman.zig");
 const utils = @import("../utils.zig");
 const auth_mod = @import("../auth.zig");
+const registry_mod = @import("../registry.zig");
 const cmds = @import("../commands.zig");
 const query = @import("query.zig");
 const color = @import("../color.zig");
@@ -247,8 +248,46 @@ fn syncFiltered(self: *Commands, filtered: []const []const u8) !ExitCode {
         return .success;
     }
 
+    // Phase 1.6: Provider selection for transitive repo deps
+    var chosen_providers: std.StringHashMapUnmanaged([]const u8) = .empty;
+    defer chosen_providers.deinit(self.allocator);
+    var providers_to_install: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer providers_to_install.deinit(self.allocator);
+
+    if (self.pacman) |pm| {
+        const choices = try pm.findTransitiveProviderChoices(self.allocator, plan.repo_deps);
+        defer {
+            for (choices) |ch| self.allocator.free(ch.candidates);
+            self.allocator.free(choices);
+        }
+        for (choices) |choice| {
+            var candidates: std.ArrayListUnmanaged(registry_mod.ProviderCandidate) = .empty;
+            defer candidates.deinit(self.allocator);
+            for (choice.candidates) |m| {
+                try candidates.append(self.allocator, .{
+                    .name = m.provider_name,
+                    .version = m.provider_version,
+                    .db_name = m.db_name,
+                });
+            }
+            const idx = if (self.flags.noconfirm)
+                @as(?usize, 0)
+            else
+                utils.promptProviderChoice(choice.dep_name, candidates.items, self.stdout_color);
+            const chosen_idx = idx orelse 0;
+            try chosen_providers.put(self.allocator, choice.dep_name, choice.candidates[chosen_idx].provider_name);
+            try providers_to_install.append(self.allocator, choice.candidates[chosen_idx].provider_name);
+        }
+    }
+
+    const repo_deps_full = if (self.pacman) |pm|
+        try pm.transitiveRepoDeps(self.allocator, plan.repo_deps, chosen_providers)
+    else
+        try self.allocator.dupe([]const u8, plan.repo_deps);
+    defer self.allocator.free(repo_deps_full);
+
     // Phase 2: Display and confirm
-    displayPlan(plan, self.pacman, removals, self.err_writer, self.stdout_color, ec);
+    displayPlan(plan, repo_deps_full, self.pacman, removals, self.err_writer, self.stdout_color, ec);
 
     if (!self.flags.noconfirm) {
         if (!try utils.promptYesNoStyled(self.stdout_color, "Proceed with installation?")) {
@@ -271,6 +310,11 @@ fn syncFiltered(self: *Commands, filtered: []const []const u8) !ExitCode {
 
     // Phase 4.5: Acquire credentials now that the user has committed
     if (try acquireAuth(self)) |exit| return exit;
+
+    // Pre-install chosen providers so makepkg -s finds them already installed
+    if (providers_to_install.items.len > 0) {
+        if (!try preInstallProviders(self, providers_to_install.items)) return .general_error;
+    }
 
     // Phase 5: Build
     try repository.ensureExists();
@@ -363,7 +407,45 @@ pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
         return .success;
     }
 
-    displayPlan(plan, self.pacman, removals, self.err_writer, self.stdout_color, ec);
+    // Provider selection for transitive repo deps
+    var chosen_providers: std.StringHashMapUnmanaged([]const u8) = .empty;
+    defer chosen_providers.deinit(self.allocator);
+    var providers_to_install: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer providers_to_install.deinit(self.allocator);
+
+    if (self.pacman) |pm| {
+        const choices = try pm.findTransitiveProviderChoices(self.allocator, plan.repo_deps);
+        defer {
+            for (choices) |ch| self.allocator.free(ch.candidates);
+            self.allocator.free(choices);
+        }
+        for (choices) |choice| {
+            var candidates: std.ArrayListUnmanaged(registry_mod.ProviderCandidate) = .empty;
+            defer candidates.deinit(self.allocator);
+            for (choice.candidates) |m| {
+                try candidates.append(self.allocator, .{
+                    .name = m.provider_name,
+                    .version = m.provider_version,
+                    .db_name = m.db_name,
+                });
+            }
+            const idx = if (self.flags.noconfirm)
+                @as(?usize, 0)
+            else
+                utils.promptProviderChoice(choice.dep_name, candidates.items, self.stdout_color);
+            const chosen_idx = idx orelse 0;
+            try chosen_providers.put(self.allocator, choice.dep_name, choice.candidates[chosen_idx].provider_name);
+            try providers_to_install.append(self.allocator, choice.candidates[chosen_idx].provider_name);
+        }
+    }
+
+    const repo_deps_full = if (self.pacman) |pm|
+        try pm.transitiveRepoDeps(self.allocator, plan.repo_deps, chosen_providers)
+    else
+        try self.allocator.dupe([]const u8, plan.repo_deps);
+    defer self.allocator.free(repo_deps_full);
+
+    displayPlan(plan, repo_deps_full, self.pacman, removals, self.err_writer, self.stdout_color, ec);
 
     if (!self.flags.noconfirm) {
         if (!try utils.promptYesNoStyled(self.stdout_color, "Proceed with build?")) {
@@ -386,6 +468,11 @@ pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
 
     // Acquire credentials now that the user has committed
     if (try acquireAuth(self)) |exit| return exit;
+
+    // Pre-install chosen providers so makepkg -s finds them already installed
+    if (providers_to_install.items.len > 0) {
+        if (!try preInstallProviders(self, providers_to_install.items)) return .general_error;
+    }
 
     // Build
     try repository.ensureExists();
@@ -947,6 +1034,23 @@ fn getViewer() []const u8 {
 
 /// Install AUR targets (from aurpkgs) and repo targets (from their sync db)
 /// in a single `pacman -S` transaction.
+/// Pre-install chosen virtual-dep providers via `pacman -S --needed --asdeps`
+/// so that makepkg -s finds them already installed and skips its own prompt.
+/// Returns false if pacman exits non-zero.
+fn preInstallProviders(self: *Commands, pkg_names: []const []const u8) !bool {
+    var argv: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer argv.deinit(self.allocator);
+    try argv.appendSlice(self.allocator, &.{ "pacman", "-S", "--needed", "--asdeps", "--noconfirm" });
+    try argv.appendSlice(self.allocator, pkg_names);
+    const exit_code = try self.auth.?.runInteractive(argv.items, null);
+    if (exit_code != 0) {
+        const ec = self.stderr_color;
+        self.err_writer.print("{s}error:{s} failed to pre-install providers (exit {d})\n", .{ ec.red, ec.reset, exit_code }) catch {};
+        return false;
+    }
+    return true;
+}
+
 fn installAllTargets(self: *Commands, aurpkgs_names: []const []const u8, repo_names: []const []const u8) !void {
     var argv: std.ArrayListUnmanaged([]const u8) = .empty;
     defer argv.deinit(self.allocator);

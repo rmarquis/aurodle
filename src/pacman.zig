@@ -40,6 +40,13 @@ pub const DbSet = enum {
     aurpkgs_only,
 };
 
+/// A virtual dep (e.g. "jack") with multiple uninstalled providers in official repos.
+/// Returned by findTransitiveProviderChoices for interactive selection.
+pub const SyncProviderChoice = struct {
+    dep_name: []const u8,        // virtual dep name, borrowed from alpm memory
+    candidates: []ProviderMatch, // all uninstalled providers; caller owns slice
+};
+
 // ── Pacman Struct ────────────────────────────────────────────────────────
 
 /// High-level domain queries against the local pacman database.
@@ -347,28 +354,40 @@ pub const Pacman = struct {
         return null;
     }
 
+    /// Find ALL packages in official sync dbs (no aurpkgs) that satisfy `dep`.
+    /// Caller owns the returned slice.
+    fn findAllOfficialProviders(self: Pacman, allocator: Allocator, dep: []const u8) ![]ProviderMatch {
+        var matches: std.ArrayList(ProviderMatch) = .empty;
+        errdefer matches.deinit(allocator);
+        for (self.sync_dbs) |db| {
+            if (std.mem.eql(u8, db.getName(), self.aur_repo_name)) continue;
+            try findAllProvidersInDb(allocator, db, dep, &matches);
+        }
+        return try matches.toOwnedSlice(allocator);
+    }
+
     /// Compute the full set of official-repo packages that would need to be
     /// installed when installing `root_names`, following runtime `depends`
     /// transitively and excluding packages already installed locally.
     ///
-    /// Used to expand direct AUR package repo-deps into their full closure
-    /// so the plan display matches what makepkg -s will actually install.
-    ///
-    /// Provider resolution picks the first satisfier found in sync DB order;
-    /// this is suitable for display purposes.
+    /// `provider_choices` maps virtual dep names (e.g. "jack") to the chosen
+    /// provider package name (e.g. "pipewire-jack"). When a dep is present in
+    /// the map the chosen package is used; otherwise first-satisfier wins.
     ///
     /// Caller owns the returned slice (strings themselves are borrowed from
     /// libalpm memory and remain valid until Pacman.deinit).
-    pub fn transitiveRepoDeps(self: Pacman, allocator: Allocator, root_names: []const []const u8) ![][]const u8 {
-        // Insertion-ordered map so display is deterministic.
+    pub fn transitiveRepoDeps(
+        self: Pacman,
+        allocator: Allocator,
+        root_names: []const []const u8,
+        provider_choices: std.StringHashMapUnmanaged([]const u8),
+    ) ![][]const u8 {
         var result = std.StringArrayHashMapUnmanaged(void){};
         defer result.deinit(allocator);
 
-        // BFS queue holds dep strings (may be virtual, e.g. "jack>=1.0").
         var queue = std.ArrayListUnmanaged([]const u8){};
         defer queue.deinit(allocator);
 
-        // Tracks both dep strings and resolved pkg names to break cycles.
         var seen = std.StringHashMapUnmanaged(void){};
         defer seen.deinit(allocator);
 
@@ -384,22 +403,21 @@ pub const Pacman = struct {
             const dep_str = queue.items[head];
             head += 1;
 
-            const pkg = self.findSyncPkgForDep(dep_str) orelse continue;
+            const pkg = (if (provider_choices.get(dep_str)) |chosen_name|
+                self.findInOfficialDbs(chosen_name)
+            else
+                self.findSyncPkgForDep(dep_str)) orelse continue;
             const pkg_name = pkg.getName();
 
-            // Prevent revisiting the concrete package even if reached via
-            // multiple virtual dep strings.
             if (!seen.contains(pkg_name)) {
                 try seen.put(allocator, pkg_name, {});
             }
 
-            // Already installed — dep satisfied, no need to recurse.
             if (self.isInstalled(pkg_name)) continue;
 
             if (!result.contains(pkg_name)) {
                 try result.put(allocator, pkg_name, {});
 
-                // Queue runtime deps for the next BFS level.
                 var dep_it = pkg.getDepends();
                 while (dep_it.next()) |dep| {
                     if (!seen.contains(dep.name)) {
@@ -411,6 +429,82 @@ pub const Pacman = struct {
         }
 
         return try allocator.dupe([]const u8, result.keys());
+    }
+
+    /// Walk the transitive repo dep closure of `root_names` and return a
+    /// `SyncProviderChoice` for each virtual dep that has more than one
+    /// uninstalled provider in official repos.
+    ///
+    /// BFS uses first-satisfier order; the returned choices are in BFS
+    /// encounter order.  Caller owns the slice and each `candidates` slice
+    /// inside it.
+    pub fn findTransitiveProviderChoices(
+        self: Pacman,
+        allocator: Allocator,
+        root_names: []const []const u8,
+    ) ![]SyncProviderChoice {
+        var choices: std.ArrayListUnmanaged(SyncProviderChoice) = .empty;
+        errdefer {
+            for (choices.items) |ch| allocator.free(ch.candidates);
+            choices.deinit(allocator);
+        }
+
+        var queue: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer queue.deinit(allocator);
+        var seen: std.StringHashMapUnmanaged(void) = .empty;
+        defer seen.deinit(allocator);
+
+        for (root_names) |name| {
+            if (!seen.contains(name)) {
+                try seen.put(allocator, name, {});
+                try queue.append(allocator, name);
+            }
+        }
+
+        var head: usize = 0;
+        while (head < queue.items.len) {
+            const dep_str = queue.items[head];
+            head += 1;
+
+            const all = try self.findAllOfficialProviders(allocator, dep_str);
+            defer allocator.free(all);
+
+            var uninstalled: std.ArrayListUnmanaged(ProviderMatch) = .empty;
+            defer uninstalled.deinit(allocator);
+            for (all) |p| {
+                if (!self.isInstalled(p.provider_name)) {
+                    try uninstalled.append(allocator, p);
+                }
+            }
+
+            if (uninstalled.items.len == 0) continue;
+
+            const first_name = uninstalled.items[0].provider_name;
+            if (!seen.contains(first_name)) {
+                try seen.put(allocator, first_name, {});
+            }
+
+            if (uninstalled.items.len > 1) {
+                var claimed = false;
+                const candidates = try uninstalled.toOwnedSlice(allocator);
+                errdefer if (!claimed) allocator.free(candidates);
+                try choices.append(allocator, .{ .dep_name = dep_str, .candidates = candidates });
+                claimed = true;
+            }
+
+            const pkg = self.findInOfficialDbs(first_name) orelse continue;
+            if (self.isInstalled(first_name)) continue;
+
+            var dep_it = pkg.getDepends();
+            while (dep_it.next()) |dep| {
+                if (!seen.contains(dep.name)) {
+                    try seen.put(allocator, dep.name, {});
+                    try queue.append(allocator, dep.name);
+                }
+            }
+        }
+
+        return try choices.toOwnedSlice(allocator);
     }
 
     // ── Database Refresh ─────────────────────────────────────────────────

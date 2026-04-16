@@ -34,7 +34,7 @@ pub fn resolve(self: *Commands, targets: []const []const u8) !ExitCode {
     };
     defer plan.deinit(self.allocator);
 
-    displayPlan(plan, self.pacman, &.{}, self.err_writer, self.stdout_color, ec);
+    displayPlan(plan, plan.repo_deps, self.pacman, &.{}, self.err_writer, self.stdout_color, ec);
     return .success;
 }
 
