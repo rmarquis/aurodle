@@ -52,7 +52,11 @@ pub const Conflict = struct {
 pub const BuildPlan = struct {
     build_order: []BuildEntry,
     all_deps: []DependencyEntry,
+    /// Direct repo deps declared by AUR packages (used for installation).
     repo_deps: [][]const u8,
+    /// Full transitive closure of repo_deps (used for display/size only).
+    /// Superset of repo_deps; same as repo_deps when pacman is unavailable.
+    repo_deps_full: [][]const u8,
     repo_targets: [][]const u8,
     conflicts: []Conflict = &.{},
     provider_selections: []registry_mod.ProviderSelection = &.{},
@@ -65,6 +69,7 @@ pub const BuildPlan = struct {
         allocator.free(self.build_order);
         allocator.free(self.all_deps);
         allocator.free(self.repo_deps);
+        allocator.free(self.repo_deps_full);
         allocator.free(self.repo_targets);
         allocator.free(self.conflicts);
         allocator.free(self.provider_selections);
@@ -666,10 +671,22 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                 }
             }
 
+            const repo_deps_slice = try repo_deps.toOwnedSlice(alloc);
+            errdefer alloc.free(repo_deps_slice);
+
+            // Expand repo_deps to their full transitive closure for display.
+            // Uses comptime guard so mock registries without this method still compile.
+            const PacmanT = @TypeOf(self.registry.pacman.*);
+            const repo_deps_full = if (comptime @hasDecl(PacmanT, "transitiveRepoDeps"))
+                try self.registry.pacman.transitiveRepoDeps(alloc, repo_deps_slice)
+            else
+                try alloc.dupe([]const u8, repo_deps_slice);
+
             return .{
                 .build_order = try build_order.toOwnedSlice(alloc),
                 .all_deps = try all_deps.toOwnedSlice(alloc),
-                .repo_deps = try repo_deps.toOwnedSlice(alloc),
+                .repo_deps = repo_deps_slice,
+                .repo_deps_full = repo_deps_full,
                 .repo_targets = try repo_targets.toOwnedSlice(alloc),
             };
         }

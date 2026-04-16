@@ -345,8 +345,8 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, pm: ?*pacman_mod.Pacman, removals
     }
 
     if (pm) |p| {
-        if (plan.repo_deps.len > 0 or plan.repo_targets.len > 0) {
-            var sizes = p.repoDepSizes(plan.repo_deps);
+        if (plan.repo_deps_full.len > 0 or plan.repo_targets.len > 0) {
+            var sizes = p.repoDepSizes(plan.repo_deps_full);
             const target_sizes = p.repoDepSizes(plan.repo_targets);
             sizes.download += target_sizes.download;
             sizes.install += target_sizes.install;
@@ -377,7 +377,7 @@ fn displayPlanCompact(
     for (plan.build_order) |entry| {
         aur_count += if (entry.target_names.len > 0) entry.target_names.len else 1;
     }
-    const total = aur_count + plan.repo_deps.len + plan.repo_targets.len;
+    const total = aur_count + plan.repo_deps_full.len + plan.repo_targets.len;
     if (total == 0) return;
 
     stdout.print("\nPackages ({d})", .{total}) catch {};
@@ -390,7 +390,7 @@ fn displayPlanCompact(
     for (plan.repo_targets) |name| {
         printCompactRepoPkg(pm, name, stdout, c);
     }
-    for (plan.repo_deps) |dep| {
+    for (plan.repo_deps_full) |dep| {
         printCompactRepoPkg(pm, dep, stdout, c);
     }
     stdout.writeByte('\n') catch {};
@@ -421,7 +421,7 @@ fn displayPlanVerbose(
     for (plan.build_order) |entry| {
         aur_count += if (entry.target_names.len > 0) entry.target_names.len else 1;
     }
-    const total = aur_count + removals.len + plan.repo_deps.len + plan.repo_targets.len;
+    const total = aur_count + removals.len + plan.repo_deps_full.len + plan.repo_targets.len;
     if (total == 0) return;
 
     // Compute column widths, seeded from header
@@ -454,7 +454,7 @@ fn displayPlanVerbose(
     }
     if (removals.len > 0) has_old_version = true;
 
-    const repo_lists = [_][]const []const u8{ plan.repo_targets, plan.repo_deps };
+    const repo_lists = [_][]const []const u8{ plan.repo_targets, plan.repo_deps_full };
     for (repo_lists) |list| {
         for (list) |name| {
             const repo = if (pm) |p| p.syncDbFor(name) else null;

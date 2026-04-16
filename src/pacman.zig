@@ -337,6 +337,82 @@ pub const Pacman = struct {
         return null;
     }
 
+    /// Find the first sync DB package (as an AlpmPackage) satisfying `dep`.
+    /// Skips aurpkgs — only official repos are searched.
+    fn findSyncPkgForDep(self: Pacman, dep: []const u8) ?alpm.AlpmPackage {
+        for (self.sync_dbs) |db| {
+            if (std.mem.eql(u8, db.getName(), self.aur_repo_name)) continue;
+            if (alpm.findSatisfier(db.getPkgcache(), dep)) |pkg| return pkg;
+        }
+        return null;
+    }
+
+    /// Compute the full set of official-repo packages that would need to be
+    /// installed when installing `root_names`, following runtime `depends`
+    /// transitively and excluding packages already installed locally.
+    ///
+    /// Used to expand direct AUR package repo-deps into their full closure
+    /// so the plan display matches what makepkg -s will actually install.
+    ///
+    /// Provider resolution picks the first satisfier found in sync DB order;
+    /// this is suitable for display purposes.
+    ///
+    /// Caller owns the returned slice (strings themselves are borrowed from
+    /// libalpm memory and remain valid until Pacman.deinit).
+    pub fn transitiveRepoDeps(self: Pacman, allocator: Allocator, root_names: []const []const u8) ![][]const u8 {
+        // Insertion-ordered map so display is deterministic.
+        var result = std.StringArrayHashMapUnmanaged(void){};
+        defer result.deinit(allocator);
+
+        // BFS queue holds dep strings (may be virtual, e.g. "jack>=1.0").
+        var queue = std.ArrayListUnmanaged([]const u8){};
+        defer queue.deinit(allocator);
+
+        // Tracks both dep strings and resolved pkg names to break cycles.
+        var seen = std.StringHashMapUnmanaged(void){};
+        defer seen.deinit(allocator);
+
+        for (root_names) |name| {
+            if (!seen.contains(name)) {
+                try seen.put(allocator, name, {});
+                try queue.append(allocator, name);
+            }
+        }
+
+        var head: usize = 0;
+        while (head < queue.items.len) {
+            const dep_str = queue.items[head];
+            head += 1;
+
+            const pkg = self.findSyncPkgForDep(dep_str) orelse continue;
+            const pkg_name = pkg.getName();
+
+            // Prevent revisiting the concrete package even if reached via
+            // multiple virtual dep strings.
+            if (!seen.contains(pkg_name)) {
+                try seen.put(allocator, pkg_name, {});
+            }
+
+            // Already installed — dep satisfied, no need to recurse.
+            if (self.isInstalled(pkg_name)) continue;
+
+            if (!result.contains(pkg_name)) {
+                try result.put(allocator, pkg_name, {});
+
+                // Queue runtime deps for the next BFS level.
+                var dep_it = pkg.getDepends();
+                while (dep_it.next()) |dep| {
+                    if (!seen.contains(dep.name)) {
+                        try seen.put(allocator, dep.name, {});
+                        try queue.append(allocator, dep.name);
+                    }
+                }
+            }
+        }
+
+        return try allocator.dupe([]const u8, result.keys());
+    }
+
     // ── Database Refresh ─────────────────────────────────────────────────
 
     /// Refresh only the aurpkgs database.
