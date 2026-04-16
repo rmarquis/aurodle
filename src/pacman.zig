@@ -182,6 +182,27 @@ pub const Pacman = struct {
         has_upgrades: bool = false,
     };
 
+    /// Per-package size data for the verbose table.
+    pub const PkgSizeInfo = struct {
+        download: i64,   // compressed download size from sync db
+        net_change: i64, // installed size delta (positive = new or growing)
+    };
+
+    /// Download and net-change sizes for a single sync db package.
+    /// Returns null if the package is not found in any sync db.
+    pub fn repoPkgSizeInfo(self: Pacman, name: []const u8) ?PkgSizeInfo {
+        for (self.sync_dbs) |db| {
+            if (db.getPackage(name)) |sync_pkg| {
+                const old_isize: i64 = if (self.local_db.getPackage(name)) |lp| lp.getIsize() else 0;
+                return .{
+                    .download = sync_pkg.getSize(),
+                    .net_change = sync_pkg.getIsize() - old_isize,
+                };
+            }
+        }
+        return null;
+    }
+
     /// Compute aggregate download/install/upgrade sizes for repo deps.
     pub fn repoDepSizes(self: Pacman, names: []const []const u8) SizeInfo {
         var info = SizeInfo{};

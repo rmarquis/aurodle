@@ -410,6 +410,8 @@ fn printCompactRepoPkg(pm: ?*pacman_mod.Pacman, name: []const u8, stdout: anytyp
 const hdr_pkg = "Package ()";
 const hdr_old_ver = "Old Version";
 const hdr_new_ver = "New Version";
+const hdr_net_change = "Net Change";
+const hdr_dl_size = "Download Size";
 
 fn displayPlanVerbose(
     plan: solver_mod.BuildPlan,
@@ -426,9 +428,16 @@ fn displayPlanVerbose(
     const total = aur_count + removals.len + repo_deps_full.len + plan.repo_targets.len;
     if (total == 0) return;
 
-    // Compute column widths, seeded from header
+    // Show per-row size columns only when repo packages are present and pacman is available.
+    const has_repo_pkgs = repo_deps_full.len > 0 or plan.repo_targets.len > 0;
+    const show_sizes = pm != null and has_repo_pkgs;
+
+    // Compute column widths, seeded from headers.
     var name_col: usize = hdr_pkg.len + countDigits(total);
     var old_col: usize = hdr_old_ver.len;
+    var ver_col: usize = hdr_new_ver.len;
+    var nc_col: usize = hdr_net_change.len;
+    var dl_col: usize = hdr_dl_size.len;
     var has_old_version = false;
 
     const aur_prefix = "aur/";
@@ -436,6 +445,8 @@ fn displayPlanVerbose(
         const display_names: []const []const u8 = if (entry.target_names.len > 0) entry.target_names else &.{entry.name};
         for (display_names) |tname| {
             if (aur_prefix.len + tname.len > name_col) name_col = aur_prefix.len + tname.len;
+            const ver = displayVersion(entry);
+            if (ver.len > ver_col) ver_col = ver.len;
             if (pm) |p| {
                 if (p.installedVersion(tname)) |v| {
                     has_old_version = true;
@@ -444,7 +455,6 @@ fn displayPlanVerbose(
             }
         }
     }
-    // Account for removals in column widths
     for (removals) |name| {
         if (name.len > name_col) name_col = name.len;
         if (pm) |p| {
@@ -467,11 +477,24 @@ fn displayPlanVerbose(
                     has_old_version = true;
                     if (v.len > old_col) old_col = v.len;
                 }
+                if (p.syncVersion(name)) |v| {
+                    if (v.len > ver_col) ver_col = v.len;
+                }
+                if (show_sizes) {
+                    if (p.repoPkgSizeInfo(name)) |si| {
+                        var b1: [32]u8 = undefined;
+                        const nc = fmtSize(si.net_change, &b1);
+                        if (nc.len > nc_col) nc_col = nc.len;
+                        var b2: [32]u8 = undefined;
+                        const dl = fmtSize(si.download, &b2);
+                        if (dl.len > dl_col) dl_col = dl.len;
+                    }
+                }
             }
         }
     }
 
-    // Single header
+    // Header
     stdout.writeByte('\n') catch {};
     stdout.print(hdr_pkg[0 .. hdr_pkg.len - 1] ++ "{d})", .{total}) catch {};
     pad(stdout, countDigits(total) + hdr_pkg.len, name_col);
@@ -479,9 +502,15 @@ fn displayPlanVerbose(
         stdout.writeAll(hdr_old_ver) catch {};
         pad(stdout, hdr_old_ver.len, old_col);
     }
-    stdout.writeAll(hdr_new_ver ++ "\n\n") catch {};
+    stdout.writeAll(hdr_new_ver) catch {};
+    if (show_sizes) {
+        pad(stdout, hdr_new_ver.len, ver_col);
+        rightAlign(stdout, hdr_net_change, nc_col);
+        rightAlign(stdout, hdr_dl_size, dl_col);
+    }
+    stdout.writeAll("\n\n") catch {};
 
-    // Packages being removed (old version, no new version)
+    // Packages being removed (old version only, no new version or sizes)
     for (removals) |name| {
         stdout.writeAll(name) catch {};
         pad(stdout, name.len, name_col);
@@ -493,7 +522,7 @@ fn displayPlanVerbose(
         stdout.writeByte('\n') catch {};
     }
 
-    // AUR packages being built/installed
+    // AUR packages: no size data (built locally, sizes unknown before build)
     for (plan.build_order) |entry| {
         const display_names: []const []const u8 = if (entry.target_names.len > 0) entry.target_names else &.{entry.name};
         for (display_names) |tname| {
@@ -512,7 +541,7 @@ fn displayPlanVerbose(
         }
     }
 
-    // Repo packages (targets + deps)
+    // Repo packages: version + optional size columns
     for (repo_lists) |list| {
         for (list) |name| {
             const repo = if (pm) |p| p.syncDbFor(name) else null;
@@ -534,7 +563,17 @@ fn displayPlanVerbose(
                 }
                 pad(stdout, old_ver.len, old_col);
             }
-            stdout.print("{s}{s}{s}\n", .{ c.green, ver, c.reset }) catch {};
+            stdout.print("{s}{s}{s}", .{ c.green, ver, c.reset }) catch {};
+            if (show_sizes) {
+                pad(stdout, ver.len, ver_col);
+                if (pm.?.repoPkgSizeInfo(name)) |si| {
+                    var b1: [32]u8 = undefined;
+                    rightAlign(stdout, fmtSize(si.net_change, &b1), nc_col);
+                    var b2: [32]u8 = undefined;
+                    rightAlign(stdout, fmtSize(si.download, &b2), dl_col);
+                }
+            }
+            stdout.writeByte('\n') catch {};
         }
     }
 }
@@ -559,9 +598,12 @@ pub fn displayInstallList(names: []const []const u8, pm: ?*pacman_mod.Pacman, er
     }
 
     if (verbose) {
-        // Reuse the same table format as displayPlanVerbose for repo packages
+        const show_sizes = pm != null;
         var name_col: usize = hdr_pkg.len + countDigits(names.len);
         var old_col: usize = hdr_old_ver.len;
+        var ver_col: usize = hdr_new_ver.len;
+        var nc_col: usize = hdr_net_change.len;
+        var dl_col: usize = hdr_dl_size.len;
         var has_old_version = false;
         for (names) |name| {
             const repo = if (pm) |p| p.syncDbFor(name) else null;
@@ -572,6 +614,17 @@ pub fn displayInstallList(names: []const []const u8, pm: ?*pacman_mod.Pacman, er
                     has_old_version = true;
                     if (v.len > old_col) old_col = v.len;
                 }
+                if (p.syncVersion(name)) |v| {
+                    if (v.len > ver_col) ver_col = v.len;
+                }
+                if (p.repoPkgSizeInfo(name)) |si| {
+                    var b1: [32]u8 = undefined;
+                    const nc = fmtSize(si.net_change, &b1);
+                    if (nc.len > nc_col) nc_col = nc.len;
+                    var b2: [32]u8 = undefined;
+                    const dl = fmtSize(si.download, &b2);
+                    if (dl.len > dl_col) dl_col = dl.len;
+                }
             }
         }
         stdout.writeByte('\n') catch {};
@@ -581,7 +634,13 @@ pub fn displayInstallList(names: []const []const u8, pm: ?*pacman_mod.Pacman, er
             stdout.writeAll(hdr_old_ver) catch {};
             pad(stdout, hdr_old_ver.len, old_col);
         }
-        stdout.writeAll(hdr_new_ver ++ "\n\n") catch {};
+        stdout.writeAll(hdr_new_ver) catch {};
+        if (show_sizes) {
+            pad(stdout, hdr_new_ver.len, ver_col);
+            rightAlign(stdout, hdr_net_change, nc_col);
+            rightAlign(stdout, hdr_dl_size, dl_col);
+        }
+        stdout.writeAll("\n\n") catch {};
         for (names) |name| {
             const repo = if (pm) |p| p.syncDbFor(name) else null;
             const ver = if (pm) |p| p.syncVersion(name) orelse "?" else "?";
@@ -602,7 +661,17 @@ pub fn displayInstallList(names: []const []const u8, pm: ?*pacman_mod.Pacman, er
                 }
                 pad(stdout, old_ver.len, old_col);
             }
-            stdout.print("{s}{s}{s}\n", .{ c.green, ver, c.reset }) catch {};
+            stdout.print("{s}{s}{s}", .{ c.green, ver, c.reset }) catch {};
+            if (show_sizes) {
+                pad(stdout, ver.len, ver_col);
+                if (pm.?.repoPkgSizeInfo(name)) |si| {
+                    var b1: [32]u8 = undefined;
+                    rightAlign(stdout, fmtSize(si.net_change, &b1), nc_col);
+                    var b2: [32]u8 = undefined;
+                    rightAlign(stdout, fmtSize(si.download, &b2), dl_col);
+                }
+            }
+            stdout.writeByte('\n') catch {};
         }
     } else {
         stdout.print("\nPackages ({d})", .{names.len}) catch {};
@@ -618,6 +687,26 @@ pub fn displayInstallList(names: []const []const u8, pm: ?*pacman_mod.Pacman, er
 fn pad(writer: anytype, current: usize, col: usize) void {
     const spaces = (col + 2) -| current;
     writer.writeByteNTimes(' ', if (spaces < 2) 2 else spaces) catch {};
+}
+
+/// Format `bytes` as a human-readable size string into `buf`.
+/// Returns the written slice (borrowed from buf).
+fn fmtSize(bytes: i64, buf: *[32]u8) []const u8 {
+    const abs = if (bytes < 0) -bytes else bytes;
+    const sign: []const u8 = if (bytes < 0) "-" else "";
+    return if (abs >= 1024 * 1024)
+        std.fmt.bufPrint(buf, "{s}{d:.2} MiB", .{ sign, @as(f64, @floatFromInt(abs)) / (1024.0 * 1024.0) }) catch ""
+    else if (abs >= 1024)
+        std.fmt.bufPrint(buf, "{s}{d:.2} KiB", .{ sign, @as(f64, @floatFromInt(abs)) / 1024.0 }) catch ""
+    else
+        std.fmt.bufPrint(buf, "{s}{d} B", .{ sign, abs }) catch "";
+}
+
+/// Print `str` right-aligned within `col` width, with at least 2 leading spaces.
+fn rightAlign(writer: anytype, str: []const u8, col: usize) void {
+    const spaces = (col + 2) -| str.len;
+    writer.writeByteNTimes(' ', if (spaces < 2) 2 else spaces) catch {};
+    writer.writeAll(str) catch {};
 }
 
 /// Return "latest" for VCS packages whose version will be determined at build time.
