@@ -260,24 +260,14 @@ fn syncFiltered(self: *Commands, filtered: []const []const u8) !ExitCode {
             for (choices) |ch| self.allocator.free(ch.candidates);
             self.allocator.free(choices);
         }
-        for (choices) |choice| {
-            var candidates: std.ArrayListUnmanaged(registry_mod.ProviderCandidate) = .empty;
-            defer candidates.deinit(self.allocator);
-            for (choice.candidates) |m| {
-                try candidates.append(self.allocator, .{
-                    .name = m.provider_name,
-                    .version = m.provider_version,
-                    .db_name = m.db_name,
-                });
-            }
-            const idx = if (self.flags.noconfirm)
-                @as(?usize, 0)
-            else
-                utils.promptProviderChoice(choice.dep_name, candidates.items, self.stdout_color);
-            const chosen_idx = idx orelse 0;
-            try chosen_providers.put(self.allocator, choice.dep_name, choice.candidates[chosen_idx].provider_name);
-            try providers_to_install.append(self.allocator, choice.candidates[chosen_idx].provider_name);
-        }
+        try selectRepoDepsProviders(
+            self.allocator,
+            choices,
+            self.flags.noconfirm,
+            self.stdout_color,
+            &chosen_providers,
+            &providers_to_install,
+        );
     }
 
     const repo_deps_full = if (self.pacman) |pm|
@@ -419,24 +409,14 @@ pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
             for (choices) |ch| self.allocator.free(ch.candidates);
             self.allocator.free(choices);
         }
-        for (choices) |choice| {
-            var candidates: std.ArrayListUnmanaged(registry_mod.ProviderCandidate) = .empty;
-            defer candidates.deinit(self.allocator);
-            for (choice.candidates) |m| {
-                try candidates.append(self.allocator, .{
-                    .name = m.provider_name,
-                    .version = m.provider_version,
-                    .db_name = m.db_name,
-                });
-            }
-            const idx = if (self.flags.noconfirm)
-                @as(?usize, 0)
-            else
-                utils.promptProviderChoice(choice.dep_name, candidates.items, self.stdout_color);
-            const chosen_idx = idx orelse 0;
-            try chosen_providers.put(self.allocator, choice.dep_name, choice.candidates[chosen_idx].provider_name);
-            try providers_to_install.append(self.allocator, choice.candidates[chosen_idx].provider_name);
-        }
+        try selectRepoDepsProviders(
+            self.allocator,
+            choices,
+            self.flags.noconfirm,
+            self.stdout_color,
+            &chosen_providers,
+            &providers_to_install,
+        );
     }
 
     const repo_deps_full = if (self.pacman) |pm|
@@ -1034,6 +1014,56 @@ fn getViewer() []const u8 {
 
 /// Install AUR targets (from aurpkgs) and repo targets (from their sync db)
 /// in a single `pacman -S` transaction.
+/// Interactively select a provider for each virtual dep choice, remembering
+/// packages already chosen so that subsequent deps auto-select without prompting.
+/// E.g. choosing `ffmpeg` for `libavcodec.so` auto-picks it for `libavdevice.so`.
+fn selectRepoDepsProviders(
+    allocator: Allocator,
+    choices: []const pacman_mod.SyncProviderChoice,
+    noconfirm: bool,
+    c: color.Style,
+    chosen_providers: *std.StringHashMapUnmanaged([]const u8),
+    providers_to_install: *std.ArrayListUnmanaged([]const u8),
+) !void {
+    // Tracks packages already chosen so they can be auto-picked for later deps.
+    var chosen_pkgs: std.StringHashMapUnmanaged(void) = .empty;
+    defer chosen_pkgs.deinit(allocator);
+
+    for (choices) |choice| {
+        // If a previously chosen package satisfies this dep, use it automatically.
+        var auto_idx: ?usize = null;
+        for (choice.candidates, 0..) |m, i| {
+            if (chosen_pkgs.contains(m.provider_name)) {
+                auto_idx = i;
+                break;
+            }
+        }
+
+        const chosen_idx = if (auto_idx) |i| i else blk: {
+            if (noconfirm) break :blk @as(usize, 0);
+            var candidates: std.ArrayListUnmanaged(registry_mod.ProviderCandidate) = .empty;
+            defer candidates.deinit(allocator);
+            for (choice.candidates) |m| {
+                try candidates.append(allocator, .{
+                    .name = m.provider_name,
+                    .version = m.provider_version,
+                    .db_name = m.db_name,
+                });
+            }
+            const idx = utils.promptProviderChoice(choice.dep_name, candidates.items, c);
+            break :blk idx orelse 0;
+        };
+
+        const chosen_name = choice.candidates[chosen_idx].provider_name;
+        try chosen_providers.put(allocator, choice.dep_name, chosen_name);
+        // Only add to install list and remember set once per package.
+        if (!chosen_pkgs.contains(chosen_name)) {
+            try chosen_pkgs.put(allocator, chosen_name, {});
+            try providers_to_install.append(allocator, chosen_name);
+        }
+    }
+}
+
 /// Pre-install chosen virtual-dep providers via `pacman -S --needed --asdeps`
 /// so that makepkg -s finds them already installed and skips its own prompt.
 /// Returns false if pacman exits non-zero.
