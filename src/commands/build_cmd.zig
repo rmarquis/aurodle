@@ -757,6 +757,29 @@ fn ensureChroot(allocator: Allocator, auth: *auth_mod.Auth, err_writer: anytype,
     return true;
 }
 
+/// Returns true if every package file listed by `makepkg --packagelist` already
+/// exists on disk. When true the build can be skipped entirely.
+fn allPackagesBuilt(allocator: Allocator, clone_dir: []const u8) !bool {
+    const result = try utils.runCommandIn(
+        allocator,
+        &.{ "makepkg", "--packagelist" },
+        clone_dir,
+    );
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.exit_code != 0) return false;
+
+    var lines = std.mem.splitScalar(u8, std.mem.trimRight(u8, result.stdout, "\n"), '\n');
+    var found_any = false;
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        found_any = true;
+        std.fs.accessAbsolute(line, .{}) catch return false;
+    }
+    return found_any;
+}
+
 // ── Build Loop ───────────────────────────────────────────────────────
 
 fn buildLoop(
@@ -808,38 +831,42 @@ fn buildLoop(
         defer self.allocator.free(clone_dir);
 
         const ver = if (devel.isVcsPackage(entry.name)) "latest" else entry.version;
-        getStdout().print("{s}::{s} Building {s} {s}...\n", .{ sc.blue, sc.reset, entry.name, ver }) catch {};
 
-        // Run build command: makechrootpkg in chroot mode, makepkg otherwise
-        const exit_code = if (self.flags.chroot) blk: {
-            break :blk try runChrootBuild(self, entry, &built_pkg_paths, clone_dir);
-        } else blk: {
-            const args: []const []const u8 = if (self.flags.rebuild)
-                &.{ "makepkg", "-sf", "--noconfirm" }
-            else
-                &.{ "makepkg", "-s", "--noconfirm" };
-            break :blk try utils.runInteractive(self.allocator, args, clone_dir);
-        };
+        // Pre-check: if all output packages already exist in PKGDEST, skip the build.
+        const already_built = !self.flags.rebuild and
+            !self.flags.chroot and
+            (allPackagesBuilt(self.allocator, clone_dir) catch false);
 
-        if (exit_code != 0) {
-            // Signal-killed (e.g., Ctrl+C -> SIGINT -> exit 130)
-            if (exit_code >= 128) {
-                try failed.append(self.allocator, .{
-                    .pkgbase = entry.pkgbase,
-                    .exit_code = exit_code,
-                });
-                return .{
-                    .succeeded = try succeeded.toOwnedSlice(self.allocator),
-                    .failed = try failed.toOwnedSlice(self.allocator),
-                    .signal_aborted = true,
-                };
-            }
+        if (already_built) {
+            getStdout().print("{s}::{s} {s} {s} already built, skipping (use --rebuild to force)\n", .{ sc.yellow, sc.reset, entry.name, ver }) catch {};
+        } else {
+            getStdout().print("{s}::{s} Building {s} {s}...\n", .{ sc.blue, sc.reset, entry.name, ver }) catch {};
 
-            // makepkg exit 13 (E_ALREADY_BUILT): package file already exists in PKGDEST.
-            // Treat as success — addBuiltPackages() will find it and proceed to install.
-            if (exit_code == 13) {
-                getStdout().print("{s}::{s} {s} already built, skipping (use --rebuild to force)\n", .{ sc.yellow, sc.reset, entry.pkgbase }) catch {};
-            } else {
+            // Run build command: makechrootpkg in chroot mode, makepkg otherwise
+            const exit_code = if (self.flags.chroot) blk: {
+                break :blk try runChrootBuild(self, entry, &built_pkg_paths, clone_dir);
+            } else blk: {
+                const args: []const []const u8 = if (self.flags.rebuild)
+                    &.{ "makepkg", "-sf", "--noconfirm" }
+                else
+                    &.{ "makepkg", "-s", "--noconfirm" };
+                break :blk try utils.runInteractive(self.allocator, args, clone_dir);
+            };
+
+            if (exit_code != 0) {
+                // Signal-killed (e.g., Ctrl+C -> SIGINT -> exit 130)
+                if (exit_code >= 128) {
+                    try failed.append(self.allocator, .{
+                        .pkgbase = entry.pkgbase,
+                        .exit_code = exit_code,
+                    });
+                    return .{
+                        .succeeded = try succeeded.toOwnedSlice(self.allocator),
+                        .failed = try failed.toOwnedSlice(self.allocator),
+                        .signal_aborted = true,
+                    };
+                }
+
                 self.err_writer.print("{s}error:{s} build failed for {s} (exit {d})\n", .{
                     ec.red,
                     ec.reset,
