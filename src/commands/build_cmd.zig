@@ -835,19 +835,25 @@ fn buildLoop(
                 };
             }
 
-            self.err_writer.print("{s}error:{s} build failed for {s} (exit {d})\n", .{
-                ec.red,
-                ec.reset,
-                entry.pkgbase,
-                exit_code,
-            }) catch {};
+            // makepkg exit 13 (E_ALREADY_BUILT): package file already exists in PKGDEST.
+            // Treat as success — addBuiltPackages() will find it and proceed to install.
+            if (exit_code == 13) {
+                getStdout().print("{s}::{s} {s} already built, skipping (use --rebuild to force)\n", .{ sc.yellow, sc.reset, entry.pkgbase }) catch {};
+            } else {
+                self.err_writer.print("{s}error:{s} build failed for {s} (exit {d})\n", .{
+                    ec.red,
+                    ec.reset,
+                    entry.pkgbase,
+                    exit_code,
+                }) catch {};
 
-            try failed.append(self.allocator, .{
-                .pkgbase = entry.pkgbase,
-                .exit_code = exit_code,
-            });
-            try failed_bases.put(self.allocator, entry.pkgbase, {});
-            continue;
+                try failed.append(self.allocator, .{
+                    .pkgbase = entry.pkgbase,
+                    .exit_code = exit_code,
+                });
+                try failed_bases.put(self.allocator, entry.pkgbase, {});
+                continue;
+            }
         }
 
         // Build succeeded — add packages to repo
