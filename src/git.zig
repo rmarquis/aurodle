@@ -101,15 +101,25 @@ pub fn update(allocator: Allocator, cache_root: []const u8, pkgbase: []const u8)
 }
 
 /// Clone if not present, update if already cloned.
+/// If the existing directory is a corrupt/invalid repository, it is deleted and re-cloned.
 pub fn cloneOrUpdate(allocator: Allocator, cache_root: []const u8, pkgbase: []const u8) !CloneOrUpdateResult {
     const dest = try cloneDir(allocator, cache_root, pkgbase);
     defer allocator.free(dest);
 
     if (dirExists(dest)) {
-        return switch (try updateIn(allocator, dest)) {
-            .updated => .updated,
-            .up_to_date => .up_to_date,
-        };
+        if (updateIn(allocator, dest)) |result| {
+            return switch (result) {
+                .updated => .updated,
+                .up_to_date => .up_to_date,
+            };
+        } else |err| switch (err) {
+            error.InvalidRepository => {
+                std.fs.cwd().deleteTree(dest) catch {};
+                _ = try clone(allocator, cache_root, pkgbase);
+                return .cloned;
+            },
+            else => return err,
+        }
     } else {
         _ = try clone(allocator, cache_root, pkgbase);
         return .cloned;
