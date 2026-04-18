@@ -335,6 +335,8 @@ fn syncFiltered(self: *Commands, filtered: []const []const u8) !ExitCode {
         }
     }
 
+    purgePacmanCache(self, build_result.built_pkg_basenames);
+
     if (build_result.failed.len == 0) {
         try installAllTargets(self, aur_targets.items, plan.repo_targets);
     } else {
@@ -800,6 +802,11 @@ fn buildLoop(
     var failed: std.ArrayListUnmanaged(FailedBuild) = .empty;
     var failed_bases: std.StringHashMapUnmanaged(void) = .empty;
     defer failed_bases.deinit(self.allocator);
+    var all_built_basenames: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer {
+        for (all_built_basenames.items) |b| self.allocator.free(b);
+        all_built_basenames.deinit(self.allocator);
+    }
 
     // Ensure chroot exists before starting builds
     if (self.flags.chroot) {
@@ -808,6 +815,7 @@ fn buildLoop(
                 .succeeded = try succeeded.toOwnedSlice(self.allocator),
                 .failed = try failed.toOwnedSlice(self.allocator),
                 .signal_aborted = false,
+                .built_pkg_basenames = try all_built_basenames.toOwnedSlice(self.allocator),
             };
         }
     }
@@ -870,6 +878,7 @@ fn buildLoop(
                         .succeeded = try succeeded.toOwnedSlice(self.allocator),
                         .failed = try failed.toOwnedSlice(self.allocator),
                         .signal_aborted = true,
+                        .built_pkg_basenames = try all_built_basenames.toOwnedSlice(self.allocator),
                     };
                 }
 
@@ -900,6 +909,12 @@ fn buildLoop(
             continue;
         };
 
+        // Collect basenames so callers can purge stale pacman cache entries.
+        for (added) |path| {
+            const basename = std.fs.path.basename(path);
+            try all_built_basenames.append(self.allocator, try self.allocator.dupe(u8, basename));
+        }
+
         // In chroot mode, remember built paths so downstream builds can use -I.
         if (self.flags.chroot) {
             try built_pkg_paths.put(self.allocator, entry.pkgbase, added);
@@ -928,6 +943,7 @@ fn buildLoop(
         .succeeded = try succeeded.toOwnedSlice(self.allocator),
         .failed = try failed.toOwnedSlice(self.allocator),
         .signal_aborted = false,
+        .built_pkg_basenames = try all_built_basenames.toOwnedSlice(self.allocator),
     };
 }
 
@@ -1100,6 +1116,18 @@ fn selectRepoDepsProviders(
             try chosen_pkgs.put(allocator, chosen_name, {});
             try providers_to_install.append(allocator, chosen_name);
         }
+    }
+}
+
+/// Delete package files from pacman's pkg cache so a rebuild with the same
+/// version doesn't trigger a checksum mismatch on the stale cached copy.
+fn purgePacmanCache(self: *Commands, basenames: []const []const u8) void {
+    for (basenames) |basename| {
+        const cache_path = std.fmt.allocPrint(self.allocator, "/var/cache/pacman/pkg/{s}", .{basename}) catch continue;
+        defer self.allocator.free(cache_path);
+        std.fs.accessAbsolute(cache_path, .{}) catch continue;
+        const result = self.auth.?.runCaptured(&.{ "rm", "-f", cache_path }) catch continue;
+        result.deinit(self.allocator);
     }
 }
 

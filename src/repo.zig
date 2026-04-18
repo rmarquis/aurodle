@@ -181,7 +181,13 @@ pub const Repository = struct {
         const result = try utils.runCommand(self.allocator, argv.items);
         defer result.deinit(self.allocator);
 
-        if (!result.success()) return error.RepoAddFailed;
+        if (!result.success()) {
+            if (result.stderr.len > 0) {
+                const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
+                stderr.deprecatedWriter().print("{s}", .{result.stderr}) catch {};
+            }
+            return error.RepoAddFailed;
+        }
     }
 
     // ── Package Listing ──────────────────────────────────────────────────

@@ -77,8 +77,11 @@ pub const BuildResult = struct {
     succeeded: []const []const u8,
     failed: []const FailedBuild,
     signal_aborted: bool,
+    built_pkg_basenames: []const []const u8,
 
     pub fn deinit(self: BuildResult, allocator: Allocator) void {
+        for (self.built_pkg_basenames) |b| allocator.free(b);
+        allocator.free(self.built_pkg_basenames);
         allocator.free(self.succeeded);
         allocator.free(self.failed);
     }
