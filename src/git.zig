@@ -9,7 +9,7 @@ pub const DEFAULT_CACHE_SUBDIR = ".cache/aurodle";
 
 pub const CloneResult = enum { cloned, already_exists };
 pub const UpdateResult = enum { updated, up_to_date };
-pub const CloneOrUpdateResult = enum { cloned, updated, up_to_date };
+pub const CloneOrUpdateResult = enum { cloned, updated, up_to_date, reCloned };
 
 pub const FileEntry = struct {
     name: []const u8,
@@ -116,7 +116,7 @@ pub fn cloneOrUpdate(allocator: Allocator, cache_root: []const u8, pkgbase: []co
             error.InvalidRepository => {
                 std.fs.cwd().deleteTree(dest) catch {};
                 _ = try clone(allocator, cache_root, pkgbase);
-                return .cloned;
+                return .reCloned;
             },
             else => return err,
         }

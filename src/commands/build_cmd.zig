@@ -287,10 +287,13 @@ fn syncFiltered(self: *Commands, filtered: []const []const u8) !ExitCode {
 
     // Phase 3: Clone
     for (plan.build_order) |entry| {
-        _ = git.cloneOrUpdate(self.allocator, c_root, entry.pkgbase) catch |err| {
+        const clone_result = git.cloneOrUpdate(self.allocator, c_root, entry.pkgbase) catch |err| {
             self.err_writer.print("{s}error:{s} failed to clone/update '{s}': {}\n", .{ ec.red, ec.reset, entry.pkgbase, err }) catch {};
             return .general_error;
         };
+        if (clone_result == .reCloned) {
+            self.err_writer.print("{s}warning:{s} cached repository for '{s}' was invalid and has been re-cloned\n", .{ ec.yellow, ec.reset, entry.pkgbase }) catch {};
+        }
     }
 
     // Phase 4: Review (unless --noshow)
@@ -435,10 +438,13 @@ pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
 
     // Clone
     for (plan.build_order) |entry| {
-        _ = git.cloneOrUpdate(self.allocator, c_root, entry.pkgbase) catch |err| {
+        const clone_result = git.cloneOrUpdate(self.allocator, c_root, entry.pkgbase) catch |err| {
             self.err_writer.print("{s}error:{s} failed to clone/update '{s}': {}\n", .{ ec.red, ec.reset, entry.pkgbase, err }) catch {};
             return .general_error;
         };
+        if (clone_result == .reCloned) {
+            self.err_writer.print("{s}warning:{s} cached repository for '{s}' was invalid and has been re-cloned\n", .{ ec.yellow, ec.reset, entry.pkgbase }) catch {};
+        }
     }
 
     // Review
