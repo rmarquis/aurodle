@@ -5,7 +5,7 @@ _aurodle() {
     _init_completion || return
 
     local commands="sync build clone info search show resolve buildorder outdated upgrade clean"
-    local short_aliases="-S -Sw -G -Gr -Si -Ss -Qu -Su -Sc -Scc"
+    local short_aliases="-S -Sw -Si -Ss -Qu -Su -Sc -Scc"
     local global_opts="-h --help -v --version -q --quiet"
     local build_opts="--noconfirm --noshow --needed --rebuild --asdeps --asexplicit --devel --chroot --ignore"
     local clone_opts="--recurse"
@@ -19,7 +19,7 @@ _aurodle() {
         case "${words[i]}" in
             sync|-S)       cmd=sync ;;
             build|-Sw)     cmd=build ;;
-            clone|-G|-Gr)  cmd=clone ;;
+            clone)         cmd=clone ;;
             info|-Si)      cmd=info ;;
             search|-Ss)    cmd=search ;;
             show)          cmd=show ;;

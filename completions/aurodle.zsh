@@ -52,8 +52,6 @@ _aurodle() {
     local -a short_commands=(
         '-S:Install AUR packages'
         '-Sw:Build packages into local repository'
-        '-G:Clone AUR package repositories'
-        '-Gr:Clone with recursive dependencies'
         '-Si:Display AUR package information'
         '-Ss:Search AUR packages'
         '-Qu:List outdated AUR packages'
@@ -85,7 +83,7 @@ _aurodle() {
         build|-Sw)
             _aurodle_build_options
             ;;
-        clone|-G|-Gr)
+        clone)
             _arguments -s \
                 '--recurse[Recursively clone AUR dependencies]' \
                 '*:package:'

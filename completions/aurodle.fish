@@ -9,7 +9,7 @@ function __aurodle_no_subcommand
     for c in $cmd[2..]
         switch $c
             case sync build clone info search show resolve buildorder outdated upgrade clean \
-                 '-S' '-Sw' '-G' '-Gr' '-Si' '-Ss' '-Qu' '-Su' '-Sc' '-Scc'
+                 '-S' '-Sw' '-Si' '-Ss' '-Qu' '-Su' '-Sc' '-Scc'
                 return 1
         end
     end
@@ -48,8 +48,6 @@ complete -c aurodle -n __aurodle_no_subcommand -a clean -d 'Remove stale cache f
 # Short aliases
 complete -c aurodle -n __aurodle_no_subcommand -a '-S' -d 'Install AUR packages'
 complete -c aurodle -n __aurodle_no_subcommand -a '-Sw' -d 'Build packages into local repository'
-complete -c aurodle -n __aurodle_no_subcommand -a '-G' -d 'Clone AUR package repositories'
-complete -c aurodle -n __aurodle_no_subcommand -a '-Gr' -d 'Clone with recursive dependencies'
 complete -c aurodle -n __aurodle_no_subcommand -a '-Si' -d 'Display AUR package information'
 complete -c aurodle -n __aurodle_no_subcommand -a '-Ss' -d 'Search AUR packages'
 complete -c aurodle -n __aurodle_no_subcommand -a '-Qu' -d 'List outdated AUR packages'
@@ -71,7 +69,7 @@ for cmd in sync '-S' build '-Sw' upgrade '-Su'
 end
 
 # Clone options
-for cmd in clone '-G' '-Gr'
+for cmd in clone
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l recurse -d 'Recursively clone AUR dependencies'
 end
 
