@@ -12,7 +12,8 @@ const Allocator = std.mem.Allocator;
 
 const ExitCode = commands.ExitCode;
 
-const version_string = "0.0.0";
+const build_options = @import("build_options");
+const version_string = build_options.version;
 
 pub fn main() u8 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};

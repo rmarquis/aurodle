@@ -4,6 +4,13 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const git_version = std.mem.trimRight(u8, b.run(&.{
+        "sh", "-c",
+        "printf 'r%s.%s' \"$(git rev-list --count HEAD)\" \"$(git rev-parse --short HEAD)\"",
+    }), "\n");
+    const opts = b.addOptions();
+    opts.addOption([]const u8, "version", git_version);
+
     const mod = b.addModule("aurodle", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -20,6 +27,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "aurodle", .module = mod },
+                .{ .name = "build_options", .module = opts.createModule() },
             },
         }),
     });
