@@ -11,6 +11,16 @@ Packages are built with makepkg and added to a local pacman repo, so pacman hand
 - libalpm (pacman)
 - git
 
+## Installation
+
+aurodle is available on the AUR as [`aurodle-git`](https://aur.archlinux.org/packages/aurodle-git).
+
+```bash
+git clone https://aur.archlinux.org/aurodle-git.git
+cd aurodle-git
+makepkg -si
+```
+
 ## Usage
 
 ```bash
