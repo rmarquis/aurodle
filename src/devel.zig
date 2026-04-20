@@ -32,27 +32,16 @@ pub fn checkVersion(
     const clone_dir = try git.cloneDir(allocator, cache_root, pkgbase);
     defer allocator.free(clone_dir);
 
-    // Run makepkg --nobuild to fetch sources and execute pkgver()
+    // Run makepkg --nobuild to fetch/update VCS sources and execute pkgver().
+    // --noextract must NOT be used here: it skips the VCS fetch (git pull),
+    // causing pkgver() to report the stale version already on disk.
+    // Non-zero exit (e.g. missing build deps) is tolerated — pkgver() still ran.
     const nobuild_result = try utils.runCommandIn(
         allocator,
-        &.{ "makepkg", "--nobuild", "--noconfirm", "--noextract" },
+        &.{ "makepkg", "--nobuild", "--noconfirm" },
         clone_dir,
     );
     defer nobuild_result.deinit(allocator);
-
-    // --nobuild may exit non-zero (e.g. missing deps), but pkgver() still ran
-    // if sources were already extracted. We try --printsrcinfo regardless,
-    // but if it fails too, we try without --noextract.
-    if (!nobuild_result.success()) {
-        // Retry without --noextract to allow full source preparation
-        const retry_result = try utils.runCommandIn(
-            allocator,
-            &.{ "makepkg", "--nobuild", "--noconfirm" },
-            clone_dir,
-        );
-        defer retry_result.deinit(allocator);
-        // Still proceed to printsrcinfo even if this fails
-    }
 
     // Run makepkg --printsrcinfo to get the updated version
     const srcinfo_result = try utils.runCommandIn(
