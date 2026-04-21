@@ -86,7 +86,7 @@ repo-add /var/lib/aurodle/aur/aur.db.tar.xz
 **5. Sync the database:**
 
 ```bash
-sudo pacman -Sy
+sudo pacman -Syu
 ```
 
 After setup, packages built with `aurodle sync <package>` will be added to the local repository and installed via pacman.
