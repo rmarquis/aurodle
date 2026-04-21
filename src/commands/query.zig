@@ -189,12 +189,15 @@ fn checkDevelPackages(
     const c_root = cache.path;
     defer self.freeCacheRoot(cache);
 
+    const has_vcs = for (packages) |pkg| {
+        if (devel.isVcsPackage(pkg.name)) break true;
+    } else false;
+    if (has_vcs and !self.flags.quiet) {
+        self.err_writer.print("{s}::{s} checking VCS package(s)...\n", .{ ec2.blue, ec2.reset }) catch {};
+    }
+
     for (packages) |pkg| {
         if (!devel.isVcsPackage(pkg.name)) continue;
-
-        if (!self.flags.quiet) {
-            self.err_writer.print("{s}::{s} checking {s}...\n", .{ ec2.blue, ec2.reset, pkg.name }) catch {};
-        }
 
         const vcs_result = devel.checkVersion(self.allocator, c_root, pkg.name) catch {
             self.err_writer.print("{s}warning:{s} failed to check VCS version for {s}\n", .{ ec2.yellow, ec2.reset, pkg.name }) catch {};
