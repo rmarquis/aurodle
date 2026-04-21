@@ -252,7 +252,7 @@ pub const Repository = struct {
         \\
         \\Then run:
         \\  sudo install -d -o $USER /var/lib/aurodle/aur
-        \\  sudo pacman -Sy
+        \\  sudo pacman -Syu
         ;
     }
 
