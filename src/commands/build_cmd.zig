@@ -277,7 +277,7 @@ fn syncFiltered(self: *Commands, filtered: []const []const u8) !ExitCode {
     defer self.allocator.free(repo_deps_full);
 
     // Phase 2: Display and confirm
-    displayPlan(plan, repo_deps_full, self.pacman, removals, self.err_writer, self.stdout_color, ec);
+    displayPlan(plan, repo_deps_full, self.pacman, removals, self.err_writer, self.stdout_color, ec, &self.devel_version_hint);
 
     if (!self.flags.noconfirm) {
         if (!try utils.promptYesNoStyled(self.stdout_color, "Proceed with installation?")) {
@@ -430,7 +430,7 @@ pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
         try self.allocator.dupe([]const u8, plan.repo_deps);
     defer self.allocator.free(repo_deps_full);
 
-    displayPlan(plan, repo_deps_full, self.pacman, removals, self.err_writer, self.stdout_color, ec);
+    displayPlan(plan, repo_deps_full, self.pacman, removals, self.err_writer, self.stdout_color, ec, &self.devel_version_hint);
 
     if (!self.flags.noconfirm) {
         if (!try utils.promptYesNoStyled(self.stdout_color, "Proceed with build?")) {
@@ -566,6 +566,8 @@ pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
         for (devel_versions.items) |v| self.allocator.free(v);
         devel_versions.deinit(self.allocator);
     }
+    // Hint strings point into devel_versions; clear hint first (LIFO: this defer runs before the one above)
+    defer self.devel_version_hint.clearAndFree(self.allocator);
     if (self.flags.devel) {
         try checkDevelUpgrades(self, to_check, &upgrade_set, &to_upgrade, &outdated_display, &devel_versions);
     }
@@ -623,7 +625,6 @@ fn checkDevelUpgrades(
 
     for (packages) |pkg| {
         if (!devel.isVcsPackage(pkg.name)) continue;
-        if (upgrade_set.contains(pkg.name)) continue;
 
         if (!self.flags.quiet) {
             self.err_writer.print("{s}::{s} checking {s}...\n", .{ ec2.blue, ec2.reset, pkg.name }) catch {};
@@ -636,8 +637,17 @@ fn checkDevelUpgrades(
 
         const version = vcs_result orelse continue;
         try devel_versions.append(self.allocator, version);
+        try self.devel_version_hint.put(self.allocator, pkg.name, version);
 
-        if (alpm.vercmp(pkg.version, version) < 0) {
+        if (upgrade_set.contains(pkg.name)) {
+            // Update the AUR RPC version with the accurate devel-computed version
+            for (outdated_display.items) |*entry| {
+                if (std.mem.eql(u8, entry.name, pkg.name)) {
+                    entry.aur_version = version;
+                    break;
+                }
+            }
+        } else if (alpm.vercmp(pkg.version, version) < 0) {
             try to_upgrade.append(self.allocator, pkg.name);
             try upgrade_set.put(self.allocator, pkg.name, {});
             try outdated_display.append(self.allocator, .{
@@ -844,7 +854,8 @@ fn buildLoop(
         const clone_dir = try git.cloneDir(self.allocator, c_root, entry.pkgbase);
         defer self.allocator.free(clone_dir);
 
-        const ver = if (devel.isVcsPackage(entry.name)) "latest" else entry.version;
+        const ver = self.devel_version_hint.get(entry.name) orelse
+            if (devel.isVcsPackage(entry.name)) "latest" else entry.version;
 
         // Pre-check: if all output packages already exist in PKGDEST, skip the build.
         const already_built = !self.flags.rebuild and

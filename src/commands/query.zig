@@ -191,7 +191,6 @@ fn checkDevelPackages(
 
     for (packages) |pkg| {
         if (!devel.isVcsPackage(pkg.name)) continue;
-        if (already_outdated.contains(pkg.name)) continue;
 
         if (!self.flags.quiet) {
             self.err_writer.print("{s}::{s} checking {s}...\n", .{ ec2.blue, ec2.reset, pkg.name }) catch {};
@@ -205,7 +204,15 @@ fn checkDevelPackages(
         const version = vcs_result orelse continue;
         try devel_versions.append(self.allocator, version);
 
-        if (alpm.vercmp(pkg.version, version) < 0) {
+        if (already_outdated.contains(pkg.name)) {
+            // Update the AUR RPC version with the accurate devel-computed version
+            for (outdated_list.items) |*entry| {
+                if (std.mem.eql(u8, entry.name, pkg.name)) {
+                    entry.aur_version = version;
+                    break;
+                }
+            }
+        } else if (alpm.vercmp(pkg.version, version) < 0) {
             try outdated_list.append(self.allocator, .{
                 .name = pkg.name,
                 .installed_version = pkg.version,

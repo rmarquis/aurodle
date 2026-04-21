@@ -108,6 +108,8 @@ pub const Commands = struct {
     err_writer: std.io.AnyWriter,
     stdout_color: color.Style,
     stderr_color: color.Style,
+    /// Populated by --devel upgrade check; used by displayPlan to show real versions.
+    devel_version_hint: std.StringHashMapUnmanaged([]const u8) = .empty,
 
     pub fn init(allocator: Allocator, aur_client: *aur.Client, flags: Flags) Commands {
         return .{
@@ -254,7 +256,7 @@ pub const Commands = struct {
 
 // ── Shared Helpers (used by sub-modules) ─────────────────────────────
 
-pub fn displayPlan(plan: solver_mod.BuildPlan, repo_deps_full: []const []const u8, pm: ?*pacman_mod.Pacman, removals: []const []const u8, err_writer: std.io.AnyWriter, c: color.Style, ec: color.Style) void {
+pub fn displayPlan(plan: solver_mod.BuildPlan, repo_deps_full: []const []const u8, pm: ?*pacman_mod.Pacman, removals: []const []const u8, err_writer: std.io.AnyWriter, c: color.Style, ec: color.Style, hint: *const std.StringHashMapUnmanaged([]const u8)) void {
     const stdout = getStdout();
     const verbose = if (pm) |p| p.verbose_pkg_lists else false;
 
@@ -342,9 +344,9 @@ pub fn displayPlan(plan: solver_mod.BuildPlan, repo_deps_full: []const []const u
     stdout.writeAll("resolving dependencies...\n") catch {};
 
     if (verbose) {
-        displayPlanVerbose(plan, repo_deps_full, pm, removals, stdout, c);
+        displayPlanVerbose(plan, repo_deps_full, pm, removals, stdout, c, hint);
     } else {
-        displayPlanCompact(plan, repo_deps_full, pm, stdout, c);
+        displayPlanCompact(plan, repo_deps_full, pm, stdout, c, hint);
     }
 
     if (pm) |p| {
@@ -376,6 +378,7 @@ fn displayPlanCompact(
     pm: ?*pacman_mod.Pacman,
     stdout: anytype,
     c: color.Style,
+    hint: *const std.StringHashMapUnmanaged([]const u8),
 ) void {
     var aur_count: usize = 0;
     for (plan.build_order) |entry| {
@@ -388,7 +391,7 @@ fn displayPlanCompact(
     for (plan.build_order) |entry| {
         const display_names: []const []const u8 = if (entry.target_names.len > 0) entry.target_names else &.{entry.name};
         for (display_names) |tname| {
-            stdout.print(" {s}aur/{s}{s}-{s}", .{ c.magenta, c.reset, tname, displayVersion(entry) }) catch {};
+            stdout.print(" {s}aur/{s}{s}-{s}", .{ c.magenta, c.reset, tname, displayVersion(entry, hint) }) catch {};
         }
     }
     for (plan.repo_targets) |name| {
@@ -423,6 +426,7 @@ fn displayPlanVerbose(
     removals: []const []const u8,
     stdout: anytype,
     c: color.Style,
+    hint: *const std.StringHashMapUnmanaged([]const u8),
 ) void {
     var aur_count: usize = 0;
     for (plan.build_order) |entry| {
@@ -448,7 +452,7 @@ fn displayPlanVerbose(
         const display_names: []const []const u8 = if (entry.target_names.len > 0) entry.target_names else &.{entry.name};
         for (display_names) |tname| {
             if (aur_prefix.len + tname.len > name_col) name_col = aur_prefix.len + tname.len;
-            const ver = displayVersion(entry);
+            const ver = displayVersion(entry, hint);
             if (ver.len > ver_col) ver_col = ver.len;
             if (pm) |p| {
                 if (p.installedVersion(tname)) |v| {
@@ -540,7 +544,7 @@ fn displayPlanVerbose(
                     pad(stdout, 0, old_col);
                 }
             }
-            stdout.print("{s}{s}{s}\n", .{ c.green, displayVersion(entry), c.reset }) catch {};
+            stdout.print("{s}{s}{s}\n", .{ c.green, displayVersion(entry, hint), c.reset }) catch {};
         }
     }
 
@@ -712,8 +716,10 @@ fn rightAlign(writer: anytype, str: []const u8, col: usize) void {
     writer.writeAll(str) catch {};
 }
 
-/// Return "latest" for VCS packages whose version will be determined at build time.
-fn displayVersion(entry: solver_mod.BuildEntry) []const u8 {
+/// Return the devel-computed version if available, "latest" for unknown VCS packages,
+/// or the AUR version for regular packages.
+fn displayVersion(entry: solver_mod.BuildEntry, hint: *const std.StringHashMapUnmanaged([]const u8)) []const u8 {
+    if (hint.get(entry.name)) |v| return v;
     return if (devel.isVcsPackage(entry.name)) "latest" else entry.version;
 }
 
