@@ -242,16 +242,16 @@ pub const Repository = struct {
         return 
         \\Add the following to /etc/pacman.conf (name can be customized):
         \\
-        \\[aurpkgs]
+        \\[aur]
         \\SigLevel = Optional TrustAll
-        \\Server = file:///var/lib/aurodle/aurpkgs
+        \\Server = file:///var/lib/aurodle/aur
         \\
         \\Set PKGDEST in /etc/makepkg.conf to match the Server path:
         \\
-        \\PKGDEST=/var/lib/aurodle/aurpkgs
+        \\PKGDEST=/var/lib/aurodle/aur
         \\
         \\Then run:
-        \\  sudo install -d -o $USER /var/lib/aurodle/aurpkgs
+        \\  sudo install -d -o $USER /var/lib/aurodle/aur
         \\  sudo pacman -Sy
         ;
     }
