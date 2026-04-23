@@ -284,19 +284,28 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                         if (node.meta.aur_pkg == null) {
                             node.meta.aur_pkg = pkg;
                         }
-                        if ((node.meta.source == .repo_aur or node.meta.source == .satisfied_aur) and self.targets.contains(actual_name)) {
-                            const dominated = if (node.meta.version) |local_ver|
+                    }
+
+                    // Reclassify repo_aur/satisfied_aur targets that need (re)building.
+                    // Intentionally outside the aur_pkg block: VCS packages must be
+                    // reclassified even when AUR metadata is unavailable (e.g. the
+                    // package is only in the local aurpkgs repo and not yet published
+                    // to the AUR, so resolveFromAur returns null).
+                    if ((node.meta.source == .repo_aur or node.meta.source == .satisfied_aur) and self.targets.contains(actual_name)) {
+                        const dominated = if (aur_pkg) |pkg|
+                            if (node.meta.version) |local_ver|
                                 alpm.vercmp(pkg.version, local_ver) > 0
                             else
-                                false;
-                            // VCS packages (-git, -svn, etc.) always need rebuilding when
-                            // explicitly targeted — their AUR version string is static and
-                            // doesn't reflect the actual upstream HEAD.
-                            const is_vcs = devel.isVcsPackage(actual_name);
-                            if (dominated or is_vcs or (self.rebuild and !self.needed)) {
-                                node.meta.source = .aur;
-                                node.meta.version = pkg.version;
-                            }
+                                false
+                        else
+                            false;
+                        // VCS packages (-git, -svn, etc.) always need rebuilding when
+                        // explicitly targeted — their AUR version string is static and
+                        // doesn't reflect the actual upstream HEAD.
+                        const is_vcs = devel.isVcsPackage(actual_name);
+                        if (dominated or is_vcs or (self.rebuild and !self.needed)) {
+                            node.meta.source = .aur;
+                            if (aur_pkg) |pkg| node.meta.version = pkg.version;
                         }
                     }
 
@@ -1796,6 +1805,24 @@ test "resolve reclassifies repo_aur VCS target even when version matches" {
     // VCS target should be reclassified to .aur and appear in build_order
     try testing.expectEqual(@as(usize, 1), plan.build_order.len);
     try testing.expectEqualStrings("pacaur-git", plan.build_order[0].name);
+}
+
+test "resolve reclassifies repo_aur VCS target with no AUR data" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // VCS package in local aurpkgs repo but not published to the real AUR —
+    // resolveFromAur returns null, so aur_pkg stays null throughout.
+    mock.addRepoAur("aurodle-git", "r100-1");
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"aurodle-git"});
+    defer plan.deinit(testing.allocator);
+
+    // VCS target must be rebuilt even without AUR metadata
+    try testing.expectEqual(@as(usize, 1), plan.build_order.len);
+    try testing.expectEqualStrings("aurodle-git", plan.build_order[0].name);
 }
 
 test "rebuild reclassifies satisfied_aur target into build plan" {
