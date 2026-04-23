@@ -801,6 +801,39 @@ fn allPackagesBuilt(allocator: Allocator, clone_dir: []const u8) !bool {
     return found_any;
 }
 
+/// Return the exact package file paths produced by the build in clone_dir,
+/// as reported by `makepkg --packagelist`. Only paths that exist on disk
+/// are included. Returns null (rather than error) when --packagelist fails,
+/// so callers can fall back to the directory-scan approach.
+/// Caller owns the returned slice and each string within it.
+fn collectBuiltPackagePaths(allocator: Allocator, clone_dir: []const u8) !?[]const []const u8 {
+    const result = try utils.runCommandIn(
+        allocator,
+        &.{ "makepkg", "--packagelist" },
+        clone_dir,
+    );
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.exit_code != 0) return null;
+
+    var paths: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer {
+        for (paths.items) |p| allocator.free(p);
+        paths.deinit(allocator);
+    }
+
+    var lines = std.mem.splitScalar(u8, std.mem.trimRight(u8, result.stdout, "\n"), '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        std.fs.accessAbsolute(line, .{}) catch continue;
+        try paths.append(allocator, try allocator.dupe(u8, line));
+    }
+
+    if (paths.items.len == 0) return null;
+    return try paths.toOwnedSlice(allocator);
+}
+
 // ── Build Loop ───────────────────────────────────────────────────────
 
 fn buildLoop(
@@ -912,8 +945,22 @@ fn buildLoop(
             }
         }
 
-        // Build succeeded — add packages to repo
-        const added = repository.addBuiltPackages() catch |err| {
+        // Build succeeded — add packages to repo.
+        // Use makepkg --packagelist to get only the files produced by this
+        // specific build, avoiding stale old-version files in PKGDEST that
+        // would cause repo-add -R to fail (it deletes the old file then can't
+        // find it when it also appears in the argument list).
+        const built_paths = collectBuiltPackagePaths(self.allocator, clone_dir) catch null;
+        defer if (built_paths) |paths| {
+            for (paths) |p| self.allocator.free(p);
+            self.allocator.free(paths);
+        };
+
+        const added = if (built_paths) |paths|
+            repository.addPackageFiles(paths)
+        else
+            repository.addBuiltPackages();
+        const added_files = added catch |err| {
             self.err_writer.print("{s}error:{s} failed to add built packages for {s}: {}\n", .{ ec.red, ec.reset, entry.pkgbase, err }) catch {};
             try failed.append(self.allocator, .{
                 .pkgbase = entry.pkgbase,
@@ -924,18 +971,18 @@ fn buildLoop(
         };
 
         // Collect basenames so callers can purge stale pacman cache entries.
-        for (added) |path| {
+        for (added_files) |path| {
             const basename = std.fs.path.basename(path);
             try all_built_basenames.append(self.allocator, try self.allocator.dupe(u8, basename));
         }
 
         // In chroot mode, remember built paths so downstream builds can use -I.
         if (self.flags.chroot) {
-            try built_pkg_paths.put(self.allocator, entry.pkgbase, added);
+            try built_pkg_paths.put(self.allocator, entry.pkgbase, added_files);
         } else {
             defer {
-                for (added) |p| self.allocator.free(p);
-                self.allocator.free(added);
+                for (added_files) |p| self.allocator.free(p);
+                self.allocator.free(added_files);
             }
         }
 

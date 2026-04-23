@@ -138,6 +138,29 @@ pub const Repository = struct {
         return pkg_files;
     }
 
+    /// Add a specific set of package files (by path) to the repository database.
+    /// Use this instead of addBuiltPackages when the exact output paths are known
+    /// (e.g. from `makepkg --packagelist`) to avoid passing stale old-version files
+    /// that are still sitting in PKGDEST alongside newly-built ones.
+    /// Returns a caller-owned copy of the provided paths.
+    pub fn addPackageFiles(self: *const Repository, pkg_files: []const []const u8) ![]const []const u8 {
+        if (pkg_files.len == 0) return error.PackageNotFound;
+
+        try self.runRepoAdd(pkg_files);
+
+        var owned = try self.allocator.alloc([]const u8, pkg_files.len);
+        var n: usize = 0;
+        errdefer {
+            for (owned[0..n]) |p| self.allocator.free(p);
+            self.allocator.free(owned);
+        }
+        for (pkg_files) |path| {
+            owned[n] = try self.allocator.dupe(u8, path);
+            n += 1;
+        }
+        return owned;
+    }
+
     /// Find .pkg.tar.* files in a directory matching PKGEXT.
     pub fn findBuiltPackages(self: *const Repository, dir_path: []const u8) ![]const []const u8 {
         var results: std.ArrayList([]const u8) = .empty;
