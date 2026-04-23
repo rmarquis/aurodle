@@ -43,7 +43,7 @@ pub const DbSet = enum {
 /// A virtual dep (e.g. "jack") with multiple uninstalled providers in official repos.
 /// Returned by findTransitiveProviderChoices for interactive selection.
 pub const SyncProviderChoice = struct {
-    dep_name: []const u8,        // virtual dep name, borrowed from alpm memory
+    dep_name: []const u8, // virtual dep name, borrowed from alpm memory
     candidates: []ProviderMatch, // all uninstalled providers; caller owns slice
 };
 
@@ -184,7 +184,7 @@ pub const Pacman = struct {
 
     /// Per-package size data for the verbose table.
     pub const PkgSizeInfo = struct {
-        download: i64,   // compressed download size from sync db
+        download: i64, // compressed download size from sync db
         net_change: i64, // installed size delta (positive = new or growing)
     };
 
