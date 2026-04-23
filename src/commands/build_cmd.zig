@@ -547,7 +547,7 @@ pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
         else
             false;
 
-        if (dominated_by_aur or self.flags.rebuild) {
+        if (dominated_by_aur) {
             try to_upgrade.append(self.allocator, pkg.name);
             try upgrade_set.put(self.allocator, pkg.name, {});
             if (aur_map.get(pkg.name)) |aur_ver| {
