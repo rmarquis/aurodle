@@ -1,7 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const aur = @import("../aur.zig");
-const alpm = @import("../alpm.zig");
 const git = @import("../git.zig");
 const devel = @import("../devel.zig");
 const solver_mod = @import("../solver.zig");
@@ -18,7 +17,6 @@ const Commands = cmds.Commands;
 const ExitCode = cmds.ExitCode;
 const BuildResult = cmds.BuildResult;
 const FailedBuild = cmds.FailedBuild;
-const OutdatedEntry = cmds.OutdatedEntry;
 const getStdout = cmds.getStdout;
 const printError = cmds.printError;
 const handleResolveError = cmds.handleResolveError;
@@ -397,107 +395,37 @@ fn handleEmptyBuildOrder(self: *Commands, plan: solver_mod.BuildPlan, mode: Buil
 /// With arguments: upgrade only the specified packages.
 pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
     const ec = self.stderr_color;
-    const pm = self.pacman orelse {
+    const sc = self.stdout_color;
+
+    // Check pacman up front — keeps the "Starting AUR upgrade..." banner from
+    // writing to stdout when the test harness passes an uninitialized Commands.
+    if (self.pacman == null) {
         self.err_writer.print("{s}error:{s} pacman not initialized\n", .{ ec.red, ec.reset }) catch {};
         return .general_error;
-    };
-    const sc = self.stdout_color;
+    }
+
     getStdout().print("{s}::{s} Starting AUR upgrade...\n", .{ sc.blue, sc.reset }) catch {};
 
-    const foreign = try pm.allForeignPackages();
-    defer self.allocator.free(foreign);
+    const result = (try query.collectOutdated(self, targets, true)) orelse return .general_error;
+    // LIFO: hint (borrows from result.devel_versions) must clear before deinit frees them.
+    defer result.deinit(self.allocator);
+    defer self.devel_version_hint.clearAndFree(self.allocator);
 
-    // Apply name filter if provided
-    const to_check = if (targets.len > 0) blk: {
-        var name_set: std.StringHashMapUnmanaged(void) = .empty;
-        defer name_set.deinit(self.allocator);
-        for (targets) |n| try name_set.put(self.allocator, n, {});
-
-        var filtered: std.ArrayListUnmanaged(pacman_mod.InstalledPackage) = .empty;
-        for (foreign) |pkg| {
-            if (name_set.contains(pkg.name)) try filtered.append(self.allocator, pkg);
-        }
-        break :blk try filtered.toOwnedSlice(self.allocator);
-    } else foreign;
-    defer if (targets.len > 0) self.allocator.free(to_check);
-
-    // Batch query AUR
-    var names: std.ArrayListUnmanaged([]const u8) = .empty;
-    defer names.deinit(self.allocator);
-    try names.ensureUnusedCapacity(self.allocator, to_check.len);
-    for (to_check) |pkg| names.appendAssumeCapacity(pkg.name);
-
-    const aur_pkgs = self.aur_client.multiInfo(names.items) catch |err| {
-        try printError(err, self.err_writer, ec);
-        return .general_error;
-    };
-    defer self.allocator.free(aur_pkgs);
-
-    var aur_map: std.StringHashMapUnmanaged([]const u8) = .empty;
-    defer aur_map.deinit(self.allocator);
-    for (aur_pkgs) |pkg| try aur_map.put(self.allocator, pkg.name, pkg.version);
-
-    // Find outdated
+    // Pick out non-ignored entries for the build pipeline.  Ignored entries
+    // are warned about here (sync's own filterIgnored is bypassed via the
+    // direct runBuildPipeline call, matching pacman -Syu's warn-and-skip).
     var to_upgrade: std.ArrayListUnmanaged([]const u8) = .empty;
     defer to_upgrade.deinit(self.allocator);
-    var outdated_display: std.ArrayListUnmanaged(OutdatedEntry) = .empty;
-    defer outdated_display.deinit(self.allocator);
-
-    // Track which packages are already queued for upgrade
-    var upgrade_set: std.StringHashMapUnmanaged(void) = .empty;
-    defer upgrade_set.deinit(self.allocator);
-
-    for (to_check) |pkg| {
-        const dominated_by_aur = if (aur_map.get(pkg.name)) |aur_ver|
-            alpm.vercmp(pkg.version, aur_ver) < 0
-        else
-            false;
-
-        if (dominated_by_aur) {
-            try to_upgrade.append(self.allocator, pkg.name);
-            try upgrade_set.put(self.allocator, pkg.name, {});
-            if (aur_map.get(pkg.name)) |aur_ver| {
-                try outdated_display.append(self.allocator, .{
-                    .name = pkg.name,
-                    .installed_version = pkg.version,
-                    .aur_version = aur_ver,
-                });
-            }
+    try to_upgrade.ensureUnusedCapacity(self.allocator, result.entries.len);
+    for (result.entries) |entry| {
+        if (entry.ignored) {
+            self.err_writer.print(
+                "{s}warning:{s} {s}: ignoring package upgrade\n",
+                .{ ec.yellow, ec.reset, entry.name },
+            ) catch {};
+            continue;
         }
-    }
-
-    // --devel: check VCS packages for upstream updates
-    var devel_versions: std.ArrayListUnmanaged([]const u8) = .empty;
-    defer {
-        for (devel_versions.items) |v| self.allocator.free(v);
-        devel_versions.deinit(self.allocator);
-    }
-    // Hint strings point into devel_versions; clear hint first (LIFO: this defer runs before the one above)
-    defer self.devel_version_hint.clearAndFree(self.allocator);
-    if (self.flags.devel) {
-        try checkDevelUpgrades(self, to_check, &upgrade_set, &to_upgrade, &outdated_display, &devel_versions);
-    }
-
-    // Remove ignored packages from both upgrade and display lists with a warning
-    if (self.flags.ignore.len > 0) {
-        var i: usize = 0;
-        while (i < to_upgrade.items.len) {
-            const name = to_upgrade.items[i];
-            if (self.isIgnored(name)) {
-                self.err_writer.print(
-                    "{s}warning:{s} {s}: ignoring package upgrade\n",
-                    .{ ec.yellow, ec.reset, name },
-                ) catch {};
-                _ = to_upgrade.swapRemove(i);
-                // Also remove from display list
-                var j: usize = 0;
-                while (j < outdated_display.items.len) {
-                    if (std.mem.eql(u8, outdated_display.items[j].name, name)) {
-                        _ = outdated_display.swapRemove(j);
-                    } else j += 1;
-                }
-            } else i += 1;
-        }
+        to_upgrade.appendAssumeCapacity(entry.name);
     }
 
     if (to_upgrade.items.len == 0) {
@@ -505,67 +433,7 @@ pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
         return .success;
     }
 
-    // Delegate to the shared pipeline for build+install.
-    // Ignore prompting is skipped here: handled above.
     return runBuildPipeline(self, to_upgrade.items, .sync);
-}
-
-// ── Devel Upgrade Check ──────────────────────────────────────────────
-
-/// Check VCS packages for upstream updates and add outdated ones to upgrade lists.
-fn checkDevelUpgrades(
-    self: *Commands,
-    packages: []const pacman_mod.InstalledPackage,
-    upgrade_set: *std.StringHashMapUnmanaged(void),
-    to_upgrade: *std.ArrayListUnmanaged([]const u8),
-    outdated_display: *std.ArrayListUnmanaged(OutdatedEntry),
-    devel_versions: *std.ArrayListUnmanaged([]const u8),
-) !void {
-    const ec2 = self.stderr_color;
-    const cache = self.resolveCacheRoot() catch {
-        self.err_writer.print("{s}warning:{s} could not determine cache directory for --devel check\n", .{ ec2.yellow, ec2.reset }) catch {};
-        return;
-    };
-    const c_root = cache.path;
-    defer self.freeCacheRoot(cache);
-
-    const has_vcs = for (packages) |pkg| {
-        if (devel.isVcsPackage(pkg.name)) break true;
-    } else false;
-    if (has_vcs and !self.flags.quiet) {
-        self.err_writer.print("{s}::{s} checking VCS package(s)...\n", .{ ec2.blue, ec2.reset }) catch {};
-    }
-
-    for (packages) |pkg| {
-        if (!devel.isVcsPackage(pkg.name)) continue;
-
-        const vcs_result = devel.checkVersion(self.allocator, c_root, pkg.name) catch {
-            self.err_writer.print("{s}warning:{s} failed to check VCS version for {s}\n", .{ ec2.yellow, ec2.reset, pkg.name }) catch {};
-            continue;
-        };
-
-        const version = vcs_result orelse continue;
-        try devel_versions.append(self.allocator, version);
-        try self.devel_version_hint.put(self.allocator, pkg.name, version);
-
-        if (upgrade_set.contains(pkg.name)) {
-            // Update the AUR RPC version with the accurate devel-computed version
-            for (outdated_display.items) |*entry| {
-                if (std.mem.eql(u8, entry.name, pkg.name)) {
-                    entry.aur_version = version;
-                    break;
-                }
-            }
-        } else if (alpm.vercmp(pkg.version, version) < 0) {
-            try to_upgrade.append(self.allocator, pkg.name);
-            try upgrade_set.put(self.allocator, pkg.name, {});
-            try outdated_display.append(self.allocator, .{
-                .name = pkg.name,
-                .installed_version = pkg.version,
-                .aur_version = version,
-            });
-        }
-    }
 }
 
 // ── Clean Command ────────────────────────────────────────────────────

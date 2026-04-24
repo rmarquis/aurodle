@@ -94,6 +94,27 @@ pub const OutdatedEntry = struct {
     ignored: bool = false,
 };
 
+/// Result of `query.collectOutdated`.  Shared by `outdated` and `upgrade`.
+///
+/// `entries` contains one row per package that's behind its AUR (or devel)
+/// version; each carries the `ignored` flag so callers can decide whether to
+/// display, filter, or warn.  `devel_versions` owns the strings produced by
+/// the --devel pass (borrowed from by `entries[i].aur_version` for VCS-only
+/// entries and by `devel_version_hint` when populated).  `total_checked` is
+/// the number of installed foreign packages compared against the AUR —
+/// zero means "nothing to compare" (distinct from "compared but none outdated").
+pub const OutdatedList = struct {
+    entries: []OutdatedEntry,
+    devel_versions: [][]const u8,
+    total_checked: usize,
+
+    pub fn deinit(self: OutdatedList, allocator: Allocator) void {
+        allocator.free(self.entries);
+        for (self.devel_versions) |v| allocator.free(v);
+        allocator.free(self.devel_versions);
+    }
+};
+
 // ── Commands Struct ──────────────────────────────────────────────────
 
 pub const Commands = struct {
