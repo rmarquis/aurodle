@@ -209,8 +209,8 @@ pub const Commands = struct {
         return query.info(self, targets);
     }
 
-    pub fn search(self: *Commands, query_str: []const u8) !ExitCode {
-        return query.search(self, query_str);
+    pub fn search(self: *Commands, terms: []const []const u8) !ExitCode {
+        return query.search(self, terms);
     }
 
     pub fn outdated(self: *Commands, filter: []const []const u8) !ExitCode {

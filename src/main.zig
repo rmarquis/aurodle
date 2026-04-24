@@ -93,7 +93,7 @@ fn run(allocator: Allocator) !ExitCode {
                 printUsageError("search requires a query term");
                 break :blk .usage_error;
             }
-            break :blk try cmds.search(parsed.targets[0]);
+            break :blk try cmds.search(parsed.targets);
         },
         .clone => try cmds.clonePackages(parsed.targets),
         .show => try cmds.show(parsed.targets[0]),

@@ -59,20 +59,34 @@ pub fn info(self: *Commands, targets: []const []const u8) !ExitCode {
 // ── Search Command ───────────────────────────────────────────────────
 
 /// Search AUR and display matching packages.
-pub fn search(self: *Commands, query_str: []const u8) !ExitCode {
+/// When multiple terms are given, the AUR is queried with the first term and
+/// remaining terms are filtered client-side (intersection / AND semantics).
+pub fn search(self: *Commands, terms: []const []const u8) !ExitCode {
     const by_field = self.flags.by orelse .name_desc;
-    const packages = self.aur_client.search(query_str, by_field) catch |err| {
+    const packages = self.aur_client.search(terms[0], by_field) catch |err| {
         try printError(err, self.err_writer, self.stderr_color);
         return .general_error;
     };
     defer self.allocator.free(packages);
 
-    if (packages.len == 0) {
+    // Filter client-side so every additional term must appear in name or description.
+    var filtered: std.ArrayList(*aur.Package) = .empty;
+    defer filtered.deinit(self.allocator);
+    outer: for (packages) |pkg| {
+        for (terms[1..]) |term| {
+            const in_name = std.ascii.indexOfIgnoreCase(pkg.name, term) != null;
+            const in_desc = if (pkg.description) |d| std.ascii.indexOfIgnoreCase(d, term) != null else false;
+            if (!in_name and !in_desc) continue :outer;
+        }
+        try filtered.append(self.allocator, pkg);
+    }
+
+    if (filtered.items.len == 0) {
         return .success; // FR-3: exit 0 with no output
     }
 
     // Sort results
-    const sorted = try sortPackages(self.allocator, self.flags, packages);
+    const sorted = try sortPackages(self.allocator, self.flags, filtered.items);
     defer self.allocator.free(sorted);
 
     const alpm_handle = alpm.Handle.init("/", "/var/lib/pacman/") catch null;
