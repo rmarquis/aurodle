@@ -61,6 +61,10 @@ pub const Pacman = struct {
     handle: alpm.Handle,
     local_db: alpm.Database,
     sync_dbs: []alpm.Database,
+    /// Subset of sync_dbs excluding the local AUR repo.  Precomputed so that
+    /// "official repos only" lookups don't repeatedly re-filter by name.
+    /// Always owned by this struct (freed in deinit).
+    official_dbs: []alpm.Database,
     aurpkgs_db: ?alpm.Database,
     aur_repo_name: []const u8,
     owns_sync_dbs: bool,
@@ -78,11 +82,15 @@ pub const Pacman = struct {
         const conf = try registerSyncDbs(allocator, handle);
         errdefer allocator.free(conf.sync_dbs);
 
+        const official_dbs = try buildOfficialDbs(allocator, conf.sync_dbs, aur_repo_name);
+        errdefer allocator.free(official_dbs);
+
         return .{
             .allocator = allocator,
             .handle = handle,
             .local_db = handle.getLocalDb(),
             .sync_dbs = conf.sync_dbs,
+            .official_dbs = official_dbs,
             .aurpkgs_db = findAurpkgsDb(conf.sync_dbs, aur_repo_name),
             .aur_repo_name = aur_repo_name,
             .owns_sync_dbs = true,
@@ -98,7 +106,7 @@ pub const Pacman = struct {
         allocator: Allocator,
         handle: alpm.Handle,
         sync_dbs: []alpm.Database,
-    ) Pacman {
+    ) !Pacman {
         return initWithHandleAndName(allocator, handle, sync_dbs, repo_mod.DEFAULT_REPO_NAME);
     }
 
@@ -108,12 +116,16 @@ pub const Pacman = struct {
         handle: alpm.Handle,
         sync_dbs: []alpm.Database,
         aur_repo_name: []const u8,
-    ) Pacman {
+    ) !Pacman {
+        const official_dbs = try buildOfficialDbs(allocator, sync_dbs, aur_repo_name);
+        errdefer allocator.free(official_dbs);
+
         return .{
             .allocator = allocator,
             .handle = handle,
             .local_db = handle.getLocalDb(),
             .sync_dbs = sync_dbs,
+            .official_dbs = official_dbs,
             .aurpkgs_db = findAurpkgsDb(sync_dbs, aur_repo_name),
             .aur_repo_name = aur_repo_name,
             .owns_sync_dbs = false,
@@ -121,6 +133,7 @@ pub const Pacman = struct {
     }
 
     pub fn deinit(self: *Pacman) void {
+        self.allocator.free(self.official_dbs);
         if (self.owns_sync_dbs) self.allocator.free(self.sync_dbs);
         for (self.ignore_pkgs) |pkg| self.allocator.free(pkg);
         self.allocator.free(self.ignore_pkgs);
@@ -297,10 +310,8 @@ pub const Pacman = struct {
     /// Checks official repos first (priority), then aurpkgs.
     /// Returns null if no provider found.
     pub fn findProvider(self: Pacman, dep: []const u8) ?ProviderMatch {
-        // Check official repos first (skip aurpkgs)
-        for (self.sync_dbs) |db| {
-            if (std.mem.eql(u8, db.getName(), self.aur_repo_name)) continue;
-
+        // Check official repos first
+        for (self.official_dbs) |db| {
             if (findProviderInDb(db, dep)) |match| return match;
         }
 
@@ -319,9 +330,8 @@ pub const Pacman = struct {
         var matches: std.ArrayList(ProviderMatch) = .empty;
         errdefer matches.deinit(allocator);
 
-        // Official repos first (skip aurpkgs)
-        for (self.sync_dbs) |db| {
-            if (std.mem.eql(u8, db.getName(), self.aur_repo_name)) continue;
+        // Official repos first
+        for (self.official_dbs) |db| {
             try findAllProvidersInDb(allocator, db, dep, &matches);
         }
 
@@ -337,15 +347,7 @@ pub const Pacman = struct {
     pub fn findDbsSatisfier(self: Pacman, db_set: DbSet, depstring: []const u8) ?[]const u8 {
         return switch (db_set) {
             .all_sync => self.findSatisfierInDbs(self.sync_dbs, depstring),
-            .official_only => blk: {
-                for (self.sync_dbs) |db| {
-                    if (std.mem.eql(u8, db.getName(), self.aur_repo_name)) continue;
-                    if (alpm.findSatisfier(db.getPkgcache(), depstring)) |pkg| {
-                        break :blk pkg.getName();
-                    }
-                }
-                break :blk null;
-            },
+            .official_only => self.findSatisfierInDbs(self.official_dbs, depstring),
             .aurpkgs_only => blk: {
                 const aurdb = self.aurpkgs_db orelse break :blk null;
                 if (alpm.findSatisfier(aurdb.getPkgcache(), depstring)) |pkg| {
@@ -368,8 +370,7 @@ pub const Pacman = struct {
     /// Find the first sync DB package (as an AlpmPackage) satisfying `dep`.
     /// Skips aurpkgs — only official repos are searched.
     fn findSyncPkgForDep(self: Pacman, dep: []const u8) ?alpm.AlpmPackage {
-        for (self.sync_dbs) |db| {
-            if (std.mem.eql(u8, db.getName(), self.aur_repo_name)) continue;
+        for (self.official_dbs) |db| {
             if (alpm.findSatisfier(db.getPkgcache(), dep)) |pkg| return pkg;
         }
         return null;
@@ -380,8 +381,7 @@ pub const Pacman = struct {
     fn findAllOfficialProviders(self: Pacman, allocator: Allocator, dep: []const u8) ![]ProviderMatch {
         var matches: std.ArrayList(ProviderMatch) = .empty;
         errdefer matches.deinit(allocator);
-        for (self.sync_dbs) |db| {
-            if (std.mem.eql(u8, db.getName(), self.aur_repo_name)) continue;
+        for (self.official_dbs) |db| {
             try findAllProvidersInDb(allocator, db, dep, &matches);
         }
         return try matches.toOwnedSlice(allocator);
@@ -583,8 +583,7 @@ pub const Pacman = struct {
 
     /// Find a package by name in official sync databases (skips aurpkgs).
     fn findInOfficialDbs(self: Pacman, name: []const u8) ?alpm.AlpmPackage {
-        for (self.sync_dbs) |db| {
-            if (std.mem.eql(u8, db.getName(), self.aur_repo_name)) continue;
+        for (self.official_dbs) |db| {
             if (db.getPackage(name)) |pkg| return pkg;
         }
         return null;
@@ -599,6 +598,20 @@ fn findAurpkgsDb(sync_dbs: []alpm.Database, aur_repo_name: []const u8) ?alpm.Dat
         if (std.mem.eql(u8, db.getName(), aur_repo_name)) return db;
     }
     return null;
+}
+
+/// Allocate a copy of `sync_dbs` excluding the AUR repo.  The resulting slice
+/// is always owned by the caller.
+fn buildOfficialDbs(allocator: Allocator, sync_dbs: []alpm.Database, aur_repo_name: []const u8) ![]alpm.Database {
+    var list: std.ArrayListUnmanaged(alpm.Database) = .empty;
+    errdefer list.deinit(allocator);
+    try list.ensureTotalCapacity(allocator, sync_dbs.len);
+    for (sync_dbs) |db| {
+        if (!std.mem.eql(u8, db.getName(), aur_repo_name)) {
+            list.appendAssumeCapacity(db);
+        }
+    }
+    return try list.toOwnedSlice(allocator);
 }
 
 /// Check if `version` satisfies `constraint` using libalpm's vercmp.
@@ -919,8 +932,7 @@ test "allForeignPackages returns packages not in official repos" {
 
         // Check it's truly not in official repos
         const in_official = blk: {
-            for (pm.sync_dbs) |db| {
-                if (std.mem.eql(u8, db.getName(), pm.aur_repo_name)) continue;
+            for (pm.official_dbs) |db| {
                 if (db.getPackage(pkg.name) != null) break :blk true;
             }
             break :blk false;
@@ -965,7 +977,7 @@ test "refreshAurDb errors when aurpkgs not configured" {
     const core_db = try handle.registerSyncDb("core", .use_default);
     var dbs = [_]alpm.Database{core_db};
 
-    var pm = Pacman.initWithHandle(std.testing.allocator, handle, &dbs);
+    var pm = try Pacman.initWithHandle(std.testing.allocator, handle, &dbs);
     defer pm.deinit();
 
     try std.testing.expect(pm.aurpkgs_db == null);
