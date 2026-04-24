@@ -158,20 +158,36 @@ pub fn clonePackages(self: *Commands, targets: []const []const u8) !ExitCode {
     return if (any_error) .general_error else .success;
 }
 
-// ── Sync Command ─────────────────────────────────────────────────────
+// ── Sync / Build Commands ────────────────────────────────────────────
+
+const BuildMode = enum {
+    /// Build packages and install targets afterwards.
+    sync,
+    /// Build packages into the repository only; no install step.
+    build_only,
+};
 
 /// Execute the full sync workflow: resolve -> clone -> review -> build -> install.
 pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
-    // Filter ignored targets (prompt user for each)
     var ignore_buf: [256][]const u8 = undefined;
     const filtered = self.filterIgnored(targets, &ignore_buf);
     if (filtered.len == 0) return .success;
-
-    return syncFiltered(self, filtered);
+    return runBuildPipeline(self, filtered, .sync);
 }
 
-/// Inner sync workflow operating on pre-filtered targets (no ignore prompting).
-fn syncFiltered(self: *Commands, filtered: []const []const u8) !ExitCode {
+/// Build packages and add to repository without installing.
+pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
+    var ignore_buf: [256][]const u8 = undefined;
+    const filtered = self.filterIgnored(targets, &ignore_buf);
+    if (filtered.len == 0) return .success;
+    return runBuildPipeline(self, filtered, .build_only);
+}
+
+/// Shared pipeline for sync, build, and upgrade.  Callers pass pre-filtered
+/// targets (ignore prompting handled upstream).
+/// Phases: resolve -> conflicts -> providers -> display -> clone -> review ->
+///         build -> [install].  The final install phase runs only in .sync mode.
+pub fn runBuildPipeline(self: *Commands, filtered: []const []const u8, mode: BuildMode) !ExitCode {
     const ec = self.stderr_color;
     const reg = self.registry orelse {
         self.err_writer.print("{s}error:{s} registry not initialized\n", .{ ec.red, ec.reset }) catch {};
@@ -209,43 +225,7 @@ fn syncFiltered(self: *Commands, filtered: []const []const u8) !ExitCode {
     defer self.allocator.free(removals);
 
     if (plan.build_order.len == 0) {
-        // Check for targets available in aurpkgs: either not installed (repo_aur)
-        // or already installed (satisfied_aur) — reinstall like pacman -S would.
-        var aurpkgs_targets: std.ArrayListUnmanaged([]const u8) = .empty;
-        defer aurpkgs_targets.deinit(self.allocator);
-        for (plan.all_deps) |dep| {
-            if (!dep.is_target) continue;
-            if (dep.source == .repo_aur) {
-                try aurpkgs_targets.append(self.allocator, dep.name);
-            } else if (dep.source == .satisfied_aur and !self.flags.needed) {
-                // Reinstall if available in aurpkgs repo (skip with --needed)
-                if (self.pacman) |pm| {
-                    if (pm.isAurRepo(pm.syncDbFor(dep.name) orelse "")) {
-                        try aurpkgs_targets.append(self.allocator, dep.name);
-                    }
-                }
-            }
-        }
-        if (aurpkgs_targets.items.len > 0 or plan.repo_targets.len > 0) {
-            // Build combined name list and display with compact/verbose support
-            var all_names: std.ArrayListUnmanaged([]const u8) = .empty;
-            defer all_names.deinit(self.allocator);
-            try all_names.appendSlice(self.allocator, aurpkgs_targets.items);
-            try all_names.appendSlice(self.allocator, plan.repo_targets);
-            cmds.displayInstallList(all_names.items, self.pacman, self.err_writer, self.stdout_color, self.stderr_color);
-
-            if (!self.flags.noconfirm) {
-                if (!try utils.promptYesNoStyled(self.stdout_color, "Proceed with installation?")) {
-                    return .success;
-                }
-            }
-
-            try installAllTargets(self, aurpkgs_targets.items, plan.repo_targets);
-        }
-        if (aurpkgs_targets.items.len == 0 and plan.repo_targets.len == 0) {
-            getStdout().writeAll(" nothing to do -- all targets are up to date\n") catch {};
-        }
-        return .success;
+        return handleEmptyBuildOrder(self, plan, mode);
     }
 
     // Phase 1.6: Provider selection for transitive repo deps
@@ -279,8 +259,12 @@ fn syncFiltered(self: *Commands, filtered: []const []const u8) !ExitCode {
     // Phase 2: Display and confirm
     displayPlan(plan, repo_deps_full, self.pacman, removals, self.err_writer, self.stdout_color, ec, &self.devel_version_hint);
 
+    const prompt: []const u8 = switch (mode) {
+        .sync => "Proceed with installation?",
+        .build_only => "Proceed with build?",
+    };
     if (!self.flags.noconfirm) {
-        if (!try utils.promptYesNoStyled(self.stdout_color, "Proceed with installation?")) {
+        if (!try utils.promptYesNoStyled(self.stdout_color, prompt)) {
             return .success;
         }
     }
@@ -325,27 +309,33 @@ fn syncFiltered(self: *Commands, filtered: []const []const u8) !ExitCode {
         };
     }
 
-    // Phase 6: Install targets (AUR from aurpkgs + repo targets in one transaction)
-    // Use target_names to handle split packages (multiple targets per pkgbase)
-    var aur_targets: std.ArrayListUnmanaged([]const u8) = .empty;
-    defer aur_targets.deinit(self.allocator);
-    for (plan.build_order) |entry| {
-        for (entry.target_names) |tname| {
-            try aur_targets.append(self.allocator, tname);
+    // Phase 6 (sync only): Install targets (AUR from aurpkgs + repo targets in one transaction).
+    // build_only skips install and merely surfaces failures.
+    if (mode == .sync) {
+        // Use target_names to handle split packages (multiple targets per pkgbase)
+        var aur_targets: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer aur_targets.deinit(self.allocator);
+        for (plan.build_order) |entry| {
+            for (entry.target_names) |tname| {
+                try aur_targets.append(self.allocator, tname);
+            }
         }
-    }
 
-    purgePacmanCache(self, build_result.built_pkg_basenames);
+        purgePacmanCache(self, build_result.built_pkg_basenames);
 
-    if (build_result.failed.len == 0) {
-        try installAllTargets(self, aur_targets.items, plan.repo_targets);
-    } else {
-        // Install only targets whose builds succeeded
-        const installable = try filterInstallable(self, aur_targets.items, build_result);
-        defer self.allocator.free(installable);
-        if (installable.len > 0 or plan.repo_targets.len > 0) {
-            try installAllTargets(self, installable, plan.repo_targets);
+        if (build_result.failed.len == 0) {
+            try installAllTargets(self, aur_targets.items, plan.repo_targets);
+        } else {
+            // Install only targets whose builds succeeded
+            const installable = try filterInstallable(self, aur_targets.items, build_result);
+            defer self.allocator.free(installable);
+            if (installable.len > 0 or plan.repo_targets.len > 0) {
+                try installAllTargets(self, installable, plan.repo_targets);
+            }
+            printBuildSummary(build_result, self.err_writer, ec);
+            return .build_failed;
         }
+    } else if (build_result.failed.len > 0) {
         printBuildSummary(build_result, self.err_writer, ec);
         return .build_failed;
     }
@@ -353,134 +343,50 @@ fn syncFiltered(self: *Commands, filtered: []const []const u8) !ExitCode {
     return .success;
 }
 
-// ── Build Command ────────────────────────────────────────────────────
-
-/// Build packages and add to repository without installing.
-pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
-    const ec = self.stderr_color;
-    const reg = self.registry orelse {
-        self.err_writer.print("{s}error:{s} registry not initialized\n", .{ ec.red, ec.reset }) catch {};
-        return .general_error;
-    };
-    const repository = self.repo orelse {
-        self.err_writer.print("{s}error:{s} repository not initialized\n", .{ ec.red, ec.reset }) catch {};
-        return .general_error;
-    };
-    const c_root = self.cache_root orelse {
-        self.err_writer.print("{s}error:{s} cache root not set\n", .{ ec.red, ec.reset }) catch {};
-        return .general_error;
-    };
-
-    // Filter ignored targets
-    var ignore_buf: [256][]const u8 = undefined;
-    const filtered = self.filterIgnored(targets, &ignore_buf);
-    if (filtered.len == 0) return .success;
-
-    var s = solver_mod.Solver.init(self.allocator, reg);
-    s.rebuild = self.flags.rebuild;
-    s.needed = self.flags.needed;
-    s.ignore = self.flags.ignore;
-    defer s.deinit();
-
-    const plan = s.resolve(filtered) catch |err| {
-        return handleResolveError(err, self.err_writer, ec);
-    };
-    defer plan.deinit(self.allocator);
-
-    // Resolve conflicts interactively
-    var removals: []const []const u8 = &.{};
-    if (plan.conflicts.len > 0 and !self.flags.noconfirm) {
-        removals = try resolveConflicts(self.allocator, plan.conflicts, self.stdout_color) orelse {
-            self.err_writer.print("{s}::{s} unresolvable package conflicts detected\n", .{ ec.red, ec.reset }) catch {};
-            return .general_error;
-        };
-    }
-    defer self.allocator.free(removals);
-
-    if (plan.build_order.len == 0) {
+/// Handle a resolved plan with nothing to build.  In sync mode this can still
+/// trigger an install of targets already available in aurpkgs (mirroring
+/// `pacman -S` reinstall semantics); in build mode it simply reports done.
+fn handleEmptyBuildOrder(self: *Commands, plan: solver_mod.BuildPlan, mode: BuildMode) !ExitCode {
+    if (mode == .build_only) {
         getStdout().writeAll(" nothing to do -- all targets are up to date\n") catch {};
         return .success;
     }
 
-    // Provider selection for transitive repo deps
-    var chosen_providers: std.StringHashMapUnmanaged([]const u8) = .empty;
-    defer chosen_providers.deinit(self.allocator);
-    var providers_to_install: std.ArrayListUnmanaged([]const u8) = .empty;
-    defer providers_to_install.deinit(self.allocator);
-
-    if (self.pacman) |pm| {
-        const choices = try pm.findTransitiveProviderChoices(self.allocator, plan.repo_deps);
-        defer {
-            for (choices) |ch| self.allocator.free(ch.candidates);
-            self.allocator.free(choices);
+    // Targets already in aurpkgs: either not installed (repo_aur) or installed
+    // but available for reinstall (satisfied_aur), unless --needed.
+    var aurpkgs_targets: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer aurpkgs_targets.deinit(self.allocator);
+    for (plan.all_deps) |dep| {
+        if (!dep.is_target) continue;
+        if (dep.source == .repo_aur) {
+            try aurpkgs_targets.append(self.allocator, dep.name);
+        } else if (dep.source == .satisfied_aur and !self.flags.needed) {
+            if (self.pacman) |pm| {
+                if (pm.isAurRepo(pm.syncDbFor(dep.name) orelse "")) {
+                    try aurpkgs_targets.append(self.allocator, dep.name);
+                }
+            }
         }
-        try selectRepoDepsProviders(
-            self.allocator,
-            choices,
-            self.flags.noconfirm,
-            self.stdout_color,
-            &chosen_providers,
-            &providers_to_install,
-        );
     }
 
-    const repo_deps_full = if (self.pacman) |pm|
-        try pm.transitiveRepoDeps(self.allocator, plan.repo_deps, chosen_providers)
-    else
-        try self.allocator.dupe([]const u8, plan.repo_deps);
-    defer self.allocator.free(repo_deps_full);
+    if (aurpkgs_targets.items.len == 0 and plan.repo_targets.len == 0) {
+        getStdout().writeAll(" nothing to do -- all targets are up to date\n") catch {};
+        return .success;
+    }
 
-    displayPlan(plan, repo_deps_full, self.pacman, removals, self.err_writer, self.stdout_color, ec, &self.devel_version_hint);
+    var all_names: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer all_names.deinit(self.allocator);
+    try all_names.appendSlice(self.allocator, aurpkgs_targets.items);
+    try all_names.appendSlice(self.allocator, plan.repo_targets);
+    cmds.displayInstallList(all_names.items, self.pacman, self.err_writer, self.stdout_color, self.stderr_color);
 
     if (!self.flags.noconfirm) {
-        if (!try utils.promptYesNoStyled(self.stdout_color, "Proceed with build?")) {
+        if (!try utils.promptYesNoStyled(self.stdout_color, "Proceed with installation?")) {
             return .success;
         }
     }
 
-    // Clone
-    for (plan.build_order) |entry| {
-        const clone_result = git.cloneOrUpdate(self.allocator, c_root, entry.pkgbase) catch |err| {
-            self.err_writer.print("{s}error:{s} failed to clone/update '{s}': {}\n", .{ ec.red, ec.reset, entry.pkgbase, err }) catch {};
-            return .general_error;
-        };
-        if (clone_result == .reCloned) {
-            self.err_writer.print("{s}warning:{s} cached repository for '{s}' was invalid and has been re-cloned\n", .{ ec.yellow, ec.reset, entry.pkgbase }) catch {};
-        }
-    }
-
-    // Review
-    if (!self.flags.noshow) {
-        try reviewPackages(self, plan.build_order, c_root);
-    }
-
-    // Acquire credentials now that the user has committed
-    if (try acquireAuth(self)) |exit| return exit;
-
-    // Pre-install chosen providers so makepkg -s finds them already installed
-    if (providers_to_install.items.len > 0) {
-        if (!try preInstallProviders(self, providers_to_install.items)) return .general_error;
-    }
-
-    // Build
-    try repository.ensureExists();
-    const result = try buildLoop(self, plan, repository, c_root);
-    defer result.deinit(self.allocator);
-
-    if (result.signal_aborted) return .signal_killed;
-
-    // Final sync DB refresh so the packages are installable via pacman -S.
-    if (result.succeeded.len > 0) {
-        refreshAurpkgsSyncDb(self.allocator, repository, self.auth.?) catch |err| {
-            self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err }) catch {};
-        };
-    }
-
-    if (result.failed.len > 0) {
-        printBuildSummary(result, self.err_writer, ec);
-        return .build_failed;
-    }
-
+    try installAllTargets(self, aurpkgs_targets.items, plan.repo_targets);
     return .success;
 }
 
@@ -599,9 +505,9 @@ pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
         return .success;
     }
 
-    // Delegate to sync for the actual build+install workflow.
-    // Use syncFiltered to skip ignore prompting (already handled above).
-    return syncFiltered(self, to_upgrade.items);
+    // Delegate to the shared pipeline for build+install.
+    // Ignore prompting is skipped here: handled above.
+    return runBuildPipeline(self, to_upgrade.items, .sync);
 }
 
 // ── Devel Upgrade Check ──────────────────────────────────────────────
