@@ -90,3 +90,16 @@ sudo pacman -Syu
 ```
 
 After setup, packages built with `aurodle sync <package>` will be added to the local repository and installed via pacman.
+
+## Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `AURDEST` | `~/.cache/aurodle` | Directory where AUR package sources are cloned. |
+| `PKGDEST` | from `makepkg.conf` | Directory where built packages are placed. Overrides the value in `/etc/makepkg.conf` and `~/.makepkg.conf`. |
+| `PKGEXT` | `.pkg.tar.zst` | Package file extension. Overrides the value in `makepkg.conf`. |
+| `PACMAN_AUTH` | from `makepkg.conf` | Privilege escalation command passed to pacman (e.g. `sudo`). Overrides the value in `makepkg.conf`. |
+| `CHROOT_DIR` | `/var/lib/aurodle/chroot` | Chroot root directory used with the `--chroot` flag. |
+| `PAGER` | — | Pager used to review PKGBUILDs before building. Falls back to `VISUAL`, then `EDITOR`. |
+| `VISUAL` | — | Fallback editor/pager for PKGBUILD review when `PAGER` is unset. |
+| `EDITOR` | — | Fallback editor for PKGBUILD review when `PAGER` and `VISUAL` are unset. |
