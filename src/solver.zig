@@ -191,8 +191,15 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                             // from AUR, not redirect to installed pacaur-git.
                             if (self.targets.contains(name)) {
                                 if (try self.registry.resolveFromAur(name)) |aur_res| {
-                                    actual_resolution = aur_res;
-                                    // Don't redirect — keep the original target name
+                                    if (aur_res.provider == null) {
+                                        actual_resolution = aur_res;
+                                        // Don't redirect — exact AUR package exists with this name
+                                    } else {
+                                        // AUR only knows this name via a provider, not an exact package.
+                                        // Accept the redirect (same as when resolveFromAur returns null).
+                                        try self.targets.put(self.allocator, provider_name, {});
+                                        actual_name = provider_name;
+                                    }
                                 } else {
                                     // Target doesn't exist in AUR — accept the provider redirect
                                     try self.targets.put(self.allocator, provider_name, {});
@@ -1281,6 +1288,16 @@ const MockRegistry = struct {
                 .aur_pkg = aur_info.aur_pkg,
             };
         }
+        // Check deferred providers (simulates AUR provider search, e.g. "aurodle" → "aurodle-git")
+        if (self.deferred_providers.get(name)) |dp| {
+            return .{
+                .name = dp.aur_pkg.?.name,
+                .source = .aur,
+                .version = dp.version,
+                .aur_pkg = dp.aur_pkg,
+                .provider = dp.provider,
+            };
+        }
         // Fall back to primary entry if it has AUR data
         const info = self.packages.get(name) orelse return null;
         if (info.aur_pkg == null) return null;
@@ -1939,6 +1956,28 @@ test "resolve redirects virtual name to provider package" {
     // Build plan should show "auracle-git", not "auracle"
     try testing.expectEqual(@as(usize, 1), plan.build_order.len);
     try testing.expectEqualStrings("auracle-git", plan.build_order[0].name);
+    try testing.expect(plan.build_order[0].is_target);
+}
+
+test "resolve redirects to provider when installed pkg provides target and AUR also has that provider" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // "aurodle-git" is installed and provides "aurodle" via local pacman
+    mock.addProvider("aurodle", "aurodle-git", .satisfied_aur, "r246.21fa2dd-1");
+    // AUR also knows "aurodle" is provided by "aurodle-git" (resolveFromAur finds this)
+    mock.addDeferredProvider("aurodle", "aurodle-git");
+    // "aurodle-git" itself exists in AUR
+    mock.addAurPackage("aurodle-git", &.{}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"aurodle"});
+    defer plan.deinit(testing.allocator);
+
+    // Must show "aurodle-git" in the build plan, not "aurodle"
+    try testing.expectEqual(@as(usize, 1), plan.build_order.len);
+    try testing.expectEqualStrings("aurodle-git", plan.build_order[0].name);
     try testing.expect(plan.build_order[0].is_target);
 }
 
