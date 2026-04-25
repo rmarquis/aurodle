@@ -97,6 +97,7 @@ fn run(allocator: Allocator) !ExitCode {
         },
         .clone => try cmds.clonePackages(parsed.targets),
         .show => try cmds.show(parsed.targets[0]),
+        .status => try cmds.status(),
         // Full-stack commands handled above
         .sync, .build, .resolve, .buildorder, .outdated, .upgrade, .clean => unreachable,
     };
@@ -114,6 +115,7 @@ const Operation = enum {
     clean,
     resolve,
     buildorder,
+    status,
 
     fn fromString(s: []const u8) ?Operation {
         const map = std.StaticStringMap(Operation).initComptime(.{
@@ -128,6 +130,7 @@ const Operation = enum {
             .{ "clean", .clean },
             .{ "resolve", .resolve },
             .{ "buildorder", .buildorder },
+            .{ "status", .status },
         });
         return map.get(s);
     }
@@ -163,7 +166,7 @@ const Operation = enum {
     fn requiresTargets(self: Operation) bool {
         return switch (self) {
             .sync, .build, .clone, .info, .search, .show, .resolve, .buildorder => true,
-            .outdated, .upgrade, .clean => false,
+            .outdated, .upgrade, .clean, .status => false,
         };
     }
 };
@@ -441,6 +444,7 @@ fn printHelp() void {
         \\  show                   Display package build files
         \\  resolve                Show dependency tree
         \\  buildorder             Show build order (machine-readable)
+        \\  status                 Check online service status
         \\
         \\Global options:
         \\  -h, --help             Show this help
@@ -710,7 +714,7 @@ test "parseArgs: recognizes all command names" {
 }
 
 test "parseArgs: commands without required targets" {
-    const cmds = [_][]const u8{ "outdated", "upgrade", "clean" };
+    const cmds = [_][]const u8{ "outdated", "upgrade", "clean", "status" };
     for (cmds) |cmd| {
         var buf: [256][]const u8 = undefined;
         const parsed = try parseArgs(&.{cmd}, &buf);

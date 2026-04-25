@@ -15,6 +15,7 @@ const color = @import("color.zig");
 pub const query = @import("commands/query.zig");
 pub const build_cmd = @import("commands/build_cmd.zig");
 pub const analysis = @import("commands/analysis.zig");
+pub const status_cmd = @import("commands/status.zig");
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -272,6 +273,13 @@ pub const Commands = struct {
 
     pub fn buildorder(self: *Commands, targets: []const []const u8) !ExitCode {
         return analysis.buildorder(self, targets);
+    }
+
+    // ── Status command ───────────────────────────────────────────────
+
+    pub fn status(self: *Commands) !ExitCode {
+        const code = try status_cmd.run(self.allocator, self.stdout_color);
+        return if (code == 0) .success else .general_error;
     }
 };
 
