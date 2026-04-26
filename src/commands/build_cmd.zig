@@ -668,8 +668,11 @@ fn buildLoop(
             if (devel.isVcsPackage(entry.name)) "latest" else entry.version;
 
         // Pre-check: if all output packages already exist in PKGDEST, skip the build.
+        // VCS packages are excluded: makepkg --packagelist reports the stale cached
+        // pkgver, not the upstream HEAD, so the on-disk file check is meaningless.
         const already_built = !self.flags.rebuild and
             !self.flags.chroot and
+            !devel.isVcsPackage(entry.name) and
             (allPackagesBuilt(self.allocator, clone_dir) catch false);
 
         if (already_built) {
