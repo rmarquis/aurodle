@@ -691,7 +691,10 @@ fn buildLoop(
                 break :blk try utils.runInteractive(self.allocator, args, clone_dir);
             };
 
-            if (exit_code != 0) {
+            // exit 13 = E_ALREADY_BUILT: pkgver() ran and updated the PKGBUILD,
+            // but the output file already exists in PKGDEST. Fall through to
+            // addPackageFiles so the repo DB stays consistent.
+            if (exit_code != 0 and exit_code != 13) {
                 // Signal-killed (e.g., Ctrl+C -> SIGINT -> exit 130)
                 if (exit_code >= 128) {
                     try failed.append(self.allocator, .{
