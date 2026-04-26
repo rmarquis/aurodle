@@ -253,6 +253,24 @@ pub const Repository = struct {
         return packages.toOwnedSlice(self.allocator);
     }
 
+    /// Return true if a package file for `name` at exactly `version` already
+    /// exists in the repository directory.  Used to skip VCS rebuilds when the
+    /// devel-computed version matches what is already in the local repo.
+    pub fn hasPackageVersion(self: *const Repository, name: []const u8, version: []const u8) bool {
+        var dir = std.fs.cwd().openDir(self.repo_dir, .{ .iterate = true }) catch return false;
+        defer dir.close();
+        var it = dir.iterate();
+        while (it.next() catch return false) |entry| {
+            if (entry.kind != .file) continue;
+            if (std.mem.indexOf(u8, entry.name, ".pkg.tar.") == null) continue;
+            if (self.isDbFile(entry.name)) continue;
+            if (parsePackageFilename(entry.name)) |parsed| {
+                if (std.mem.eql(u8, parsed.name, name) and std.mem.eql(u8, parsed.version, version)) return true;
+            }
+        }
+        return false;
+    }
+
     // ── Configuration Check ──────────────────────────────────────────────
 
     /// Check if the local AUR repository is configured in pacman.conf.

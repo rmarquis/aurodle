@@ -667,13 +667,19 @@ fn buildLoop(
         const ver = self.devel_version_hint.get(entry.name) orelse
             if (devel.isVcsPackage(entry.name)) "latest" else entry.version;
 
-        // Pre-check: if all output packages already exist in PKGDEST, skip the build.
-        // VCS packages are excluded: makepkg --packagelist reports the stale cached
-        // pkgver, not the upstream HEAD, so the on-disk file check is meaningless.
+        // Pre-check: skip the build if the output is already available.
+        // VCS packages: use the devel-computed version hint to check the local
+        // repo directly. makepkg --packagelist is useless before pkgver() runs
+        // (it reports the stale cached pkgver). Without a hint the check is
+        // skipped and exit 13 handling acts as the safety net instead.
+        // Non-VCS packages: check PKGDEST via makepkg --packagelist as usual.
         const already_built = !self.flags.rebuild and
             !self.flags.chroot and
-            !devel.isVcsPackage(entry.name) and
-            (allPackagesBuilt(self.allocator, clone_dir) catch false);
+            if (devel.isVcsPackage(entry.name)) blk: {
+                const hint = self.devel_version_hint.get(entry.name) orelse break :blk false;
+                break :blk repository.hasPackageVersion(entry.name, hint);
+            } else
+                (allPackagesBuilt(self.allocator, clone_dir) catch false);
 
         if (already_built) {
             getStdout().print("{s}::{s} {s} {s} already built, skipping (use --rebuild to force)\n", .{ sc.yellow, sc.reset, entry.name, ver }) catch {};
