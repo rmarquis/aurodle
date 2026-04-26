@@ -35,6 +35,7 @@ aurodle clone <package>       # clone AUR package repositories
 aurodle show <package>        # display package build files
 aurodle resolve <package>     # show dependency tree
 aurodle buildorder <package>  # show build order (machine-readable)
+aurodle status                # show infrastructure status
 ```
 
 ## Building
