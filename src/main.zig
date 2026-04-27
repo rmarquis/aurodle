@@ -87,17 +87,20 @@ fn run(allocator: Allocator) !ExitCode {
     cmds.flags.reanchorIgnore();
 
     return switch (parsed.operation) {
-        .info => try cmds.info(parsed.targets),
+        .info => try commands.query.info(&cmds, parsed.targets),
         .search => blk: {
             if (parsed.targets.len == 0) {
                 printUsageError("search requires a query term");
                 break :blk .usage_error;
             }
-            break :blk try cmds.search(parsed.targets);
+            break :blk try commands.query.search(&cmds, parsed.targets);
         },
-        .clone => try cmds.clonePackages(parsed.targets),
-        .show => try cmds.show(parsed.targets[0]),
-        .status => try cmds.status(),
+        .clone => try commands.build_cmd.clonePackages(&cmds, parsed.targets),
+        .show => try commands.build_cmd.show(&cmds, parsed.targets[0]),
+        .status => blk: {
+            const code = try commands.status_cmd.run(cmds.allocator, cmds.stdout_color);
+            break :blk if (code == 0) .success else .general_error;
+        },
         // Full-stack commands handled above
         .sync, .build, .resolve, .buildorder, .outdated, .upgrade, .clean => unreachable,
     };
@@ -413,14 +416,14 @@ fn runWithFullStack(
     cmds.flags.reanchorIgnore();
 
     return switch (parsed.operation) {
-        .sync => try cmds.sync(parsed.targets),
-        .build => try cmds.build(parsed.targets),
-        .resolve => try cmds.resolve(parsed.targets),
-        .buildorder => try cmds.buildorder(parsed.targets),
-        .outdated => try cmds.outdated(parsed.targets),
-        .upgrade => try cmds.upgrade(parsed.targets),
-        .clean => try cmds.clean(),
-        .clone => try cmds.clonePackages(parsed.targets),
+        .sync => try commands.build_cmd.sync(&cmds, parsed.targets),
+        .build => try commands.build_cmd.build(&cmds, parsed.targets),
+        .resolve => try commands.analysis.resolve(&cmds, parsed.targets),
+        .buildorder => try commands.analysis.buildorder(&cmds, parsed.targets),
+        .outdated => try commands.query.outdated(&cmds, parsed.targets),
+        .upgrade => try commands.build_cmd.upgrade(&cmds, parsed.targets),
+        .clean => try commands.build_cmd.clean(&cmds),
+        .clone => try commands.build_cmd.clonePackages(&cmds, parsed.targets),
         else => unreachable,
     };
 }

@@ -5,7 +5,7 @@ const alpm = @import("../alpm.zig");
 const git = @import("../git.zig");
 const devel = @import("../devel.zig");
 const pacman_mod = @import("../pacman.zig");
-const cmds = @import("../commands.zig");
+const cmds = @import("context.zig");
 const color = @import("../color.zig");
 
 const Commands = cmds.Commands;
@@ -605,7 +605,7 @@ test "outdated returns general_error when pacman not initialized" {
     var cmds2 = Commands.init(testing.allocator, undefined, .{});
     cmds2.err_writer = std.io.null_writer.any();
     cmds2.stderr_color = color.Style.disabled;
-    const result = try cmds2.outdated(&.{});
+    const result = try outdated(&cmds2, &.{});
     try testing.expectEqual(ExitCode.general_error, result);
 }
 

@@ -1,7 +1,7 @@
 const std = @import("std");
 const registry_mod = @import("../registry.zig");
 const solver_mod = @import("../solver.zig");
-const cmds = @import("../commands.zig");
+const cmds = @import("context.zig");
 const color = @import("../color.zig");
 
 const Commands = cmds.Commands;

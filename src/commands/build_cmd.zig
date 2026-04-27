@@ -9,7 +9,7 @@ const pacman_mod = @import("../pacman.zig");
 const utils = @import("../utils.zig");
 const auth_mod = @import("../auth.zig");
 const registry_mod = @import("../registry.zig");
-const cmds = @import("../commands.zig");
+const cmds = @import("context.zig");
 const query = @import("query.zig");
 const color = @import("../color.zig");
 
