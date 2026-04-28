@@ -6,6 +6,8 @@ const alpm = @import("alpm.zig");
 const devel = @import("devel.zig");
 const pacman_mod = @import("pacman.zig");
 const graph_mod = @import("solver/graph.zig");
+const topo_mod = @import("solver/topo.zig");
+const conflicts_mod = @import("solver/conflicts.zig");
 
 const NodeMeta = graph_mod.NodeMeta;
 const DepGraph = graph_mod.DepGraph;
@@ -34,24 +36,7 @@ pub const DependencyEntry = struct {
     depth: u32,
 };
 
-pub const Conflict = struct {
-    package: []const u8,
-    conflicts_with: []const u8,
-    kind: Kind,
-
-    pub const Kind = enum {
-        /// Two packages in the build plan conflict with each other.
-        aur_aur,
-        /// An AUR package conflicts with an already-installed package.
-        aur_installed,
-        /// A new repo dependency conflicts with an already-installed package.
-        repo_installed,
-        /// An AUR package replaces an already-installed package.
-        aur_replaces,
-        /// A new repo dependency replaces an already-installed package.
-        repo_replaces,
-    };
-};
+pub const Conflict = conflicts_mod.Conflict;
 
 pub const BuildPlan = struct {
     build_order: []BuildEntry,
@@ -120,10 +105,15 @@ pub fn SolverImpl(comptime RegistryT: type) type {
             try self.discover(target_names);
 
             // Phase 1.5: Conflict detection — check conflicts metadata
-            const conflicts = try self.detectConflicts();
+            const conflicts = try conflicts_mod.detectConflicts(
+                @TypeOf(self.registry.pacman.*),
+                self.allocator,
+                &self.graph,
+                self.registry.pacman,
+            );
 
             // Phase 2: Topological sort — Kahn's algorithm on AUR nodes
-            const order = try self.topoSort();
+            const order = try topo_mod.topoSort(self.allocator, &self.graph);
             defer self.allocator.free(order);
 
             // Phase 3: Plan assembly — pkgbase dedup + classification
@@ -355,252 +345,11 @@ pub fn SolverImpl(comptime RegistryT: type) type {
             }
         }
 
-        // ── Phase 1.5: Conflict Detection ────────────────────────────────
-
-        /// Scan AUR nodes for declared conflicts against other graph nodes
-        /// and installed packages. Provides-aware: if A conflicts with virtual
-        /// name "libfoo" and B provides "libfoo", that's an AUR↔AUR conflict.
-        fn detectConflicts(self: *Self) ![]Conflict {
-            var conflicts: std.ArrayListUnmanaged(Conflict) = .empty;
-
-            // Build reverse provides map: provided_name → provider_node_name
-            // for all AUR packages in the graph.
-            var provides_map = std.StringHashMapUnmanaged([]const u8){};
-            defer provides_map.deinit(self.allocator);
-            {
-                var it = self.graph.nodes.iterator();
-                while (it.next()) |gentry| {
-                    const pkg = gentry.value_ptr.meta.aur_pkg orelse continue;
-                    for (pkg.provides) |prov| {
-                        const prov_name = registry_mod.parseDep(prov).name;
-                        try provides_map.put(self.allocator, prov_name, gentry.value_ptr.meta.name);
-                    }
-                }
-            }
-
-            // Track seen AUR↔AUR pairs to deduplicate bidirectional conflicts.
-            // Key: "smaller\x00larger" canonical pair.
-            var seen_pairs = std.StringHashMapUnmanaged(void){};
-            defer {
-                var it = seen_pairs.keyIterator();
-                while (it.next()) |key| self.allocator.free(key.*);
-                seen_pairs.deinit(self.allocator);
-            }
-
-            // Single pass over all nodes: AUR conflicts + replaces, repo conflicts + replaces
-            var graph_it = self.graph.nodes.iterator();
-            while (graph_it.next()) |entry| {
-                const node = entry.value_ptr;
-
-                // AUR nodes: check conflicts and replaces arrays
-                if (node.meta.aur_pkg) |pkg| {
-                    for (pkg.conflicts) |conflict_dep| {
-                        const conflict_name = registry_mod.parseDep(conflict_dep).name;
-                        if (std.mem.eql(u8, conflict_name, node.meta.name)) continue;
-
-                        // Resolve conflict target: direct graph node or provides lookup.
-                        // Use n.meta.name (not conflict_name) so alias "auracle" → "auracle-git"
-                        // yields "auracle-git", letting the self-conflict check below suppress
-                        // auracle-git conflicting with its own provided name "auracle".
-                        const resolved_name = if (self.graph.getNode(conflict_name)) |n|
-                            n.meta.name
-                        else if (provides_map.get(conflict_name)) |provider|
-                            provider
-                        else
-                            conflict_name;
-
-                        // AUR↔AUR: conflict target (or its provider) is a different node in the graph
-                        if (!std.mem.eql(u8, resolved_name, node.meta.name)) {
-                            if (self.graph.getNode(resolved_name)) |conflict_node| {
-                                if (conflict_node.meta.aur_pkg != null) {
-                                    _ = try self.addConflictPair(&seen_pairs, &conflicts, node.meta.name, resolved_name);
-                                    continue;
-                                }
-                            }
-                        }
-
-                        // AUR↔installed: conflict target is installed (by name or provider)
-                        try self.checkInstalledConflict(&conflicts, node.meta.name, conflict_name, .aur_installed);
-                    }
-
-                    for (pkg.replaces) |replace_dep| {
-                        const replace_name = registry_mod.parseDep(replace_dep).name;
-                        if (std.mem.eql(u8, replace_name, node.meta.name)) continue;
-                        try self.checkInstalledConflict(&conflicts, node.meta.name, replace_name, .aur_replaces);
-                    }
-                }
-
-                // Repo nodes: check sync DB conflicts and replaces (production only)
-                if (node.meta.source == .repos) {
-                    try self.checkRepoVsInstalled(&conflicts, node.meta.name);
-                }
-            }
-
-            return try conflicts.toOwnedSlice(self.allocator);
-        }
-
         fn isIgnoredPkg(self: *Self, name: []const u8) bool {
             for (self.ignore) |ignored| {
                 if (std.mem.eql(u8, ignored, name)) return true;
             }
             return false;
-        }
-
-        /// Add an AUR↔AUR conflict pair, deduplicating bidirectional declarations.
-        /// Returns true if the pair was already seen (duplicate).
-        fn addConflictPair(
-            self: *Self,
-            seen_pairs: *std.StringHashMapUnmanaged(void),
-            conflicts: *std.ArrayListUnmanaged(Conflict),
-            pkg_name: []const u8,
-            resolved_name: []const u8,
-        ) !bool {
-            const is_lt = std.mem.order(u8, pkg_name, resolved_name) == .lt;
-            const a = if (is_lt) pkg_name else resolved_name;
-            const b = if (is_lt) resolved_name else pkg_name;
-            const pair_key = try std.mem.concat(self.allocator, u8, &.{ a, "\x00", b });
-            const gop = try seen_pairs.getOrPut(self.allocator, pair_key);
-            if (gop.found_existing) {
-                self.allocator.free(pair_key);
-                return true;
-            }
-            try conflicts.append(self.allocator, .{
-                .package = pkg_name,
-                .conflicts_with = resolved_name,
-                .kind = .aur_aur,
-            });
-            return false;
-        }
-
-        /// Check if `dep_name` (or its installed provider) conflicts with an installed package.
-        fn checkInstalledConflict(
-            self: *Self,
-            conflicts: *std.ArrayListUnmanaged(Conflict),
-            pkg_name: []const u8,
-            dep_name: []const u8,
-            kind: Conflict.Kind,
-        ) !void {
-            if (self.registry.pacman.isInstalled(dep_name)) {
-                try conflicts.append(self.allocator, .{
-                    .package = pkg_name,
-                    .conflicts_with = dep_name,
-                    .kind = kind,
-                });
-            } else if (@hasDecl(@TypeOf(self.registry.pacman.*), "findProvider")) {
-                if (self.registry.pacman.findProvider(dep_name)) |provider| {
-                    if (std.mem.eql(u8, provider.provider_name, pkg_name)) return;
-                    if (self.registry.pacman.isInstalled(provider.provider_name)) {
-                        try conflicts.append(self.allocator, .{
-                            .package = pkg_name,
-                            .conflicts_with = provider.provider_name,
-                            .kind = kind,
-                        });
-                    }
-                }
-            }
-        }
-
-        /// Check repo node against installed packages for conflicts and replaces.
-        fn checkRepoVsInstalled(
-            self: *Self,
-            conflicts: *std.ArrayListUnmanaged(Conflict),
-            name: []const u8,
-        ) !void {
-            const PacmanType = @TypeOf(self.registry.pacman.*);
-            if (@hasDecl(PacmanType, "syncPkgConflictsWithInstalled")) {
-                if (self.registry.pacman.syncPkgConflictsWithInstalled(name)) |installed_name| {
-                    if (self.graph.getNode(installed_name) == null) {
-                        try conflicts.append(self.allocator, .{ .package = name, .conflicts_with = installed_name, .kind = .repo_installed });
-                    }
-                }
-            }
-            if (@hasDecl(PacmanType, "syncPkgReplacesInstalled")) {
-                if (self.registry.pacman.syncPkgReplacesInstalled(name)) |installed_name| {
-                    if (self.graph.getNode(installed_name) == null) {
-                        try conflicts.append(self.allocator, .{ .package = name, .conflicts_with = installed_name, .kind = .repo_replaces });
-                    }
-                }
-            }
-        }
-
-        // ── Phase 2: Topological Sort (Kahn's Algorithm) ────────────────
-
-        fn topoSort(self: *Self) ![][]const u8 {
-            const alloc = self.allocator;
-
-            // Collect AUR node names
-            var aur_nodes: std.ArrayListUnmanaged([]const u8) = .empty;
-            defer aur_nodes.deinit(alloc);
-
-            var graph_it = self.graph.nodes.iterator();
-            while (graph_it.next()) |entry| {
-                if (entry.value_ptr.meta.source == .aur) {
-                    try aur_nodes.append(alloc, entry.key_ptr.*);
-                }
-            }
-
-            if (aur_nodes.items.len == 0) {
-                return alloc.alloc([]const u8, 0);
-            }
-
-            // Build reverse edges (dependency → dependents) and in-degrees.
-            // Forward edges point dependent → dependency; we invert them
-            // so Kahn's BFS can efficiently find who to unblock.
-            var in_degree = std.StringHashMapUnmanaged(u32){};
-            defer in_degree.deinit(alloc);
-            var reverse = std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)){};
-            defer {
-                var it = reverse.valueIterator();
-                while (it.next()) |list| list.deinit(alloc);
-                reverse.deinit(alloc);
-            }
-
-            for (aur_nodes.items) |name| {
-                try in_degree.put(alloc, name, 0);
-                try reverse.put(alloc, name, .empty);
-            }
-
-            for (aur_nodes.items) |src_name| {
-                const node = self.graph.getNode(src_name).?;
-                for (node.edges.keys()) |raw_dep| {
-                    const dep_name = self.graph.resolveName(raw_dep);
-                    if (reverse.getPtr(dep_name)) |dependents| {
-                        try dependents.append(alloc, src_name);
-                        in_degree.getPtr(src_name).?.* += 1;
-                    }
-                }
-            }
-
-            // Seed with zero in-degree nodes, then BFS: the queue doubles
-            // as the result since every dequeued node is in topological order.
-            var order: std.ArrayListUnmanaged([]const u8) = .empty;
-
-            for (aur_nodes.items) |name| {
-                if (in_degree.get(name).? == 0) {
-                    try order.append(alloc, name);
-                }
-            }
-
-            var head: usize = 0;
-            while (head < order.items.len) {
-                const current = order.items[head];
-                head += 1;
-
-                for (reverse.get(current).?.items) |dependent| {
-                    const deg = in_degree.getPtr(dependent).?;
-                    deg.* -= 1;
-                    if (deg.* == 0) {
-                        try order.append(alloc, dependent);
-                    }
-                }
-            }
-
-            // Cycle detection
-            if (order.items.len != aur_nodes.items.len) {
-                return error.CircularDependency;
-            }
-
-            return try order.toOwnedSlice(alloc);
         }
 
         // ── Phase 3: Plan Assembly ───────────────────────────────────────
