@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const aur = @import("../aur.zig");
-const alpm = @import("../alpm.zig");
+const registry_mod = @import("../registry.zig");
 const git = @import("../git.zig");
 const devel = @import("../devel.zig");
 const pacman_mod = @import("../pacman.zig");
@@ -43,14 +43,9 @@ pub fn info(self: *Commands, targets: []const []const u8) !ExitCode {
         }
     }
 
-    const alpm_handle = alpm.Handle.init("/", "/var/lib/pacman/") catch null;
-    defer if (alpm_handle) |h| h.deinit();
-    const local_db = if (alpm_handle) |h| h.getLocalDb() else null;
     const c = self.stdout_color;
     for (packages) |pkg| {
-        const installed_version = if (local_db) |db| blk: {
-            break :blk if (db.getPackage(pkg.name)) |p| p.getVersion() else null;
-        } else null;
+        const installed_version = if (self.pacman) |pm| pm.installedVersion(pkg.name) else null;
         displayInfo(pkg, installed_version, c);
     }
 
@@ -90,10 +85,7 @@ pub fn search(self: *Commands, terms: []const []const u8) !ExitCode {
     const sorted = try sortPackages(self.allocator, self.flags, filtered.items);
     defer self.allocator.free(sorted);
 
-    const alpm_handle = alpm.Handle.init("/", "/var/lib/pacman/") catch null;
-    defer if (alpm_handle) |h| h.deinit();
-    const local_db = if (alpm_handle) |h| h.getLocalDb() else null;
-    displaySearchResults(sorted, self.stdout_color, local_db, self.flags.quiet);
+    displaySearchResults(sorted, self.stdout_color, self.pacman, self.flags.quiet);
 
     return .success;
 }
@@ -186,7 +178,7 @@ pub fn collectOutdated(self: *Commands, filter: []const []const u8, populate_hin
 
     for (to_check) |pkg| {
         if (aur_map.get(pkg.name)) |aur_ver| {
-            if (alpm.vercmp(pkg.version, aur_ver) < 0) {
+            if (registry_mod.PackageRegistry.vercmp(pkg.version, aur_ver) < 0) {
                 try entries.append(self.allocator, .{
                     .name = pkg.name,
                     .installed_version = pkg.version,
@@ -267,7 +259,7 @@ pub fn checkDevelPackages(
                     break;
                 }
             }
-        } else if (alpm.vercmp(pkg.version, version) < 0) {
+        } else if (registry_mod.PackageRegistry.vercmp(pkg.version, version) < 0) {
             try entries.append(self.allocator, .{
                 .name = pkg.name,
                 .installed_version = pkg.version,
@@ -424,7 +416,7 @@ fn displayInfo(pkg: *aur.Package, installed_version: ?[]const u8, c: color.Style
     stdout.writeByte('\n') catch {};
 }
 
-fn displaySearchResults(packages: []const *aur.Package, c: color.Style, local_db: ?alpm.Database, quiet: bool) void {
+fn displaySearchResults(packages: []const *aur.Package, c: color.Style, pm: ?*pacman_mod.Pacman, quiet: bool) void {
     const stdout = getStdout();
 
     for (packages) |pkg| {
@@ -445,9 +437,8 @@ fn displaySearchResults(packages: []const *aur.Package, c: color.Style, local_db
             pkg.popularity,
         }) catch {};
 
-        if (local_db) |db| {
-            if (db.getPackage(pkg.name)) |local_pkg| {
-                const iv = local_pkg.getVersion();
+        if (pm) |pacman| {
+            if (pacman.installedVersion(pkg.name)) |iv| {
                 if (std.mem.eql(u8, iv, pkg.version)) {
                     stdout.writeAll(" [installed]") catch {};
                 } else {
