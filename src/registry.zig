@@ -5,25 +5,11 @@ const alpm = @import("alpm.zig");
 const color = @import("color.zig");
 const devel = @import("devel.zig");
 const pacman_mod = @import("pacman.zig");
+const provider_types = @import("provider.zig");
 
-// ── Provider Selection Types ─────────────────────────────────────────────
-
-pub const ProviderCandidate = struct {
-    name: []const u8,
-    version: []const u8,
-    db_name: []const u8, // repo name or "aur"
-};
-
-pub const ProviderChooserFn = *const fn (
-    dep_name: []const u8,
-    candidates: []const ProviderCandidate,
-    stderr_color: color.Style,
-) ?usize;
-
-pub const ProviderSelection = struct {
-    dep_name: []const u8,
-    chosen: []const u8,
-};
+pub const ProviderCandidate = provider_types.ProviderCandidate;
+pub const ProviderChooserFn = provider_types.ProviderChooserFn;
+pub const ProviderSelection = provider_types.ProviderSelection;
 
 // ── Public Types ─────────────────────────────────────────────────────────
 

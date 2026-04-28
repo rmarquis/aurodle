@@ -122,7 +122,7 @@ pub fn findOnPath(name: []const u8) bool {
     return false;
 }
 
-const registry_mod = @import("registry.zig");
+const provider_mod = @import("provider.zig");
 
 /// Prompt the user to choose a provider, matching pacman's format:
 ///
@@ -136,7 +136,7 @@ const registry_mod = @import("registry.zig");
 /// Signature matches `ProviderChooserFn`.
 pub fn promptProviderChoice(
     dep_name: []const u8,
-    candidates: []const registry_mod.ProviderCandidate,
+    candidates: []const provider_mod.ProviderCandidate,
     c: color.Style,
 ) ?usize {
     const stdin = getTerminalStdin() orelse return 0;
