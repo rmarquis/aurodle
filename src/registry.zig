@@ -1,7 +1,9 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const aur = @import("aur.zig");
+const alpm = @import("alpm.zig");
 const color = @import("color.zig");
+const devel = @import("devel.zig");
 const pacman_mod = @import("pacman.zig");
 
 // ── Provider Selection Types ─────────────────────────────────────────────
@@ -226,6 +228,16 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
             if (try self.resolveAur(name)) |res| return res;
             if (try self.resolveAurProvider(name)) |res| return res;
             return null;
+        }
+
+        /// Version comparison using the same algorithm as libalpm/pacman.
+        pub fn vercmp(a: []const u8, b: []const u8) i32 {
+            return alpm.vercmp(a, b);
+        }
+
+        /// True for packages with a VCS-based name (-git, -svn, -hg, -bzr, -cvs).
+        pub fn isVcsPackage(name: []const u8) bool {
+            return devel.isVcsPackage(name);
         }
 
         // ── Private Resolution Tiers ────────────────────────────────────

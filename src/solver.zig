@@ -1,10 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const registry_mod = @import("registry.zig");
-const aur = @import("aur.zig");
-const alpm = @import("alpm.zig");
-const devel = @import("devel.zig");
-const pacman_mod = @import("pacman.zig");
 const graph_mod = @import("solver/graph.zig");
 const topo_mod = @import("solver/topo.zig");
 const conflicts_mod = @import("solver/conflicts.zig");
@@ -295,7 +291,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                     if ((node.meta.source == .repo_aur or node.meta.source == .satisfied_aur) and self.targets.contains(actual_name)) {
                         const dominated = if (aur_pkg) |pkg|
                             if (node.meta.version) |local_ver|
-                                alpm.vercmp(pkg.version, local_ver) > 0
+                                RegistryT.vercmp(pkg.version, local_ver) > 0
                             else
                                 false
                         else
@@ -303,7 +299,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                         // VCS packages (-git, -svn, etc.) always need rebuilding when
                         // explicitly targeted — their AUR version string is static and
                         // doesn't reflect the actual upstream HEAD.
-                        const is_vcs = devel.isVcsPackage(actual_name);
+                        const is_vcs = RegistryT.isVcsPackage(actual_name);
                         if (dominated or is_vcs or (self.rebuild and !self.needed)) {
                             node.meta.source = .aur;
                             if (aur_pkg) |pkg| node.meta.version = pkg.version;

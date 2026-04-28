@@ -527,4 +527,22 @@ pub const MockRegistry = struct {
             .aur_pkg = info.aur_pkg,
         };
     }
+
+    /// Lexicographic version comparison — sufficient for test versions
+    /// which are designed to be simply ordered (no epoch handling needed).
+    pub fn vercmp(a: []const u8, b: []const u8) i32 {
+        return switch (std.mem.order(u8, a, b)) {
+            .lt => -1,
+            .eq => 0,
+            .gt => 1,
+        };
+    }
+
+    pub fn isVcsPackage(name: []const u8) bool {
+        const vcs_suffixes = [_][]const u8{ "-git", "-svn", "-hg", "-bzr" };
+        for (vcs_suffixes) |suffix| {
+            if (std.mem.endsWith(u8, name, suffix)) return true;
+        }
+        return false;
+    }
 };
