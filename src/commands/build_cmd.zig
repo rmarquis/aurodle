@@ -7,11 +7,13 @@ const solver_mod = @import("../solver.zig");
 const repo_mod = @import("../repo.zig");
 const pacman_mod = @import("../pacman.zig");
 const utils = @import("../utils.zig");
-const auth_mod = @import("../auth.zig");
-const registry_mod = @import("../registry.zig");
+const color = @import("../color.zig");
 const cmds = @import("context.zig");
 const query = @import("query.zig");
-const color = @import("../color.zig");
+
+const build_phase = @import("build_cmd/build.zig");
+const install_phase = @import("build_cmd/install.zig");
+const review_phase = @import("build_cmd/review.zig");
 
 const Commands = cmds.Commands;
 const ExitCode = cmds.ExitCode;
@@ -22,13 +24,14 @@ const printError = cmds.printError;
 const handleResolveError = cmds.handleResolveError;
 const displayPlan = cmds.displayPlan;
 
+// Re-export for callers that import hasFailedDep directly (e.g. tests, context.zig).
+pub const hasFailedDep = build_phase.hasFailedDep;
+
 // ── Show Command ─────────────────────────────────────────────────────
 
 /// Display build files for a package clone.
-/// Lists files in the clone directory and displays PKGBUILD content.
 pub fn show(self: *Commands, target: []const u8) !ExitCode {
     const ec = self.stderr_color;
-    const c = self.stdout_color;
     const cache = self.resolveCacheRoot() catch {
         self.err_writer.print("{s}error:{s} could not determine cache directory (HOME not set)\n", .{ ec.red, ec.reset }) catch {};
         return .general_error;
@@ -36,7 +39,6 @@ pub fn show(self: *Commands, target: []const u8) !ExitCode {
     const c_root = cache.path;
     defer self.freeCacheRoot(cache);
 
-    // Resolve pkgname to pkgbase
     const pkgbase = blk: {
         if (self.aur_client.info(target) catch null) |pkg| {
             break :blk pkg.pkgbase;
@@ -44,7 +46,6 @@ pub fn show(self: *Commands, target: []const u8) !ExitCode {
         break :blk target;
     };
 
-    // Verify clone exists
     if (!try git.isCloned(self.allocator, c_root, pkgbase)) {
         self.err_writer.print("{s}error:{s} {s} is not cloned. Run 'aurodle sync {s}' first.\n", .{ ec.red, ec.reset, target, target }) catch {};
         return .general_error;
@@ -53,13 +54,12 @@ pub fn show(self: *Commands, target: []const u8) !ExitCode {
     const clone_dir = try git.cloneDir(self.allocator, c_root, pkgbase);
     defer self.allocator.free(clone_dir);
 
-    const viewer = getViewer();
+    const viewer = review_phase.getViewer();
     const exit_code = utils.runInteractive(self.allocator, &.{ viewer, clone_dir }, null) catch |err| {
         self.err_writer.print("{s}error:{s} could not open viewer ({s}): {}\n", .{ ec.red, ec.reset, viewer, err }) catch {};
         return .general_error;
     };
 
-    _ = c;
     return if (exit_code == 0) .success else .general_error;
 }
 
@@ -70,21 +70,18 @@ pub fn clonePackages(self: *Commands, targets: []const []const u8) !ExitCode {
     const ec = self.stderr_color;
     const stdout = getStdout();
 
-    // Resolve pkgname->pkgbase via AUR RPC
     const packages = self.aur_client.multiInfo(targets) catch |err| {
         try printError(err, self.err_writer, ec);
         return .general_error;
     };
     defer self.allocator.free(packages);
 
-    // Build pkgname->pkgbase mapping
     var pkgbase_map: std.StringHashMapUnmanaged([]const u8) = .empty;
     defer pkgbase_map.deinit(self.allocator);
     for (packages) |pkg| {
         try pkgbase_map.put(self.allocator, pkg.name, pkg.pkgbase);
     }
 
-    // Check for missing packages
     var any_error = false;
     for (targets) |target| {
         if (!pkgbase_map.contains(target)) {
@@ -93,7 +90,6 @@ pub fn clonePackages(self: *Commands, targets: []const []const u8) !ExitCode {
         }
     }
 
-    // Get cache root
     const cache = self.resolveCacheRoot() catch {
         self.err_writer.print("{s}error:{s} could not determine cache directory (HOME not set)\n", .{ ec.red, ec.reset }) catch {};
         return .general_error;
@@ -101,7 +97,6 @@ pub fn clonePackages(self: *Commands, targets: []const []const u8) !ExitCode {
     const c_root = cache.path;
     defer self.freeCacheRoot(cache);
 
-    // Collect pkgbases to clone: either just targets, or full dep tree with --recurse
     var bases_to_clone: std.ArrayListUnmanaged([]const u8) = .empty;
     defer bases_to_clone.deinit(self.allocator);
 
@@ -119,7 +114,6 @@ pub fn clonePackages(self: *Commands, targets: []const []const u8) !ExitCode {
         };
         defer plan.deinit(self.allocator);
 
-        // Collect all AUR pkgbases from build order
         for (plan.build_order) |entry| {
             try bases_to_clone.append(self.allocator, entry.pkgbase);
         }
@@ -131,7 +125,6 @@ pub fn clonePackages(self: *Commands, targets: []const []const u8) !ExitCode {
         }
     }
 
-    // Clone each package
     var cloned_set: std.StringHashMapUnmanaged(void) = .empty;
     defer cloned_set.deinit(self.allocator);
 
@@ -158,12 +151,7 @@ pub fn clonePackages(self: *Commands, targets: []const []const u8) !ExitCode {
 
 // ── Sync / Build Commands ────────────────────────────────────────────
 
-const BuildMode = enum {
-    /// Build packages and install targets afterwards.
-    sync,
-    /// Build packages into the repository only; no install step.
-    build_only,
-};
+const BuildMode = enum { sync, build_only };
 
 /// Execute the full sync workflow: resolve -> clone -> review -> build -> install.
 pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
@@ -181,7 +169,7 @@ pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
     return runBuildPipeline(self, filtered, .build_only);
 }
 
-/// Shared pipeline for sync, build, and upgrade.  Callers pass pre-filtered
+/// Shared pipeline for sync, build, and upgrade. Callers pass pre-filtered
 /// targets (ignore prompting handled upstream).
 /// Phases: resolve -> conflicts -> providers -> display -> clone -> review ->
 ///         build -> [install].  The final install phase runs only in .sync mode.
@@ -215,7 +203,7 @@ pub fn runBuildPipeline(self: *Commands, filtered: []const []const u8, mode: Bui
     // Phase 1.5: Resolve conflicts interactively
     var removals: []const []const u8 = &.{};
     if (plan.conflicts.len > 0 and !self.flags.noconfirm) {
-        removals = try resolveConflicts(self.allocator, plan.conflicts, self.stdout_color) orelse {
+        removals = try review_phase.resolveConflicts(self.allocator, plan.conflicts, self.stdout_color) orelse {
             self.err_writer.print("{s}::{s} unresolvable package conflicts detected\n", .{ ec.red, ec.reset }) catch {};
             return .general_error;
         };
@@ -238,7 +226,7 @@ pub fn runBuildPipeline(self: *Commands, filtered: []const []const u8, mode: Bui
             for (choices) |ch| self.allocator.free(ch.candidates);
             self.allocator.free(choices);
         }
-        try selectRepoDepsProviders(
+        try install_phase.selectRepoDepsProviders(
             self.allocator,
             choices,
             self.flags.noconfirm,
@@ -280,37 +268,32 @@ pub fn runBuildPipeline(self: *Commands, filtered: []const []const u8, mode: Bui
 
     // Phase 4: Review (unless --noshow)
     if (!self.flags.noshow) {
-        try reviewPackages(self, plan.build_order, c_root);
+        try review_phase.reviewPackages(self, plan.build_order, c_root);
     }
 
     // Phase 4.5: Acquire credentials now that the user has committed
-    if (try acquireAuth(self)) |exit| return exit;
+    if (try install_phase.acquireAuth(self)) |exit| return exit;
 
     // Pre-install chosen providers so makepkg -s finds them already installed
     if (providers_to_install.items.len > 0) {
-        if (!try preInstallProviders(self, providers_to_install.items)) return .general_error;
+        if (!try install_phase.preInstallProviders(self, providers_to_install.items)) return .general_error;
     }
 
     // Phase 5: Build
     try repository.ensureExists();
-    const build_result = try buildLoop(self, plan, repository, c_root);
+    const build_result = try build_phase.buildLoop(self, plan, repository, c_root);
     defer build_result.deinit(self.allocator);
 
-    if (build_result.signal_aborted) {
-        return .signal_killed;
-    }
+    if (build_result.signal_aborted) return .signal_killed;
 
-    // Refresh sync DB so pacman -S sees the just-built packages.
     if (build_result.succeeded.len > 0) {
-        refreshAurpkgsSyncDb(self.allocator, repository, self.auth.?) catch |err| {
+        install_phase.refreshAurpkgsSyncDb(self.allocator, repository, self.auth.?) catch |err| {
             self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err }) catch {};
         };
     }
 
-    // Phase 6 (sync only): Install targets (AUR from aurpkgs + repo targets in one transaction).
-    // build_only skips install and merely surfaces failures.
+    // Phase 6 (sync only): Install targets.
     if (mode == .sync) {
-        // Use target_names to handle split packages (multiple targets per pkgbase)
         var aur_targets: std.ArrayListUnmanaged([]const u8) = .empty;
         defer aur_targets.deinit(self.allocator);
         for (plan.build_order) |entry| {
@@ -319,16 +302,15 @@ pub fn runBuildPipeline(self: *Commands, filtered: []const []const u8, mode: Bui
             }
         }
 
-        purgePacmanCache(self, build_result.built_pkg_basenames);
+        install_phase.purgePacmanCache(self, build_result.built_pkg_basenames);
 
         if (build_result.failed.len == 0) {
-            try installAllTargets(self, aur_targets.items, plan.repo_targets);
+            try install_phase.installAllTargets(self, aur_targets.items, plan.repo_targets);
         } else {
-            // Install only targets whose builds succeeded
-            const installable = try filterInstallable(self, aur_targets.items, build_result);
+            const installable = try install_phase.filterInstallable(self, aur_targets.items, build_result);
             defer self.allocator.free(installable);
             if (installable.len > 0 or plan.repo_targets.len > 0) {
-                try installAllTargets(self, installable, plan.repo_targets);
+                try install_phase.installAllTargets(self, installable, plan.repo_targets);
             }
             printBuildSummary(build_result, self.err_writer, ec);
             return .build_failed;
@@ -341,17 +323,12 @@ pub fn runBuildPipeline(self: *Commands, filtered: []const []const u8, mode: Bui
     return .success;
 }
 
-/// Handle a resolved plan with nothing to build.  In sync mode this can still
-/// trigger an install of targets already available in aurpkgs (mirroring
-/// `pacman -S` reinstall semantics); in build mode it simply reports done.
 fn handleEmptyBuildOrder(self: *Commands, plan: solver_mod.BuildPlan, mode: BuildMode) !ExitCode {
     if (mode == .build_only) {
         getStdout().writeAll(" nothing to do -- all targets are up to date\n") catch {};
         return .success;
     }
 
-    // Targets already in aurpkgs: either not installed (repo_aur) or installed
-    // but available for reinstall (satisfied_aur), unless --needed.
     var aurpkgs_targets: std.ArrayListUnmanaged([]const u8) = .empty;
     defer aurpkgs_targets.deinit(self.allocator);
     for (plan.all_deps) |dep| {
@@ -384,21 +361,17 @@ fn handleEmptyBuildOrder(self: *Commands, plan: solver_mod.BuildPlan, mode: Buil
         }
     }
 
-    try installAllTargets(self, aurpkgs_targets.items, plan.repo_targets);
+    try install_phase.installAllTargets(self, aurpkgs_targets.items, plan.repo_targets);
     return .success;
 }
 
 // ── Upgrade Command ──────────────────────────────────────────────────
 
 /// Upgrade outdated AUR packages via the full sync workflow.
-/// With no arguments: upgrade all outdated AUR packages.
-/// With arguments: upgrade only the specified packages.
 pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
     const ec = self.stderr_color;
     const sc = self.stdout_color;
 
-    // Check pacman up front — keeps the "Starting AUR upgrade..." banner from
-    // writing to stdout when the test harness passes an uninitialized Commands.
     if (self.pacman == null) {
         self.err_writer.print("{s}error:{s} pacman not initialized\n", .{ ec.red, ec.reset }) catch {};
         return .general_error;
@@ -407,13 +380,9 @@ pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
     getStdout().print("{s}::{s} Starting AUR upgrade...\n", .{ sc.blue, sc.reset }) catch {};
 
     const result = (try query.collectOutdated(self, targets, true)) orelse return .general_error;
-    // LIFO: hint (borrows from result.devel_versions) must clear before deinit frees them.
     defer result.deinit(self.allocator);
     defer self.devel_version_hint.clearAndFree(self.allocator);
 
-    // Pick out non-ignored entries for the build pipeline.  Ignored entries
-    // are warned about here (sync's own filterIgnored is bypassed via the
-    // direct runBuildPipeline call, matching pacman -Syu's warn-and-skip).
     var to_upgrade: std.ArrayListUnmanaged([]const u8) = .empty;
     defer to_upgrade.deinit(self.allocator);
     try to_upgrade.ensureUnusedCapacity(self.allocator, result.entries.len);
@@ -439,8 +408,6 @@ pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
 // ── Clean Command ────────────────────────────────────────────────────
 
 /// Remove stale aurpkgs artifacts after user confirmation.
-/// Checks the aurpkgs database for packages no longer installed locally,
-/// then removes their clone directories, package files, and database entries.
 pub fn clean(self: *Commands) !ExitCode {
     const ec = self.stderr_color;
     const repository = self.repo orelse {
@@ -470,9 +437,7 @@ pub fn clean(self: *Commands) !ExitCode {
     defer repository.freeCleanResult(plan);
 
     if (plan.removed_clones.len == 0 and plan.removed_packages.len == 0) {
-        if (!self.flags.quiet) {
-            getStdout().writeAll(" nothing to clean\n") catch {};
-        }
+        if (!self.flags.quiet) getStdout().writeAll(" nothing to clean\n") catch {};
         return .success;
     }
 
@@ -484,31 +449,22 @@ pub fn clean(self: *Commands) !ExitCode {
 
     if (plan.removed_packages.len > 0) {
         stdout.print("{s}::{s} {s} ({d}):\n", .{ c.blue, c.reset, pkg_label, plan.removed_packages.len }) catch {};
-        for (plan.removed_packages) |filename| {
-            stdout.print("  {s}\n", .{filename}) catch {};
-        }
+        for (plan.removed_packages) |filename| stdout.print("  {s}\n", .{filename}) catch {};
     }
 
     if (plan.removed_clones.len > 0) {
         stdout.print("{s}::{s} {s} ({d}):\n", .{ c.blue, c.reset, clone_label, plan.removed_clones.len }) catch {};
-        for (plan.removed_clones) |name| {
-            stdout.print("  {s}/\n", .{name}) catch {};
-        }
+        for (plan.removed_clones) |name| stdout.print("  {s}/\n", .{name}) catch {};
     }
 
     if (!self.flags.noconfirm) {
-        if (!try utils.promptYesNoStyled(self.stdout_color, "Proceed with cleanup?")) {
-            return .success;
-        }
+        if (!try utils.promptYesNoStyled(self.stdout_color, "Proceed with cleanup?")) return .success;
     }
 
     repository.cleanExecute(plan);
 
-    // Refresh pacman's sync copy of the aurpkgs database.
-    // repo-remove modified the db in repo_dir, but pacman reads from
-    // /var/lib/pacman/sync/ which is a separate root-owned copy.
     if (plan.removed_packages.len > 0) {
-        refreshAurpkgsSyncDb(self.allocator, repository, self.auth.?) catch |err| {
+        install_phase.refreshAurpkgsSyncDb(self.allocator, repository, self.auth.?) catch |err| {
             self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err }) catch {};
         };
     }
@@ -516,650 +472,13 @@ pub fn clean(self: *Commands) !ExitCode {
     return .success;
 }
 
-// ── Chroot Support ───────────────────────────────────────────────────
-
-const DEFAULT_CHROOT_DIR = "/var/lib/aurodle/chroot";
-
-/// Resolve chroot path: $CHROOT_DIR or default.
-fn chrootDir() []const u8 {
-    return std.posix.getenv("CHROOT_DIR") orelse DEFAULT_CHROOT_DIR;
-}
-
-/// Ensure a clean chroot exists, creating it with mkarchroot if needed.
-fn ensureChroot(allocator: Allocator, auth: *auth_mod.Auth, err_writer: anytype, ec: color.Style) !bool {
-    // Check that devtools is installed
-    if (!utils.findOnPath("makechrootpkg")) {
-        err_writer.print("{s}error:{s} makechrootpkg not found -- install devtools: pacman -S devtools\n", .{ ec.red, ec.reset }) catch {};
-        return false;
-    }
-
-    const chroot_path = chrootDir();
-    const root_path = std.fmt.allocPrint(allocator, "{s}/root", .{chroot_path}) catch return false;
-    defer allocator.free(root_path);
-
-    // Check if chroot root already exists
-    std.fs.accessAbsolute(root_path, .{}) catch {
-        err_writer.print("{s}::{s} creating chroot at {s}...\n", .{ ec.blue, ec.reset, chroot_path }) catch {};
-        const exit_code = try auth.runInteractive(
-            &.{ "mkarchroot", root_path, "base-devel" },
-            null,
-        );
-        if (exit_code != 0) {
-            err_writer.print("{s}error:{s} failed to create chroot (exit {d})\n", .{ ec.red, ec.reset, exit_code }) catch {};
-            return false;
-        }
-    };
-    return true;
-}
-
-/// Returns true if every package file listed by `makepkg --packagelist` already
-/// exists on disk. When true the build can be skipped entirely.
-fn allPackagesBuilt(allocator: Allocator, clone_dir: []const u8) !bool {
-    const result = try utils.runCommandIn(
-        allocator,
-        &.{ "makepkg", "--packagelist" },
-        clone_dir,
-    );
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-
-    if (result.exit_code != 0) return false;
-
-    var lines = std.mem.splitScalar(u8, std.mem.trimRight(u8, result.stdout, "\n"), '\n');
-    var found_any = false;
-    while (lines.next()) |line| {
-        if (line.len == 0) continue;
-        found_any = true;
-        std.fs.accessAbsolute(line, .{}) catch return false;
-    }
-    return found_any;
-}
-
-/// Return the exact package file paths produced by the build in clone_dir,
-/// as reported by `makepkg --packagelist`. Only paths that exist on disk
-/// are included. Returns null (rather than error) when --packagelist fails,
-/// so callers can fall back to the directory-scan approach.
-/// Caller owns the returned slice and each string within it.
-fn collectBuiltPackagePaths(allocator: Allocator, clone_dir: []const u8) !?[]const []const u8 {
-    const result = try utils.runCommandIn(
-        allocator,
-        &.{ "makepkg", "--packagelist" },
-        clone_dir,
-    );
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-
-    if (result.exit_code != 0) return null;
-
-    var paths: std.ArrayListUnmanaged([]const u8) = .empty;
-    errdefer {
-        for (paths.items) |p| allocator.free(p);
-        paths.deinit(allocator);
-    }
-
-    var lines = std.mem.splitScalar(u8, std.mem.trimRight(u8, result.stdout, "\n"), '\n');
-    while (lines.next()) |line| {
-        if (line.len == 0) continue;
-        std.fs.accessAbsolute(line, .{}) catch continue;
-        try paths.append(allocator, try allocator.dupe(u8, line));
-    }
-
-    if (paths.items.len == 0) return null;
-    return try paths.toOwnedSlice(allocator);
-}
-
-// ── Build Loop ───────────────────────────────────────────────────────
-
-fn buildLoop(
-    self: *Commands,
-    plan: solver_mod.BuildPlan,
-    repository: *repo_mod.Repository,
-    c_root: []const u8,
-) !BuildResult {
-    const ec = self.stderr_color;
-    const sc = self.stdout_color;
-    var succeeded: std.ArrayListUnmanaged([]const u8) = .empty;
-    var failed: std.ArrayListUnmanaged(FailedBuild) = .empty;
-    var failed_bases: std.StringHashMapUnmanaged(void) = .empty;
-    defer failed_bases.deinit(self.allocator);
-    var all_built_basenames: std.ArrayListUnmanaged([]const u8) = .empty;
-    errdefer {
-        for (all_built_basenames.items) |b| self.allocator.free(b);
-        all_built_basenames.deinit(self.allocator);
-    }
-
-    // Ensure chroot exists before starting builds
-    if (self.flags.chroot) {
-        if (!try ensureChroot(self.allocator, self.auth.?, self.err_writer, ec)) {
-            return .{
-                .succeeded = try succeeded.toOwnedSlice(self.allocator),
-                .failed = try failed.toOwnedSlice(self.allocator),
-                .signal_aborted = false,
-                .built_pkg_basenames = try all_built_basenames.toOwnedSlice(self.allocator),
-            };
-        }
-    }
-
-    // Track built package paths per pkgbase for chroot -I injection.
-    // In chroot mode, built AUR deps must be explicitly installed into the
-    // clean chroot via makechrootpkg -I since it has no aurpkgs repo.
-    var built_pkg_paths: std.StringHashMapUnmanaged([]const []const u8) = .empty;
-    defer {
-        var it = built_pkg_paths.iterator();
-        while (it.next()) |kv| {
-            for (kv.value_ptr.*) |p| self.allocator.free(p);
-            self.allocator.free(kv.value_ptr.*);
-        }
-        built_pkg_paths.deinit(self.allocator);
-    }
-
-    for (plan.build_order, 0..) |entry, i| {
-        // Skip if a dependency failed, propagating failure to downstream entries
-        if (hasFailedDep(entry, &failed_bases)) {
-            self.err_writer.print("{s}::{s} skipping {s} -- a dependency failed to build\n", .{ ec.yellow, ec.reset, entry.name }) catch {};
-            try failed_bases.put(self.allocator, entry.pkgbase, {});
-            continue;
-        }
-
-        const clone_dir = try git.cloneDir(self.allocator, c_root, entry.pkgbase);
-        defer self.allocator.free(clone_dir);
-
-        const ver = self.devel_version_hint.get(entry.name) orelse
-            if (devel.isVcsPackage(entry.name)) "latest" else entry.version;
-
-        // Pre-check: skip the build if the output is already available.
-        // VCS packages: use the devel-computed version hint to check the local
-        // repo directly. makepkg --packagelist is useless before pkgver() runs
-        // (it reports the stale cached pkgver). Without a hint the check is
-        // skipped and exit 13 handling acts as the safety net instead.
-        // Non-VCS packages: check PKGDEST via makepkg --packagelist as usual.
-        const already_built = !self.flags.rebuild and
-            !self.flags.chroot and
-            if (devel.isVcsPackage(entry.name)) blk: {
-                const hint = self.devel_version_hint.get(entry.name) orelse break :blk false;
-                break :blk repository.hasPackageVersion(entry.name, hint);
-            } else
-                (allPackagesBuilt(self.allocator, clone_dir) catch false);
-
-        if (already_built) {
-            getStdout().print("{s}::{s} {s} {s} already built, skipping (use --rebuild to force)\n", .{ sc.yellow, sc.reset, entry.name, ver }) catch {};
-        } else {
-            getStdout().print("{s}::{s} Building {s} {s}...\n", .{ sc.blue, sc.reset, entry.name, ver }) catch {};
-
-            // Run build command: makechrootpkg in chroot mode, makepkg otherwise
-            const exit_code = if (self.flags.chroot) blk: {
-                break :blk try runChrootBuild(self, entry, &built_pkg_paths, clone_dir);
-            } else blk: {
-                const args: []const []const u8 = if (self.flags.rebuild)
-                    &.{ "makepkg", "-sf", "--noconfirm" }
-                else
-                    &.{ "makepkg", "-s", "--noconfirm" };
-                break :blk try utils.runInteractive(self.allocator, args, clone_dir);
-            };
-
-            // exit 13 = E_ALREADY_BUILT: pkgver() ran and updated the PKGBUILD,
-            // but the output file already exists in PKGDEST. Fall through to
-            // addPackageFiles so the repo DB stays consistent.
-            if (exit_code != 0 and exit_code != 13) {
-                // Signal-killed (e.g., Ctrl+C -> SIGINT -> exit 130)
-                if (exit_code >= 128) {
-                    try failed.append(self.allocator, .{
-                        .pkgbase = entry.pkgbase,
-                        .exit_code = exit_code,
-                    });
-                    return .{
-                        .succeeded = try succeeded.toOwnedSlice(self.allocator),
-                        .failed = try failed.toOwnedSlice(self.allocator),
-                        .signal_aborted = true,
-                        .built_pkg_basenames = try all_built_basenames.toOwnedSlice(self.allocator),
-                    };
-                }
-
-                self.err_writer.print("{s}error:{s} build failed for {s} (exit {d})\n", .{
-                    ec.red,
-                    ec.reset,
-                    entry.pkgbase,
-                    exit_code,
-                }) catch {};
-
-                try failed.append(self.allocator, .{
-                    .pkgbase = entry.pkgbase,
-                    .exit_code = exit_code,
-                });
-                try failed_bases.put(self.allocator, entry.pkgbase, {});
-                continue;
-            }
-        }
-
-        // Build succeeded — add packages to repo.
-        // Use makepkg --packagelist to get only the files produced by this
-        // specific build, avoiding stale old-version files in PKGDEST that
-        // would cause repo-add -R to fail (it deletes the old file then can't
-        // find it when it also appears in the argument list).
-        const built_paths = collectBuiltPackagePaths(self.allocator, clone_dir) catch null;
-        defer if (built_paths) |paths| {
-            for (paths) |p| self.allocator.free(p);
-            self.allocator.free(paths);
-        };
-
-        const added = if (built_paths) |paths|
-            repository.addPackageFiles(paths)
-        else
-            repository.addBuiltPackages();
-        const added_files = added catch |err| {
-            self.err_writer.print("{s}error:{s} failed to add built packages for {s}: {}\n", .{ ec.red, ec.reset, entry.pkgbase, err }) catch {};
-            try failed.append(self.allocator, .{
-                .pkgbase = entry.pkgbase,
-                .exit_code = 0,
-            });
-            try failed_bases.put(self.allocator, entry.pkgbase, {});
-            continue;
-        };
-
-        // Collect basenames so callers can purge stale pacman cache entries.
-        for (added_files) |path| {
-            const basename = std.fs.path.basename(path);
-            try all_built_basenames.append(self.allocator, try self.allocator.dupe(u8, basename));
-        }
-
-        // In chroot mode, remember built paths so downstream builds can use -I.
-        if (self.flags.chroot) {
-            try built_pkg_paths.put(self.allocator, entry.pkgbase, added_files);
-        } else {
-            defer {
-                for (added_files) |p| self.allocator.free(p);
-                self.allocator.free(added_files);
-            }
-        }
-
-        // Refresh aurpkgs sync DB only when a subsequent build needs this package.
-        // repo-add updated the repo dir DB, but pacman's sync cache
-        // (/var/lib/pacman/sync/aurpkgs.db) is root-owned and separate.
-        // In chroot mode the chroot is isolated, but the host DB still needs
-        // refreshing for the final install step.
-        if (anySubsequentEntryNeeds(plan.build_order[i + 1 ..], entry.pkgbase)) {
-            refreshAurpkgsSyncDb(self.allocator, repository, self.auth.?) catch |err| {
-                self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err }) catch {};
-            };
-        }
-
-        try succeeded.append(self.allocator, entry.pkgbase);
-    }
-
-    return .{
-        .succeeded = try succeeded.toOwnedSlice(self.allocator),
-        .failed = try failed.toOwnedSlice(self.allocator),
-        .signal_aborted = false,
-        .built_pkg_basenames = try all_built_basenames.toOwnedSlice(self.allocator),
-    };
-}
-
-/// Build a package inside a clean chroot using makechrootpkg.
-/// Injects previously-built AUR dependencies via -I flags so the
-/// isolated chroot can satisfy AUR-to-AUR dependency chains.
-fn runChrootBuild(
-    self: *const Commands,
-    entry: solver_mod.BuildEntry,
-    built_pkg_paths: *const std.StringHashMapUnmanaged([]const []const u8),
-    clone_dir: []const u8,
-) !u8 {
-    const chroot_path = chrootDir();
-
-    // Build argv: makechrootpkg -c -u -r <chroot> [-I dep1.pkg ...] [-- --force]
-    var argv: std.ArrayListUnmanaged([]const u8) = .empty;
-    defer argv.deinit(self.allocator);
-
-    try argv.appendSlice(self.allocator, &.{ "makechrootpkg", "-c", "-u", "-r", chroot_path });
-
-    // Inject previously-built AUR deps so they're available inside the chroot
-    for (entry.aur_dep_bases) |dep_base| {
-        if (built_pkg_paths.get(dep_base)) |paths| {
-            for (paths) |pkg_path| {
-                try argv.appendSlice(self.allocator, &.{ "-I", pkg_path });
-            }
-        }
-    }
-
-    if (self.flags.rebuild) {
-        try argv.appendSlice(self.allocator, &.{ "--", "--force" });
-    }
-
-    return self.auth.?.runInteractive(argv.items, clone_dir);
-}
-
-pub fn hasFailedDep(
-    entry: solver_mod.BuildEntry,
-    failed_bases: *const std.StringHashMapUnmanaged(void),
-) bool {
-    for (entry.aur_dep_bases) |dep_base| {
-        if (failed_bases.contains(dep_base)) return true;
-    }
-    return false;
-}
-
-/// Check whether any entry in `remaining` has `pkgbase` in its aur_dep_bases.
-fn anySubsequentEntryNeeds(remaining: []const solver_mod.BuildEntry, pkgbase: []const u8) bool {
-    for (remaining) |future| {
-        for (future.aur_dep_bases) |dep_base| {
-            if (std.mem.eql(u8, dep_base, pkgbase)) return true;
-        }
-    }
-    return false;
-}
-
-// ── Review ───────────────────────────────────────────────────────────
-
-fn reviewPackages(
-    self: *Commands,
-    entries: []const solver_mod.BuildEntry,
-    c_root: []const u8,
-) !void {
-    const stdout = getStdout();
-    const sc = self.stdout_color;
-    const editor = getViewer();
-
-    for (entries) |entry| {
-        const clone_dir = try git.cloneDir(self.allocator, c_root, entry.pkgbase);
-        defer self.allocator.free(clone_dir);
-
-        const is_update = git.hasOrigHead(self.allocator, c_root, entry.pkgbase) catch false;
-
-        if (is_update) {
-            // Updated clone — show diff interactively
-            const msg = try std.fmt.allocPrint(self.allocator, "View {s} diff?", .{entry.pkgbase});
-            defer self.allocator.free(msg);
-
-            if (try utils.promptYesNoStyled(self.stdout_color, msg)) {
-                const exit_code = utils.runInteractive(
-                    self.allocator,
-                    &.{ "git", "diff", "--color=always", "ORIG_HEAD..HEAD" },
-                    clone_dir,
-                ) catch {
-                    stdout.writeAll("  (could not show diff)\n") catch {};
-                    continue;
-                };
-                _ = exit_code;
-                stdout.print("{s}::{s} {s} diff reviewed\n", .{ sc.blue, sc.reset, entry.pkgbase }) catch {};
-            }
-        } else {
-            // Fresh clone — open all files in editor
-            const msg = try std.fmt.allocPrint(self.allocator, "Review {s} files?", .{entry.pkgbase});
-            defer self.allocator.free(msg);
-
-            if (try utils.promptYesNoStyled(self.stdout_color, msg)) {
-                const exit_code = utils.runInteractive(
-                    self.allocator,
-                    &.{ editor, clone_dir },
-                    null,
-                ) catch {
-                    stdout.writeAll("  (could not open editor)\n") catch {};
-                    continue;
-                };
-
-                if (exit_code != 0) {
-                    stdout.print("  editor exited with {d}\n", .{exit_code}) catch {};
-                }
-                stdout.print("{s}::{s} {s} files reviewed\n", .{ sc.blue, sc.reset, entry.pkgbase }) catch {};
-            }
-        }
-    }
-}
-
-fn getViewer() []const u8 {
-    if (std.posix.getenv("PAGER")) |p| if (p.len > 0) return p;
-    if (std.posix.getenv("VISUAL")) |v| if (v.len > 0) return v;
-    if (std.posix.getenv("EDITOR")) |e| if (e.len > 0) return e;
-    return "vim";
-}
-
-// ── Install ──────────────────────────────────────────────────────────
-
-/// Install AUR targets (from aurpkgs) and repo targets (from their sync db)
-/// in a single `pacman -S` transaction.
-/// Interactively select a provider for each virtual dep choice, remembering
-/// packages already chosen so that subsequent deps auto-select without prompting.
-/// E.g. choosing `ffmpeg` for `libavcodec.so` auto-picks it for `libavdevice.so`.
-fn selectRepoDepsProviders(
-    allocator: Allocator,
-    choices: []const pacman_mod.SyncProviderChoice,
-    noconfirm: bool,
-    c: color.Style,
-    chosen_providers: *std.StringHashMapUnmanaged([]const u8),
-    providers_to_install: *std.ArrayListUnmanaged([]const u8),
-) !void {
-    // Tracks packages already chosen so they can be auto-picked for later deps.
-    var chosen_pkgs: std.StringHashMapUnmanaged(void) = .empty;
-    defer chosen_pkgs.deinit(allocator);
-
-    for (choices) |choice| {
-        // If a previously chosen package satisfies this dep, use it automatically.
-        var auto_idx: ?usize = null;
-        for (choice.candidates, 0..) |m, i| {
-            if (chosen_pkgs.contains(m.provider_name)) {
-                auto_idx = i;
-                break;
-            }
-        }
-
-        const chosen_idx = if (auto_idx) |i| i else blk: {
-            if (noconfirm) break :blk @as(usize, 0);
-            var candidates: std.ArrayListUnmanaged(registry_mod.ProviderCandidate) = .empty;
-            defer candidates.deinit(allocator);
-            for (choice.candidates) |m| {
-                try candidates.append(allocator, .{
-                    .name = m.provider_name,
-                    .version = m.provider_version,
-                    .db_name = m.db_name,
-                });
-            }
-            const idx = utils.promptProviderChoice(choice.dep_name, candidates.items, c);
-            break :blk idx orelse 0;
-        };
-
-        const chosen_name = choice.candidates[chosen_idx].provider_name;
-        try chosen_providers.put(allocator, choice.dep_name, chosen_name);
-        // Only add to install list and remember set once per package.
-        if (!chosen_pkgs.contains(chosen_name)) {
-            try chosen_pkgs.put(allocator, chosen_name, {});
-            try providers_to_install.append(allocator, chosen_name);
-        }
-    }
-}
-
-/// Delete package files from pacman's pkg cache so a rebuild with the same
-/// version doesn't trigger a checksum mismatch on the stale cached copy.
-fn purgePacmanCache(self: *Commands, basenames: []const []const u8) void {
-    for (basenames) |basename| {
-        const cache_path = std.fmt.allocPrint(self.allocator, "/var/cache/pacman/pkg/{s}", .{basename}) catch continue;
-        defer self.allocator.free(cache_path);
-        std.fs.accessAbsolute(cache_path, .{}) catch continue;
-        const result = self.auth.?.runCaptured(&.{ "rm", "-f", cache_path }) catch continue;
-        result.deinit(self.allocator);
-    }
-}
-
-/// Pre-install chosen virtual-dep providers via `pacman -S --needed --asdeps`
-/// so that makepkg -s finds them already installed and skips its own prompt.
-/// Returns false if pacman exits non-zero.
-fn preInstallProviders(self: *Commands, pkg_names: []const []const u8) !bool {
-    var argv: std.ArrayListUnmanaged([]const u8) = .empty;
-    defer argv.deinit(self.allocator);
-    try argv.appendSlice(self.allocator, &.{ "pacman", "-S", "--needed", "--asdeps", "--noconfirm" });
-    try argv.appendSlice(self.allocator, pkg_names);
-    const exit_code = try self.auth.?.runInteractive(argv.items, null);
-    if (exit_code != 0) {
-        const ec = self.stderr_color;
-        self.err_writer.print("{s}error:{s} failed to pre-install providers (exit {d})\n", .{ ec.red, ec.reset, exit_code }) catch {};
-        return false;
-    }
-    return true;
-}
-
-fn installAllTargets(self: *Commands, aurpkgs_names: []const []const u8, repo_names: []const []const u8) !void {
-    var argv: std.ArrayListUnmanaged([]const u8) = .empty;
-    defer argv.deinit(self.allocator);
-
-    try argv.appendSlice(self.allocator, &.{ "pacman", "-S" });
-
-    if (self.flags.asdeps) {
-        try argv.append(self.allocator, "--asdeps");
-    } else if (self.flags.asexplicit) {
-        try argv.append(self.allocator, "--asexplicit");
-    }
-
-    if (self.flags.needed) {
-        try argv.append(self.allocator, "--needed");
-    }
-
-    // Always pass --noconfirm and --ask 36: the user already confirmed via
-    // aurodle's "Proceed with installation?" prompt, so pacman should not
-    // re-prompt. --ask 36 = 4 (auto-accept conflicts) + 32 (auto-accept replacements).
-    try argv.appendSlice(self.allocator, &.{ "--noconfirm", "--ask", "36" });
-
-    var qualified_names: std.ArrayListUnmanaged([]const u8) = .empty;
-    defer {
-        for (qualified_names.items) |q| self.allocator.free(q);
-        qualified_names.deinit(self.allocator);
-    }
-
-    // AUR targets qualified with the local AUR repo name (e.g., aurpkgs/pkgname)
-    const aur_repo_name = if (self.repo) |r| r.repo_name else repo_mod.DEFAULT_REPO_NAME;
-    for (aurpkgs_names) |name| {
-        const qualified = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ aur_repo_name, name });
-        try qualified_names.append(self.allocator, qualified);
-        try argv.append(self.allocator, qualified);
-    }
-
-    // Repo targets qualified with their actual sync db (e.g., extra/expac)
-    for (repo_names) |name| {
-        const repo = if (self.pacman) |pm| pm.syncDbFor(name) else null;
-        if (repo) |r| {
-            const qualified = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ r, name });
-            try qualified_names.append(self.allocator, qualified);
-            try argv.append(self.allocator, qualified);
-        } else {
-            try argv.append(self.allocator, name);
-        }
-    }
-
-    const exit_code = try self.auth.?.runInteractive(argv.items, null);
-
-    if (exit_code != 0) {
-        const ec3 = self.stderr_color;
-        self.err_writer.print("{s}error:{s} installation failed (exit {d})\n", .{ ec3.red, ec3.reset, exit_code }) catch {};
-    }
-}
-
-fn filterInstallable(
-    self: *Commands,
-    targets: []const []const u8,
-    result: BuildResult,
-) ![]const []const u8 {
-    var failed_set: std.StringHashMapUnmanaged(void) = .empty;
-    defer failed_set.deinit(self.allocator);
-    for (result.failed) |f| {
-        try failed_set.put(self.allocator, f.pkgbase, {});
-    }
-
-    var installable: std.ArrayListUnmanaged([]const u8) = .empty;
-    for (targets) |target| {
-        if (!failed_set.contains(target)) {
-            try installable.append(self.allocator, target);
-        }
-    }
-    return try installable.toOwnedSlice(self.allocator);
-}
-
 fn printBuildSummary(result: BuildResult, err_writer: std.io.AnyWriter, ec: color.Style) void {
     err_writer.print("\n{s}::{s} Build summary: {d} succeeded, {d} failed\n", .{
-        ec.blue,
-        ec.reset,
-        result.succeeded.len,
-        result.failed.len,
+        ec.blue, ec.reset, result.succeeded.len, result.failed.len,
     }) catch {};
     for (result.failed) |f| {
-        err_writer.print("  {s}FAILED:{s} {s} (exit {d})\n", .{
-            ec.red,
-            ec.reset,
-            f.pkgbase,
-            f.exit_code,
-        }) catch {};
+        err_writer.print("  {s}FAILED:{s} {s} (exit {d})\n", .{ ec.red, ec.reset, f.pkgbase, f.exit_code }) catch {};
     }
-}
-
-/// Acquire privilege credentials and start the keepalive thread.
-/// Called after the user has confirmed the plan and reviewed PKGBUILDs,
-/// so we don't prompt for a password if they're going to bail out anyway.
-/// Returns an ExitCode if acquisition failed, null on success.
-fn acquireAuth(self: *Commands) !?ExitCode {
-    const auth = self.auth orelse return null;
-    const ec = self.stderr_color;
-    const cred_exit = auth.acquireCredentials() catch 0;
-    if (cred_exit != 0) {
-        self.err_writer.print("{s}error:{s} credential acquisition failed\n", .{ ec.red, ec.reset }) catch {};
-        return .general_error;
-    }
-    auth.startKeepalive();
-    return null;
-}
-
-/// Copy the local AUR repo DB to pacman's sync cache so that subsequent
-/// makepkg -s calls (which spawn their own pacman) see just-built packages.
-/// Only touches the local AUR repo entry — official repo DBs are left untouched.
-fn refreshAurpkgsSyncDb(allocator: Allocator, repository: *repo_mod.Repository, auth: *auth_mod.Auth) !void {
-    const sync_db_path = try std.fmt.allocPrint(allocator, "/var/lib/pacman/sync/{s}.db", .{repository.repo_name});
-    defer allocator.free(sync_db_path);
-    const result = try auth.runCaptured(&.{ "cp", repository.db_path, sync_db_path });
-    defer result.deinit(allocator);
-    if (!result.success()) return error.SyncDbRefreshFailed;
-}
-
-/// Prompt the user to resolve each detected conflict.
-/// Returns the list of packages accepted for removal, or null if any conflict was rejected.
-fn resolveConflicts(allocator: Allocator, conflicts: []const solver_mod.Conflict, c: color.Style) !?[]const []const u8 {
-    const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
-    const stdin: std.fs.File = .{ .handle = std.posix.STDIN_FILENO };
-    if (!std.posix.isatty(stdin.handle)) return null;
-
-    const w = stdout.deprecatedWriter();
-    var removals: std.ArrayListUnmanaged([]const u8) = .empty;
-    defer removals.deinit(allocator); // no-op after toOwnedSlice succeeds
-
-    for (conflicts) |conflict| {
-        switch (conflict.kind) {
-            .aur_aur => w.print(
-                "{s}::{s} {s} and {s} are in conflict. Continue anyway? [y/N] ",
-                .{ c.yellow, c.reset, conflict.package, conflict.conflicts_with },
-            ) catch {},
-            .aur_installed, .repo_installed => w.print(
-                "{s}::{s} {s} and {s} are in conflict ({s}). Remove {s}? [y/N] ",
-                .{ c.yellow, c.reset, conflict.package, conflict.conflicts_with, conflict.conflicts_with, conflict.conflicts_with },
-            ) catch {},
-            .aur_replaces => w.print(
-                "{s}::{s} Replace {s} with aur/{s}? [y/N] ",
-                .{ c.yellow, c.reset, conflict.conflicts_with, conflict.package },
-            ) catch {},
-            .repo_replaces => w.print(
-                "{s}::{s} Replace {s} with {s}? [y/N] ",
-                .{ c.yellow, c.reset, conflict.conflicts_with, conflict.package },
-            ) catch {},
-        }
-
-        var buf: [16]u8 = undefined;
-        const n = stdin.read(&buf) catch return null;
-        if (n == 0) return null;
-        const response = std.mem.trim(u8, buf[0..n], " \t\n\r");
-        if (response.len == 0 or (response[0] != 'y' and response[0] != 'Y')) return null;
-
-        // Track packages accepted for removal (installed conflicts and replaces)
-        switch (conflict.kind) {
-            .aur_installed, .repo_installed, .aur_replaces, .repo_replaces => {
-                try removals.append(allocator, conflict.conflicts_with);
-            },
-            .aur_aur => {},
-        }
-    }
-    return try removals.toOwnedSlice(allocator);
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -1175,7 +494,7 @@ test "hasFailedDep returns false for empty failed set" {
         .aur_dep_bases = &.{},
     };
     var failed: std.StringHashMapUnmanaged(void) = .empty;
-    try testing.expect(!hasFailedDep(entry, &failed));
+    try testing.expect(!build_phase.hasFailedDep(entry, &failed));
 }
 
 test "hasFailedDep returns true when aur dep pkgbase is failed" {
@@ -1189,7 +508,7 @@ test "hasFailedDep returns true when aur dep pkgbase is failed" {
     var failed: std.StringHashMapUnmanaged(void) = .empty;
     defer failed.deinit(testing.allocator);
     try failed.put(testing.allocator, "bar", {});
-    try testing.expect(hasFailedDep(entry, &failed));
+    try testing.expect(build_phase.hasFailedDep(entry, &failed));
 }
 
 test "hasFailedDep returns false when unrelated pkgbase is failed" {
@@ -1203,7 +522,7 @@ test "hasFailedDep returns false when unrelated pkgbase is failed" {
     var failed: std.StringHashMapUnmanaged(void) = .empty;
     defer failed.deinit(testing.allocator);
     try failed.put(testing.allocator, "baz", {});
-    try testing.expect(!hasFailedDep(entry, &failed));
+    try testing.expect(!build_phase.hasFailedDep(entry, &failed));
 }
 
 test "anySubsequentEntryNeeds returns true when future entry depends on pkgbase" {
@@ -1211,8 +530,8 @@ test "anySubsequentEntryNeeds returns true when future entry depends on pkgbase"
         .{ .name = "B", .pkgbase = "B", .version = "1.0", .is_target = false, .aur_dep_bases = &.{"A"} },
         .{ .name = "C", .pkgbase = "C", .version = "1.0", .is_target = true, .aur_dep_bases = &.{"B"} },
     };
-    try testing.expect(anySubsequentEntryNeeds(&entries, "A"));
-    try testing.expect(anySubsequentEntryNeeds(entries[1..], "B"));
+    try testing.expect(build_phase.anySubsequentEntryNeeds(&entries, "A"));
+    try testing.expect(build_phase.anySubsequentEntryNeeds(entries[1..], "B"));
 }
 
 test "anySubsequentEntryNeeds returns false when no future entry depends on pkgbase" {
@@ -1220,10 +539,8 @@ test "anySubsequentEntryNeeds returns false when no future entry depends on pkgb
         .{ .name = "B", .pkgbase = "B", .version = "1.0", .is_target = false, .aur_dep_bases = &.{"A"} },
         .{ .name = "C", .pkgbase = "C", .version = "1.0", .is_target = true, .aur_dep_bases = &.{} },
     };
-    // Nothing depends on "B"
-    try testing.expect(!anySubsequentEntryNeeds(&entries, "B"));
-    // Empty remaining slice
-    try testing.expect(!anySubsequentEntryNeeds(entries[2..], "A"));
+    try testing.expect(!build_phase.anySubsequentEntryNeeds(&entries, "B"));
+    try testing.expect(!build_phase.anySubsequentEntryNeeds(entries[2..], "A"));
 }
 
 test "upgrade returns general_error when pacman not initialized" {
