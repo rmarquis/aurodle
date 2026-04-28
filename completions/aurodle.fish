@@ -8,7 +8,7 @@ function __aurodle_no_subcommand
     set -l cmd (commandline -opc)
     for c in $cmd[2..]
         switch $c
-            case sync build clone info search show resolve buildorder outdated upgrade clean \
+            case sync build clone info search show resolve buildorder outdated upgrade clean status \
                  '-S' '-Sw' '-Si' '-Ss' '-Qu' '-Su' '-Sc' '-Scc'
                 return 1
         end
@@ -44,6 +44,7 @@ complete -c aurodle -n __aurodle_no_subcommand -a buildorder -d 'Show build orde
 complete -c aurodle -n __aurodle_no_subcommand -a outdated -d 'List outdated AUR packages'
 complete -c aurodle -n __aurodle_no_subcommand -a upgrade -d 'Upgrade outdated AUR packages'
 complete -c aurodle -n __aurodle_no_subcommand -a clean -d 'Remove stale cache files'
+complete -c aurodle -n __aurodle_no_subcommand -a status -d 'Check online service status'
 
 # Short aliases
 complete -c aurodle -n __aurodle_no_subcommand -a '-S' -d 'Install AUR packages'

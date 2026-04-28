@@ -47,6 +47,7 @@ _aurodle() {
         'outdated:List outdated AUR packages'
         'upgrade:Upgrade outdated AUR packages'
         'clean:Remove stale or all cache files'
+        'status:Check online service status'
     )
 
     local -a short_commands=(
@@ -119,6 +120,8 @@ _aurodle() {
         clean|-Sc|-Scc)
             _arguments -s \
                 '--all[Remove all built packages]'
+            ;;
+        status)
             ;;
     esac
 }

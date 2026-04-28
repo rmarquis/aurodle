@@ -4,7 +4,7 @@ _aurodle() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="sync build clone info search show resolve buildorder outdated upgrade clean"
+    local commands="sync build clone info search show resolve buildorder outdated upgrade clean status"
     local short_aliases="-S -Sw -Si -Ss -Qu -Su -Sc -Scc"
     local global_opts="-h --help -v --version -q --quiet"
     local build_opts="--noconfirm --noshow --needed --rebuild --asdeps --asexplicit --devel --chroot --ignore"
@@ -28,6 +28,7 @@ _aurodle() {
             outdated|-Qu)  cmd=outdated ;;
             upgrade|-Su)   cmd=upgrade ;;
             clean|-Sc|-Scc) cmd=clean ;;
+            status)         cmd=status ;;
             -*) ;;
             *)  break ;;
         esac
