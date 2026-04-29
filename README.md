@@ -38,6 +38,8 @@ aurodle buildorder <package>  # show build order (machine-readable)
 aurodle status                # show infrastructure status
 ```
 
+See `aurodle(1)` for all options.
+
 ## Building
 
 **Development build:**
@@ -54,53 +56,26 @@ zig build --release=safe
 
 ## Setup
 
-aurodle builds AUR packages into a local pacman repository. Before using it, create the repository directory and register it with pacman.
-
-**1. Create the repository directory:**
-
-```bash
-sudo install -d -o $USER /var/lib/aurodle/aur
-```
-
-**2. Add the repository to `/etc/pacman.conf`:**
+aurodle requires a local pacman repository before first use. Set `PKGDEST` in `/etc/makepkg.conf` and add a matching `file://` repository to `/etc/pacman.conf`:
 
 ```ini
+# /etc/makepkg.conf
+PKGDEST=/var/lib/aurodle/aur
+```
+
+```ini
+# /etc/pacman.conf
 [aur]
 SigLevel = Optional TrustAll
 Server = file:///var/lib/aurodle/aur
 ```
 
-**3. Set PKGDEST in `/etc/makepkg.conf`:**
+Then initialise the repository database:
 
 ```bash
-PKGDEST=/var/lib/aurodle/aur
-```
-
-This tells makepkg to place built packages directly into the local repository.
-
-**4. Create an empty local aur repo database**
-
-```bash
+sudo install -d -o $USER /var/lib/aurodle/aur
 repo-add /var/lib/aurodle/aur/aur.db.tar.xz
-```
-
-**5. Sync the database:**
-
-```bash
 sudo pacman -Syu
 ```
 
-After setup, packages built with `aurodle sync <package>` will be added to the local repository and installed via pacman.
-
-## Environment variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `AURDEST` | `~/.cache/aurodle` | Directory where AUR package sources are cloned. |
-| `PKGDEST` | from `makepkg.conf` | Directory where built packages are placed. Overrides the value in `/etc/makepkg.conf` and `~/.makepkg.conf`. |
-| `PKGEXT` | `.pkg.tar.zst` | Package file extension. Overrides the value in `makepkg.conf`. |
-| `PACMAN_AUTH` | from `makepkg.conf` | Privilege escalation command passed to pacman (e.g. `sudo`). Overrides the value in `makepkg.conf`. |
-| `CHROOT_DIR` | `/var/lib/aurodle/chroot` | Chroot root directory used with the `--chroot` flag. |
-| `PAGER` | — | Pager used to review PKGBUILDs before building. Falls back to `VISUAL`, then `EDITOR`. |
-| `VISUAL` | — | Fallback editor/pager for PKGBUILD review when `PAGER` is unset. |
-| `EDITOR` | — | Fallback editor for PKGBUILD review when `PAGER` and `VISUAL` are unset. |
+See `aurodle(1)` for full configuration details, usage, and environment variables.
