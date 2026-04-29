@@ -104,6 +104,14 @@ pub const Auth = struct {
         self.keepalive_thread = std.Thread.spawn(.{}, keepaliveLoop, .{ self, argv }) catch return;
     }
 
+    /// Immediately refresh credentials without prompting (no-op if the session
+    /// has already expired).  Used by the keepalive thread to ensure the
+    /// timestamp is reset to a known-fresh state right after startKeepalive.
+    fn refreshSilent(self: *Auth, argv: []const []const u8) void {
+        const result = utils.runCommand(self.allocator, argv) catch return;
+        result.deinit(self.allocator);
+    }
+
     /// Signal the keepalive thread to stop and wait for it to exit.
     pub fn stopKeepalive(self: *Auth) void {
         const thread = self.keepalive_thread orelse return;
@@ -217,19 +225,19 @@ pub const Auth = struct {
     }
 };
 
-const keepalive_interval_secs = 150;
+const keepalive_interval_secs = 60;
 
 /// Background loop that refreshes credentials periodically.
+/// Refreshes immediately on entry (resetting the timestamp to a known-fresh
+/// state), then at every keepalive_interval_secs thereafter.
 /// Checks the stop flag each second for responsive shutdown.
 fn keepaliveLoop(auth: *Auth, argv: []const []const u8) void {
     while (!auth.stop_keepalive.load(.acquire)) {
+        auth.refreshSilent(argv);
         for (0..keepalive_interval_secs) |_| {
             if (auth.stop_keepalive.load(.acquire)) return;
             std.Thread.sleep(std.time.ns_per_s);
         }
-        // Silently refresh credentials.
-        const result = utils.runCommand(auth.allocator, argv) catch continue;
-        result.deinit(auth.allocator);
     }
 }
 
