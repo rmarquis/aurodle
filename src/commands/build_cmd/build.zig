@@ -215,8 +215,7 @@ pub fn buildLoop(
             if (devel.isVcsPackage(entry.name)) blk: {
                 const hint = self.devel_version_hint.get(entry.name) orelse break :blk false;
                 break :blk repository.hasPackageVersion(entry.name, hint);
-            } else
-                (allPackagesBuilt(self.allocator, clone_dir) catch false);
+            } else (allPackagesBuilt(self.allocator, clone_dir) catch false);
 
         if (already_built) {
             cmds.getStdout().print("{s}::{s} {s} {s} already built, skipping (use --rebuild to force)\n", .{ sc.yellow, sc.reset, entry.name, ver }) catch {};
