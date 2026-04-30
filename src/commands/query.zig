@@ -187,8 +187,9 @@ pub fn collectOutdated(self: *Commands, filter: []const []const u8, populate_hin
                 });
                 try already_outdated.put(self.allocator, pkg.name, {});
             }
+        } else if (!self.flags.quiet) {
+            self.err_writer.print("{s}warning:{s} {s} not found in AUR\n", .{ ec.yellow, ec.reset, pkg.name }) catch {};
         }
-        // Packages not in AUR are silently skipped (might be custom local packages)
     }
 
     // --devel: VCS packages via makepkg --nobuild + --printsrcinfo
