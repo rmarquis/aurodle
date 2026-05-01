@@ -26,9 +26,7 @@ pub fn main() u8 {
     const allocator = gpa.allocator();
 
     const result = run(allocator) catch |err| {
-        const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
-        const w = stderr.deprecatedWriter();
-        w.print("error: unexpected failure: {}\n", .{err}) catch {};
+        stderrWriter().print("error: unexpected failure: {}\n", .{err}) catch {};
         return 1;
     };
 
@@ -84,7 +82,6 @@ fn run(allocator: Allocator) !ExitCode {
 
     // Simple commands that only need the AUR client
     var cmds = commands.Commands.init(allocator, &aur_client, parsed.flags);
-    cmds.flags.reanchorIgnore();
 
     return switch (parsed.operation) {
         .info => try commands.query.info(&cmds, parsed.targets),
@@ -314,10 +311,10 @@ fn runWithFullStack(
     aur_client: *aur.Client,
     parsed: ParsedCommand,
 ) !ExitCode {
+    const w = stderrWriter();
+
     // Initialize local repository first (derives repo name from pacman.conf + PKGDEST)
     var repository = repo_mod.Repository.init(allocator) catch |err| {
-        const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
-        const w = stderr.deprecatedWriter();
         if (err == error.PkgdestNotSet) {
             w.writeAll("error: PKGDEST is not set in /etc/makepkg.conf\n") catch {};
         } else if (err == error.RepoNotInPacmanConf) {
@@ -333,8 +330,6 @@ fn runWithFullStack(
 
     // Initialize pacman (libalpm) with the derived repo name
     var pm = pacman_mod.Pacman.init(allocator, repository.repo_name) catch |err| {
-        const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
-        const w = stderr.deprecatedWriter();
         w.print("error: failed to initialize pacman: {}\n", .{err}) catch {};
         return .general_error;
     };
@@ -378,8 +373,6 @@ fn runWithFullStack(
 
     // Initialize privilege escalation (PACMAN_AUTH → sudo → su)
     var auth = auth_mod.Auth.init(allocator, repository.makepkg_conf.pacman_auth) catch |err| {
-        const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
-        const w = stderr.deprecatedWriter();
         if (err == error.NoAuthMethod) {
             w.writeAll("error: no privilege escalation method found (sudo/su not on PATH)\n") catch {};
             w.writeAll("hint: set PACMAN_AUTH in makepkg.conf or install sudo/doas\n") catch {};
@@ -397,8 +390,7 @@ fn runWithFullStack(
 
     // Get cache root for git operations
     const cache_root = git.defaultCacheRoot(allocator) catch {
-        const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
-        stderr.writeAll("error: could not determine cache directory (HOME not set)\n") catch {};
+        w.writeAll("error: could not determine cache directory (HOME not set)\n") catch {};
         return .general_error;
     };
     defer allocator.free(cache_root);
@@ -413,7 +405,6 @@ fn runWithFullStack(
         cache_root,
         flags,
     );
-    cmds.flags.reanchorIgnore();
 
     return switch (parsed.operation) {
         .sync => try commands.build_cmd.sync(&cmds, parsed.targets),
@@ -429,8 +420,7 @@ fn runWithFullStack(
 }
 
 fn printHelp() void {
-    const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
-    stdout.writeAll(
+    stdoutWriter().writeAll(
         \\aurodle — newt your average AUR helper
         \\
         \\Usage: aurodle <command> [options] [targets...]
@@ -480,15 +470,21 @@ fn printHelp() void {
 }
 
 fn printVersion() void {
-    const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
-    stdout.writeAll("aurodle " ++ version_string ++ "\n") catch {};
+    stdoutWriter().writeAll("aurodle " ++ version_string ++ "\n") catch {};
 }
 
 fn printUsageError(message: []const u8) void {
-    const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
-    const w = stderr.deprecatedWriter();
+    const w = stderrWriter();
     w.print("error: {s}\n", .{message}) catch {};
-    stderr.writeAll("Try 'aurodle --help' for usage information.\n") catch {};
+    w.writeAll("Try 'aurodle --help' for usage information.\n") catch {};
+}
+
+fn stderrWriter() std.fs.File.DeprecatedWriter {
+    return (std.fs.File{ .handle = std.posix.STDERR_FILENO }).deprecatedWriter();
+}
+
+fn stdoutWriter() std.fs.File.DeprecatedWriter {
+    return (std.fs.File{ .handle = std.posix.STDOUT_FILENO }).deprecatedWriter();
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────

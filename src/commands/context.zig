@@ -125,7 +125,7 @@ pub const Commands = struct {
     devel_version_hint: std.StringHashMapUnmanaged([]const u8) = .empty,
 
     pub fn init(allocator: Allocator, aur_client: *aur.Client, flags: Flags) Commands {
-        return .{
+        var c = Commands{
             .allocator = allocator,
             .aur_client = aur_client,
             .pacman = null,
@@ -138,6 +138,8 @@ pub const Commands = struct {
             .stdout_color = color.Style.detect(std.posix.STDOUT_FILENO, true),
             .stderr_color = color.Style.detect(std.posix.STDERR_FILENO, true),
         };
+        c.flags.reanchorIgnore();
+        return c;
     }
 
     pub fn initFull(
@@ -151,7 +153,7 @@ pub const Commands = struct {
         flags: Flags,
     ) Commands {
         const use_color = pm.color;
-        return .{
+        var c = Commands{
             .allocator = allocator,
             .aur_client = aur_client,
             .pacman = pm,
@@ -164,6 +166,8 @@ pub const Commands = struct {
             .stdout_color = color.Style.detect(std.posix.STDOUT_FILENO, use_color),
             .stderr_color = color.Style.detect(std.posix.STDERR_FILENO, use_color),
         };
+        c.flags.reanchorIgnore();
+        return c;
     }
 
     /// Filter out ignored packages from a target list.
