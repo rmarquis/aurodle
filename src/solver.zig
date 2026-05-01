@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const aur = @import("aur.zig");
 const registry_mod = @import("registry.zig");
 const graph_mod = @import("solver/graph.zig");
 const topo_mod = @import("solver/topo.zig");
@@ -92,7 +93,6 @@ pub fn SolverImpl(comptime RegistryT: type) type {
             var visited = std.StringHashMapUnmanaged(void){};
             defer visited.deinit(self.allocator);
 
-            // Build initial frontier from targets
             var frontier: std.ArrayListUnmanaged([]const u8) = .empty;
             defer frontier.deinit(self.allocator);
             for (target_names) |name| {
@@ -102,111 +102,36 @@ pub fn SolverImpl(comptime RegistryT: type) type {
             var depth: u32 = 0;
 
             while (frontier.items.len > 0) {
-                // Batch resolve current frontier
                 const resolutions = try self.registry.resolveMany(frontier.items);
                 defer self.allocator.free(resolutions);
 
                 var next_frontier: std.ArrayListUnmanaged([]const u8) = .empty;
 
-                // Prefetch AUR metadata for targets resolved locally that
-                // still need dependency info. One batched multiInfo call
-                // replaces N individual info() calls.
-                {
-                    var prefetch: std.ArrayListUnmanaged([]const u8) = .empty;
-                    defer prefetch.deinit(self.allocator);
-                    for (frontier.items, resolutions) |name, res| {
-                        if (res.aur_pkg == null and self.targets.contains(name) and !visited.contains(name)) {
-                            try prefetch.append(self.allocator, name);
-                        }
-                    }
-                    try self.registry.prefetchAur(prefetch.items);
-                }
+                try self.prefetchAurTargets(frontier.items, resolutions, &visited);
 
                 for (frontier.items, resolutions) |name, resolution| {
-                    // Skip if already fully processed (diamond deps)
                     if (visited.contains(name)) {
                         self.graph.updateDepth(name, depth);
                         continue;
                     }
 
-                    var actual_name = name;
-                    var actual_resolution = resolution;
-
-                    // Handle provider redirect (e.g. "auracle" → "auracle-git")
-                    if (resolution.provider) |provider_name| {
-                        if (!std.mem.eql(u8, provider_name, name)) {
-                            // For explicit targets, prefer the AUR package by exact name
-                            // over a provider redirect. E.g. "pacaur" should build pacaur
-                            // from AUR, not redirect to installed pacaur-git.
-                            if (self.targets.contains(name)) {
-                                if (try self.registry.resolveFromAur(name)) |aur_res| {
-                                    if (aur_res.provider == null) {
-                                        actual_resolution = aur_res;
-                                        // Don't redirect — exact AUR package exists with this name
-                                    } else {
-                                        // AUR only knows this name via a provider, not an exact package.
-                                        // Accept the redirect (same as when resolveFromAur returns null).
-                                        try self.targets.put(self.allocator, provider_name, {});
-                                        actual_name = provider_name;
-                                    }
-                                } else {
-                                    // Target doesn't exist in AUR — accept the provider redirect
-                                    try self.targets.put(self.allocator, provider_name, {});
-                                    actual_name = provider_name;
-                                }
-                            } else {
-                                actual_name = provider_name;
-                            }
-                            if (!std.mem.eql(u8, actual_name, name)) {
-                                if (visited.contains(actual_name)) {
-                                    self.graph.updateDepth(actual_name, depth);
-                                    continue;
-                                }
-                                // Resolve the provider individually (typically cached or local)
-                                actual_resolution = try self.registry.resolve(actual_name);
-                            }
-                        }
-                    }
+                    const redirected = try self.resolveWithRedirects(name, resolution, &visited, depth) orelse continue;
+                    const actual_name = redirected.name;
+                    const actual_resolution = redirected.resolution;
 
                     try visited.put(self.allocator, actual_name, {});
 
-                    // Check if this dependency is in the ignore list.
-                    // Targets are already filtered before reaching the solver,
-                    // so any ignored package here is a dependency we can't skip.
                     if (!self.targets.contains(actual_name) and self.isIgnoredPkg(actual_name)) {
                         return error.IgnoredDependency;
                     }
 
-                    // Resolve unknown via full cascade before adding to graph
-                    if (actual_resolution.source == .unknown) {
-                        const full_res = try self.registry.resolve(actual_name);
-                        if (full_res.source == .unknown) {
-                            return error.UnresolvableDependency;
-                        }
-                        actual_resolution = full_res;
-
-                        // The full cascade may have found an AUR provider
-                        // (e.g. "auracle" → "auracle-git"). Apply the redirect.
-                        if (full_res.provider) |prov| {
-                            if (!std.mem.eql(u8, prov, actual_name)) {
-                                actual_name = prov;
-                                if (visited.contains(actual_name)) {
-                                    self.graph.updateDepth(actual_name, depth);
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-
-                    // Register alias so edges using the original name resolve correctly
-                    // (e.g. edge "pacaur" → "auracle" can find node "auracle-git").
-                    // Must be after all redirect paths (both provider and unknown cascade).
+                    // Register alias so edges using the original name resolve correctly.
+                    // Must be after all redirect paths.
                     if (!std.mem.eql(u8, actual_name, name)) {
                         try self.graph.addAlias(name, actual_name);
                         try visited.put(self.allocator, name, {});
                     }
 
-                    // Add node to graph
                     const node = try self.graph.addNode(actual_name, .{
                         .source = actual_resolution.source,
                         .version = actual_resolution.version,
@@ -215,57 +140,8 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                         .depth = depth,
                     });
 
-                    // Determine AUR package info for dependency traversal.
-                    // For targets that are satisfied/in repos, fetch from AUR
-                    // so we can resolve their build dependencies.
-                    // Also fetch for provider-redirected packages (actual_name != name):
-                    // the provider/search resolution may return an aur_pkg with empty
-                    // dep arrays (AUR search endpoint omits dependency fields).
-                    var aur_pkg = actual_resolution.aur_pkg;
-                    const is_provider_redirect = !std.mem.eql(u8, actual_name, name);
-                    const is_aur_source = actual_resolution.source == .aur or actual_resolution.source == .repo_aur or actual_resolution.source == .satisfied_aur;
-                    if (self.targets.contains(actual_name) or (is_provider_redirect and is_aur_source)) {
-                        if (try self.registry.resolveFromAur(actual_name)) |aur_res| {
-                            aur_pkg = aur_res.aur_pkg;
-                        }
-                    }
+                    const aur_pkg = try self.fetchAndReclassifyAurPkg(node, actual_name, name, actual_resolution);
 
-                    // Update node metadata if we fetched AUR info after initial creation
-                    if (aur_pkg) |pkg| {
-                        if (node.meta.pkgbase == null) {
-                            node.meta.pkgbase = pkg.pkgbase;
-                        }
-                        // Always store aur_pkg for conflict/provides detection,
-                        // even if the node isn't reclassified to .aur
-                        if (node.meta.aur_pkg == null) {
-                            node.meta.aur_pkg = pkg;
-                        }
-                    }
-
-                    // Reclassify repo_aur/satisfied_aur targets that need (re)building.
-                    // Intentionally outside the aur_pkg block: VCS packages must be
-                    // reclassified even when AUR metadata is unavailable (e.g. the
-                    // package is only in the local aurpkgs repo and not yet published
-                    // to the AUR, so resolveFromAur returns null).
-                    if ((node.meta.source == .repo_aur or node.meta.source == .satisfied_aur) and self.targets.contains(actual_name)) {
-                        const dominated = if (aur_pkg) |pkg|
-                            if (node.meta.version) |local_ver|
-                                RegistryT.vercmp(pkg.version, local_ver) > 0
-                            else
-                                false
-                        else
-                            false;
-                        // VCS packages (-git, -svn, etc.) always need rebuilding when
-                        // explicitly targeted — their AUR version string is static and
-                        // doesn't reflect the actual upstream HEAD.
-                        const is_vcs = RegistryT.isVcsPackage(actual_name);
-                        if (dominated or is_vcs or (self.rebuild and !self.needed)) {
-                            node.meta.source = .aur;
-                            if (aur_pkg) |pkg| node.meta.version = pkg.version;
-                        }
-                    }
-
-                    // Collect deps for next frontier
                     if (aur_pkg) |pkg| {
                         try self.collectDeps(&next_frontier, &visited, node, pkg.depends, depth);
                         try self.collectDeps(&next_frontier, &visited, node, pkg.makedepends, depth);
@@ -273,11 +149,151 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                     }
                 }
 
-                // Swap frontiers
                 frontier.deinit(self.allocator);
                 frontier = next_frontier;
                 depth += 1;
             }
+        }
+
+        /// Prefetch full AUR metadata for frontier targets that were resolved locally
+        /// (installed/sync) but still need dependency info. One batched multiInfo call
+        /// replaces N individual info() calls.
+        fn prefetchAurTargets(
+            self: *Self,
+            names: []const []const u8,
+            resolutions: []const registry_mod.Resolution,
+            visited: *const std.StringHashMapUnmanaged(void),
+        ) !void {
+            var prefetch: std.ArrayListUnmanaged([]const u8) = .empty;
+            defer prefetch.deinit(self.allocator);
+            for (names, resolutions) |name, res| {
+                if (res.aur_pkg == null and self.targets.contains(name) and !visited.contains(name)) {
+                    try prefetch.append(self.allocator, name);
+                }
+            }
+            try self.registry.prefetchAur(prefetch.items);
+        }
+
+        const Redirected = struct {
+            name: []const u8,
+            resolution: registry_mod.Resolution,
+        };
+
+        /// Resolve provider redirects and unknown-source cascade for a frontier item.
+        /// Returns null when the item should be skipped (already visited after redirect).
+        fn resolveWithRedirects(
+            self: *Self,
+            name: []const u8,
+            resolution: registry_mod.Resolution,
+            visited: *const std.StringHashMapUnmanaged(void),
+            depth: u32,
+        ) !?Redirected {
+            var actual_name = name;
+            var actual_resolution = resolution;
+
+            // Handle provider redirect (e.g. "auracle" → "auracle-git")
+            if (resolution.provider) |provider_name| {
+                if (!std.mem.eql(u8, provider_name, name)) {
+                    if (self.targets.contains(name)) {
+                        // For explicit targets, prefer the AUR package by exact name over a
+                        // provider redirect. E.g. "pacaur" should build pacaur from AUR, not
+                        // redirect to installed pacaur-git.
+                        if (try self.registry.resolveFromAur(name)) |aur_res| {
+                            if (aur_res.provider == null) {
+                                actual_resolution = aur_res;
+                            } else {
+                                // AUR only knows this name via a provider — accept the redirect.
+                                try self.targets.put(self.allocator, provider_name, {});
+                                actual_name = provider_name;
+                            }
+                        } else {
+                            // Target doesn't exist in AUR — accept the provider redirect.
+                            try self.targets.put(self.allocator, provider_name, {});
+                            actual_name = provider_name;
+                        }
+                    } else {
+                        actual_name = provider_name;
+                    }
+                    if (!std.mem.eql(u8, actual_name, name)) {
+                        if (visited.contains(actual_name)) {
+                            self.graph.updateDepth(actual_name, depth);
+                            return null;
+                        }
+                        actual_resolution = try self.registry.resolve(actual_name);
+                    }
+                }
+            }
+
+            // Resolve unknown via full cascade
+            if (actual_resolution.source == .unknown) {
+                const full_res = try self.registry.resolve(actual_name);
+                if (full_res.source == .unknown) {
+                    return error.UnresolvableDependency;
+                }
+                actual_resolution = full_res;
+                // The full cascade may have found an AUR provider (e.g. "auracle" → "auracle-git").
+                if (full_res.provider) |prov| {
+                    if (!std.mem.eql(u8, prov, actual_name)) {
+                        actual_name = prov;
+                        if (visited.contains(actual_name)) {
+                            self.graph.updateDepth(actual_name, depth);
+                            return null;
+                        }
+                    }
+                }
+            }
+
+            return Redirected{ .name = actual_name, .resolution = actual_resolution };
+        }
+
+        /// Fetch full AUR package info for a node if needed, update its metadata,
+        /// and reclassify repo_aur/satisfied_aur targets that require (re)building.
+        /// Returns the best available aur_pkg pointer for dependency traversal.
+        fn fetchAndReclassifyAurPkg(
+            self: *Self,
+            node: *DepGraph.Node,
+            actual_name: []const u8,
+            original_name: []const u8,
+            actual_resolution: registry_mod.Resolution,
+        ) !?*aur.Package {
+            var aur_pkg = actual_resolution.aur_pkg;
+
+            // Fetch full AUR metadata for targets and provider-redirected AUR packages.
+            // Provider/search resolutions may return an aur_pkg with empty dep arrays
+            // (the AUR search endpoint omits dependency fields).
+            const is_redirect = !std.mem.eql(u8, actual_name, original_name);
+            const is_aur_source = switch (actual_resolution.source) {
+                .aur, .repo_aur, .satisfied_aur => true,
+                else => false,
+            };
+            if (self.targets.contains(actual_name) or (is_redirect and is_aur_source)) {
+                if (try self.registry.resolveFromAur(actual_name)) |aur_res| {
+                    aur_pkg = aur_res.aur_pkg;
+                }
+            }
+
+            if (aur_pkg) |pkg| {
+                if (node.meta.pkgbase == null) node.meta.pkgbase = pkg.pkgbase;
+                // Always store aur_pkg for conflict/provides detection even if source stays non-AUR.
+                if (node.meta.aur_pkg == null) node.meta.aur_pkg = pkg;
+            }
+
+            // Reclassify repo_aur/satisfied_aur targets that need (re)building.
+            // Outside the aur_pkg block: VCS packages must be reclassified even when AUR
+            // metadata is unavailable (package only in local aurpkgs repo, not yet on AUR).
+            if ((node.meta.source == .repo_aur or node.meta.source == .satisfied_aur) and self.targets.contains(actual_name)) {
+                const dominated = if (aur_pkg) |pkg|
+                    if (node.meta.version) |local_ver| RegistryT.vercmp(pkg.version, local_ver) > 0 else false
+                else
+                    false;
+                const is_vcs = RegistryT.isVcsPackage(actual_name);
+                if (dominated or is_vcs or (self.rebuild and !self.needed)) {
+                    node.meta.source = .aur;
+                    if (aur_pkg) |pkg| node.meta.version = pkg.version;
+                }
+            }
+
+            return aur_pkg;
         }
 
         /// Collect dependencies: add edges and queue unseen names for next frontier.
