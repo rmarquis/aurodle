@@ -9,6 +9,7 @@ const pacman_mod = @import("../pacman.zig");
 const utils = @import("../utils.zig");
 const color = @import("../color.zig");
 const cmds = @import("context.zig");
+const display_mod = @import("display.zig");
 const query = @import("query.zig");
 
 const build_phase = @import("build_cmd/build.zig");
@@ -22,7 +23,7 @@ const FailedBuild = cmds.FailedBuild;
 const getStdout = cmds.getStdout;
 const printError = cmds.printError;
 const handleResolveError = cmds.handleResolveError;
-const displayPlan = cmds.displayPlan;
+const displayPlan = display_mod.displayPlan;
 
 // Re-export for callers that import hasFailedDep directly (e.g. tests, context.zig).
 pub const hasFailedDep = build_phase.hasFailedDep;
@@ -353,7 +354,7 @@ fn handleEmptyBuildOrder(self: *Commands, plan: solver_mod.BuildPlan, mode: Buil
     defer all_names.deinit(self.allocator);
     try all_names.appendSlice(self.allocator, aurpkgs_targets.items);
     try all_names.appendSlice(self.allocator, plan.repo_targets);
-    cmds.displayInstallList(all_names.items, self.pacman, self.err_writer, self.stdout_color, self.stderr_color);
+    display_mod.displayInstallList(all_names.items, self.pacman, self.err_writer, self.stdout_color, self.stderr_color);
 
     if (!self.flags.noconfirm) {
         if (!try utils.promptYesNoStyled(self.stdout_color, "Proceed with installation?")) {
