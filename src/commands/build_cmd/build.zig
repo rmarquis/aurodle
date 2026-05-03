@@ -4,7 +4,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const git = @import("../../git.zig");
 const devel = @import("../../devel.zig");
-const solver_mod = @import("../../solver.zig");
+const plan_mod = @import("../../plan.zig");
 const repo_mod = @import("../../repo.zig");
 const utils = @import("../../utils.zig");
 const auth_mod = @import("../../auth.zig");
@@ -99,7 +99,7 @@ fn collectBuiltPackagePaths(allocator: Allocator, clone_dir: []const u8) !?[]con
 /// isolated chroot can satisfy AUR-to-AUR dependency chains.
 fn runChrootBuild(
     self: *const Commands,
-    entry: solver_mod.BuildEntry,
+    entry: plan_mod.BuildEntry,
     built_pkg_paths: *const std.StringHashMapUnmanaged([]const []const u8),
     clone_dir: []const u8,
 ) !u8 {
@@ -127,7 +127,7 @@ fn runChrootBuild(
 
 /// True if any of `entry`'s AUR dep pkgbases is in the failed set.
 pub fn hasFailedDep(
-    entry: solver_mod.BuildEntry,
+    entry: plan_mod.BuildEntry,
     failed_bases: *const std.StringHashMapUnmanaged(void),
 ) bool {
     for (entry.aur_dep_bases) |dep_base| {
@@ -137,7 +137,7 @@ pub fn hasFailedDep(
 }
 
 /// True if any entry in `remaining` lists `pkgbase` as an AUR dep.
-pub fn anySubsequentEntryNeeds(remaining: []const solver_mod.BuildEntry, pkgbase: []const u8) bool {
+pub fn anySubsequentEntryNeeds(remaining: []const plan_mod.BuildEntry, pkgbase: []const u8) bool {
     for (remaining) |future| {
         for (future.aur_dep_bases) |dep_base| {
             if (std.mem.eql(u8, dep_base, pkgbase)) return true;
@@ -151,7 +151,7 @@ pub fn anySubsequentEntryNeeds(remaining: []const solver_mod.BuildEntry, pkgbase
 /// Returns a BuildResult that the caller must deinit.
 pub fn buildLoop(
     self: *Commands,
-    plan: solver_mod.BuildPlan,
+    plan: plan_mod.BuildPlan,
     repository: *repo_mod.Repository,
     c_root: []const u8,
 ) !BuildResult {

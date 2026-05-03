@@ -4,58 +4,17 @@ const registry_mod = @import("registry.zig");
 const graph_mod = @import("solver/graph.zig");
 const topo_mod = @import("solver/topo.zig");
 const conflicts_mod = @import("solver/conflicts.zig");
+const plan_mod = @import("plan.zig");
 
 const NodeMeta = graph_mod.NodeMeta;
 const DepGraph = graph_mod.DepGraph;
 
-// ── Public Types ─────────────────────────────────────────────────────────
+// ── Public Types (re-exported from plan.zig) ─────────────────────────────
 
-pub const BuildEntry = struct {
-    name: []const u8,
-    pkgbase: []const u8,
-    version: []const u8,
-    is_target: bool,
-    /// Names of user-requested targets that belong to this pkgbase.
-    /// For split packages, multiple target names may share one build entry.
-    target_names: []const []const u8 = &.{},
-    /// Unix timestamp when flagged out-of-date on AUR, or null.
-    out_of_date: ?i64 = null,
-    /// Pkgbases of AUR dependencies (for build failure propagation and sync DB refresh).
-    aur_dep_bases: []const []const u8 = &.{},
-};
-
-pub const DependencyEntry = struct {
-    name: []const u8,
-    pkgbase: ?[]const u8,
-    source: registry_mod.Source,
-    is_target: bool,
-    depth: u32,
-};
-
-pub const Conflict = conflicts_mod.Conflict;
-
-pub const BuildPlan = struct {
-    build_order: []BuildEntry,
-    all_deps: []DependencyEntry,
-    /// Direct repo deps declared by AUR packages (used for installation).
-    repo_deps: [][]const u8,
-    repo_targets: [][]const u8,
-    conflicts: []Conflict = &.{},
-    provider_selections: []registry_mod.ProviderSelection = &.{},
-
-    pub fn deinit(self: BuildPlan, allocator: Allocator) void {
-        for (self.build_order) |entry| {
-            allocator.free(entry.aur_dep_bases);
-            allocator.free(entry.target_names);
-        }
-        allocator.free(self.build_order);
-        allocator.free(self.all_deps);
-        allocator.free(self.repo_deps);
-        allocator.free(self.repo_targets);
-        allocator.free(self.conflicts);
-        allocator.free(self.provider_selections);
-    }
-};
+pub const BuildEntry = plan_mod.BuildEntry;
+pub const DependencyEntry = plan_mod.DependencyEntry;
+pub const Conflict = plan_mod.Conflict;
+pub const BuildPlan = plan_mod.BuildPlan;
 
 // ── Production Type Alias ────────────────────────────────────────────────
 

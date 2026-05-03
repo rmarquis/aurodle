@@ -2,25 +2,9 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const DepGraph = @import("graph.zig").DepGraph;
 const registry_mod = @import("../registry.zig");
+const plan_mod = @import("../plan.zig");
 
-pub const Conflict = struct {
-    package: []const u8,
-    conflicts_with: []const u8,
-    kind: Kind,
-
-    pub const Kind = enum {
-        /// Two packages in the build plan conflict with each other.
-        aur_aur,
-        /// An AUR package conflicts with an already-installed package.
-        aur_installed,
-        /// A new repo dependency conflicts with an already-installed package.
-        repo_installed,
-        /// An AUR package replaces an already-installed package.
-        aur_replaces,
-        /// A new repo dependency replaces an already-installed package.
-        repo_replaces,
-    };
-};
+pub const Conflict = plan_mod.Conflict;
 
 /// Scan AUR nodes for declared conflicts against other graph nodes and
 /// installed packages. Provides-aware: if A conflicts with virtual name

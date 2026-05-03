@@ -3,7 +3,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const git = @import("../../git.zig");
-const solver_mod = @import("../../solver.zig");
+const plan_mod = @import("../../plan.zig");
 const utils = @import("../../utils.zig");
 const color = @import("../../color.zig");
 const cmds = @import("../context.zig");
@@ -23,7 +23,7 @@ pub fn getViewer() []const u8 {
 /// otherwise open all files in the viewer for fresh-clone review.
 pub fn reviewPackages(
     self: *Commands,
-    entries: []const solver_mod.BuildEntry,
+    entries: []const plan_mod.BuildEntry,
     c_root: []const u8,
 ) !void {
     const stdout = cmds.getStdout();
@@ -76,7 +76,7 @@ pub fn reviewPackages(
 
 /// Prompt the user to resolve each detected conflict.
 /// Returns the list of packages accepted for removal, or null if any conflict was rejected.
-pub fn resolveConflicts(allocator: Allocator, conflicts: []const solver_mod.Conflict, c: color.Style) !?[]const []const u8 {
+pub fn resolveConflicts(allocator: Allocator, conflicts: []const plan_mod.Conflict, c: color.Style) !?[]const []const u8 {
     const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
     const stdin: std.fs.File = .{ .handle = std.posix.STDIN_FILENO };
     if (!std.posix.isatty(stdin.handle)) return null;

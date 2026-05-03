@@ -1,5 +1,5 @@
 const std = @import("std");
-const solver_mod = @import("../solver.zig");
+const plan_mod = @import("../plan.zig");
 const pacman_mod = @import("../pacman.zig");
 const devel = @import("../devel.zig");
 const color = @import("../color.zig");
@@ -65,7 +65,7 @@ const ColWidths = struct {
 
 // ── Public API ───────────────────────────────────────────────────────
 
-pub fn displayPlan(plan: solver_mod.BuildPlan, repo_deps_full: []const []const u8, pm: ?*pacman_mod.Pacman, removals: []const []const u8, err_writer: std.io.AnyWriter, c: color.Style, ec: color.Style, hint: *const std.StringHashMapUnmanaged([]const u8)) void {
+pub fn displayPlan(plan: plan_mod.BuildPlan, repo_deps_full: []const []const u8, pm: ?*pacman_mod.Pacman, removals: []const []const u8, err_writer: std.io.AnyWriter, c: color.Style, ec: color.Style, hint: *const std.StringHashMapUnmanaged([]const u8)) void {
     const stdout = getStdout();
     const verbose = if (pm) |p| p.verbose_pkg_lists else false;
 
@@ -219,7 +219,7 @@ pub fn displayInstallList(names: []const []const u8, pm: ?*pacman_mod.Pacman, er
 // ── Private Helpers ───────────────────────────────────────────────────
 
 fn displayPlanCompact(
-    plan: solver_mod.BuildPlan,
+    plan: plan_mod.BuildPlan,
     repo_deps_full: []const []const u8,
     pm: ?*pacman_mod.Pacman,
     stdout: anytype,
@@ -310,7 +310,7 @@ fn emitRepoPkgRow(writer: anytype, pm: ?*pacman_mod.Pacman, name: []const u8, wi
 }
 
 fn displayPlanVerbose(
-    plan: solver_mod.BuildPlan,
+    plan: plan_mod.BuildPlan,
     repo_deps_full: []const []const u8,
     pm: ?*pacman_mod.Pacman,
     removals: []const []const u8,
@@ -396,7 +396,7 @@ fn displayPlanVerbose(
     }
 }
 
-fn displayVersion(entry: solver_mod.BuildEntry, hint: *const std.StringHashMapUnmanaged([]const u8)) []const u8 {
+fn displayVersion(entry: plan_mod.BuildEntry, hint: *const std.StringHashMapUnmanaged([]const u8)) []const u8 {
     if (hint.get(entry.name)) |v| return v;
     return if (devel.isVcsPackage(entry.name)) "latest" else entry.version;
 }
