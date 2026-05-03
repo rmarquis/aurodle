@@ -32,6 +32,19 @@ pub const GitError = error{
 
 // ── Public API ──────────────────────────────────────────────────────────
 
+pub const CacheRoot = struct { path: []const u8, owned: bool };
+
+/// Resolve cache root: use the configured value, or fall back to $AURDEST /
+/// ~/.cache/aurodle. Caller must pass the result to freeCacheRoot when done.
+pub fn resolveCacheRoot(cache_root: ?[]const u8, allocator: Allocator) !CacheRoot {
+    if (cache_root) |c| return .{ .path = c, .owned = false };
+    return .{ .path = try defaultCacheRoot(allocator), .owned = true };
+}
+
+pub fn freeCacheRoot(root: CacheRoot, allocator: Allocator) void {
+    if (root.owned) allocator.free(root.path);
+}
+
 /// Resolve the cache root: $AURDEST if set, otherwise ~/.cache/aurodle
 pub fn defaultCacheRoot(allocator: Allocator) ![]u8 {
     if (std.posix.getenv("AURDEST")) |aurdest| {

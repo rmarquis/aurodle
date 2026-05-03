@@ -2,13 +2,14 @@ const std = @import("std");
 const registry_mod = @import("../registry.zig");
 const solver_mod = @import("../solver.zig");
 const cmds = @import("context.zig");
+const display_mod = @import("display.zig");
 const color = @import("../color.zig");
 
 const Commands = cmds.Commands;
 const ExitCode = cmds.ExitCode;
 const getStdout = cmds.getStdout;
 const handleResolveError = cmds.handleResolveError;
-const displayPlan = cmds.displayPlan;
+const displayPlan = display_mod.displayPlan;
 
 // ── Resolve Command ──────────────────────────────────────────────────
 

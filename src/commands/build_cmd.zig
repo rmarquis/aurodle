@@ -9,7 +9,8 @@ const pacman_mod = @import("../pacman.zig");
 const utils = @import("../utils.zig");
 const color = @import("../color.zig");
 const cmds = @import("context.zig");
-const query = @import("query.zig");
+const display_mod = @import("display.zig");
+const outdated_mod = @import("outdated.zig");
 
 const build_phase = @import("build_cmd/build.zig");
 const install_phase = @import("build_cmd/install.zig");
@@ -22,7 +23,7 @@ const FailedBuild = cmds.FailedBuild;
 const getStdout = cmds.getStdout;
 const printError = cmds.printError;
 const handleResolveError = cmds.handleResolveError;
-const displayPlan = cmds.displayPlan;
+const displayPlan = display_mod.displayPlan;
 
 // Re-export for callers that import hasFailedDep directly (e.g. tests, context.zig).
 pub const hasFailedDep = build_phase.hasFailedDep;
@@ -32,12 +33,12 @@ pub const hasFailedDep = build_phase.hasFailedDep;
 /// Display build files for a package clone.
 pub fn show(self: *Commands, target: []const u8) !ExitCode {
     const ec = self.stderr_color;
-    const cache = self.resolveCacheRoot() catch {
+    const cache = git.resolveCacheRoot(self.cache_root, self.allocator) catch {
         self.err_writer.print("{s}error:{s} could not determine cache directory (HOME not set)\n", .{ ec.red, ec.reset }) catch {};
         return .general_error;
     };
     const c_root = cache.path;
-    defer self.freeCacheRoot(cache);
+    defer git.freeCacheRoot(cache, self.allocator);
 
     const pkgbase = blk: {
         if (self.aur_client.info(target) catch null) |pkg| {
@@ -90,12 +91,12 @@ pub fn clonePackages(self: *Commands, targets: []const []const u8) !ExitCode {
         }
     }
 
-    const cache = self.resolveCacheRoot() catch {
+    const cache = git.resolveCacheRoot(self.cache_root, self.allocator) catch {
         self.err_writer.print("{s}error:{s} could not determine cache directory (HOME not set)\n", .{ ec.red, ec.reset }) catch {};
         return .general_error;
     };
     const c_root = cache.path;
-    defer self.freeCacheRoot(cache);
+    defer git.freeCacheRoot(cache, self.allocator);
 
     var bases_to_clone: std.ArrayListUnmanaged([]const u8) = .empty;
     defer bases_to_clone.deinit(self.allocator);
@@ -353,7 +354,7 @@ fn handleEmptyBuildOrder(self: *Commands, plan: solver_mod.BuildPlan, mode: Buil
     defer all_names.deinit(self.allocator);
     try all_names.appendSlice(self.allocator, aurpkgs_targets.items);
     try all_names.appendSlice(self.allocator, plan.repo_targets);
-    cmds.displayInstallList(all_names.items, self.pacman, self.err_writer, self.stdout_color, self.stderr_color);
+    display_mod.displayInstallList(all_names.items, self.pacman, self.err_writer, self.stdout_color, self.stderr_color);
 
     if (!self.flags.noconfirm) {
         if (!try utils.promptYesNoStyled(self.stdout_color, "Proceed with installation?")) {
@@ -379,7 +380,7 @@ pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
 
     getStdout().print("{s}::{s} Starting AUR upgrade...\n", .{ sc.blue, sc.reset }) catch {};
 
-    const result = (try query.collectOutdated(self, targets, true)) orelse return .general_error;
+    const result = (try outdated_mod.collectOutdated(self, targets, true)) orelse return .general_error;
     defer result.deinit(self.allocator);
     defer self.devel_version_hint.clearAndFree(self.allocator);
 

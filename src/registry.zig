@@ -6,6 +6,7 @@ const color = @import("color.zig");
 const devel = @import("devel.zig");
 const pacman_mod = @import("pacman.zig");
 const provider_types = @import("provider.zig");
+const source_mod = @import("source.zig");
 
 pub const ProviderCandidate = provider_types.ProviderCandidate;
 pub const ProviderChooserFn = provider_types.ProviderChooserFn;
@@ -13,14 +14,7 @@ pub const ProviderSelection = provider_types.ProviderSelection;
 
 // ── Public Types ─────────────────────────────────────────────────────────
 
-pub const Source = enum {
-    satisfied_repos, // installed locally and available in official repos
-    satisfied_aur, // installed locally (AUR / foreign package)
-    repos, // not installed, available in official sync databases
-    repo_aur, // not installed, available in aurpkgs local repo
-    aur, // not installed, needs to be built from AUR
-    unknown, // not found anywhere
-};
+pub const Source = source_mod.Source;
 
 pub const Resolution = struct {
     name: []const u8,
