@@ -10,7 +10,7 @@ const utils = @import("../utils.zig");
 const color = @import("../color.zig");
 const cmds = @import("context.zig");
 const display_mod = @import("display.zig");
-const query = @import("query.zig");
+const outdated_mod = @import("outdated.zig");
 
 const build_phase = @import("build_cmd/build.zig");
 const install_phase = @import("build_cmd/install.zig");
@@ -380,7 +380,7 @@ pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
 
     getStdout().print("{s}::{s} Starting AUR upgrade...\n", .{ sc.blue, sc.reset }) catch {};
 
-    const result = (try query.collectOutdated(self, targets, true)) orelse return .general_error;
+    const result = (try outdated_mod.collectOutdated(self, targets, true)) orelse return .general_error;
     defer result.deinit(self.allocator);
     defer self.devel_version_hint.clearAndFree(self.allocator);
 
