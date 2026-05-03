@@ -288,7 +288,7 @@ pub fn runBuildPipeline(self: *Commands, filtered: []const []const u8, mode: Bui
     if (build_result.signal_aborted) return .signal_killed;
 
     if (build_result.succeeded.len > 0) {
-        install_phase.refreshAurpkgsSyncDb(self.allocator, repository, self.auth.?) catch |err| {
+        repo_mod.refreshAurpkgsSyncDb(self.allocator, repository, self.auth.?) catch |err| {
             self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err }) catch {};
         };
     }
@@ -465,7 +465,7 @@ pub fn clean(self: *Commands) !ExitCode {
     repository.cleanExecute(plan);
 
     if (plan.removed_packages.len > 0) {
-        install_phase.refreshAurpkgsSyncDb(self.allocator, repository, self.auth.?) catch |err| {
+        repo_mod.refreshAurpkgsSyncDb(self.allocator, repository, self.auth.?) catch |err| {
             self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err }) catch {};
         };
     }

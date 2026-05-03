@@ -10,7 +10,6 @@ const utils = @import("../../utils.zig");
 const auth_mod = @import("../../auth.zig");
 const color = @import("../../color.zig");
 const cmds = @import("../context.zig");
-const install = @import("install.zig");
 
 const Commands = cmds.Commands;
 const BuildResult = cmds.BuildResult;
@@ -296,7 +295,7 @@ pub fn buildLoop(
         // repo-add updated the repo dir DB, but pacman's sync cache
         // (/var/lib/pacman/sync/aurpkgs.db) is root-owned and separate.
         if (anySubsequentEntryNeeds(plan.build_order[i + 1 ..], entry.pkgbase)) {
-            install.refreshAurpkgsSyncDb(self.allocator, repository, self.auth.?) catch |err| {
+            repo_mod.refreshAurpkgsSyncDb(self.allocator, repository, self.auth.?) catch |err| {
                 self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err }) catch {};
             };
         }

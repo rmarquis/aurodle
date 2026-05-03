@@ -646,6 +646,17 @@ fn stripBashArray(val: []const u8) []const u8 {
 
 const dirExists = utils.dirExists;
 
+/// Copy the local AUR repo DB to pacman's sync cache so that subsequent
+/// makepkg -s calls (which spawn their own pacman) see just-built packages.
+/// Only touches the local AUR repo entry — official repo DBs are left untouched.
+pub fn refreshAurpkgsSyncDb(allocator: std.mem.Allocator, repository: *Repository, auth: anytype) !void {
+    const sync_db_path = try std.fmt.allocPrint(allocator, "/var/lib/pacman/sync/{s}.db", .{repository.repo_name});
+    defer allocator.free(sync_db_path);
+    const result = try auth.runCaptured(&.{ "cp", repository.db_path, sync_db_path });
+    defer result.deinit(allocator);
+    if (!result.success()) return error.SyncDbRefreshFailed;
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────
 
 fn getTmpPath(tmp: std.testing.TmpDir) ![]u8 {
