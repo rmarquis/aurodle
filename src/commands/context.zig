@@ -7,7 +7,6 @@ const pacman_mod = @import("../pacman.zig");
 const utils = @import("../utils.zig");
 const auth_mod = @import("../auth.zig");
 const color = @import("../color.zig");
-const git = @import("../git.zig");
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -195,19 +194,6 @@ pub const Commands = struct {
             }
         }
         return buf[0..count];
-    }
-
-    pub const CacheRoot = struct { path: []const u8, owned: bool };
-
-    /// Resolve cache root: use the configured value, or fall back to the default.
-    /// Caller must call `freeCacheRoot` when done.
-    pub fn resolveCacheRoot(self: *Commands) !CacheRoot {
-        if (self.cache_root) |c| return .{ .path = c, .owned = false };
-        return .{ .path = try git.defaultCacheRoot(self.allocator), .owned = true };
-    }
-
-    pub fn freeCacheRoot(self: *Commands, root: CacheRoot) void {
-        if (root.owned) self.allocator.free(root.path);
     }
 
     pub fn isIgnored(self: *Commands, name: []const u8) bool {

@@ -33,12 +33,12 @@ pub const hasFailedDep = build_phase.hasFailedDep;
 /// Display build files for a package clone.
 pub fn show(self: *Commands, target: []const u8) !ExitCode {
     const ec = self.stderr_color;
-    const cache = self.resolveCacheRoot() catch {
+    const cache = git.resolveCacheRoot(self.cache_root, self.allocator) catch {
         self.err_writer.print("{s}error:{s} could not determine cache directory (HOME not set)\n", .{ ec.red, ec.reset }) catch {};
         return .general_error;
     };
     const c_root = cache.path;
-    defer self.freeCacheRoot(cache);
+    defer git.freeCacheRoot(cache, self.allocator);
 
     const pkgbase = blk: {
         if (self.aur_client.info(target) catch null) |pkg| {
@@ -91,12 +91,12 @@ pub fn clonePackages(self: *Commands, targets: []const []const u8) !ExitCode {
         }
     }
 
-    const cache = self.resolveCacheRoot() catch {
+    const cache = git.resolveCacheRoot(self.cache_root, self.allocator) catch {
         self.err_writer.print("{s}error:{s} could not determine cache directory (HOME not set)\n", .{ ec.red, ec.reset }) catch {};
         return .general_error;
     };
     const c_root = cache.path;
-    defer self.freeCacheRoot(cache);
+    defer git.freeCacheRoot(cache, self.allocator);
 
     var bases_to_clone: std.ArrayListUnmanaged([]const u8) = .empty;
     defer bases_to_clone.deinit(self.allocator);
