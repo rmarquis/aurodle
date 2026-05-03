@@ -1,11 +1,11 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const registry_mod = @import("../registry.zig");
+const source_mod = @import("../source.zig");
 const aur = @import("../aur.zig");
 
 pub const NodeMeta = struct {
     name: []const u8 = "",
-    source: registry_mod.Source = .unknown,
+    source: source_mod.Source = .unknown,
     version: ?[]const u8 = null,
     pkgbase: ?[]const u8 = null,
     aur_pkg: ?*aur.Package = null,
