@@ -47,10 +47,10 @@ pub fn freeCacheRoot(root: CacheRoot, allocator: Allocator) void {
 
 /// Resolve the cache root: $AURDEST if set, otherwise ~/.cache/aurodle
 pub fn defaultCacheRoot(allocator: Allocator) ![]u8 {
-    if (std.posix.getenv("AURDEST")) |aurdest| {
-        return allocator.dupe(u8, aurdest);
+    if (std.c.getenv("AURDEST")) |ptr| {
+        return allocator.dupe(u8, std.mem.span(ptr));
     }
-    const home = std.posix.getenv("HOME") orelse return error.NoHomeDirectory;
+    const home = if (std.c.getenv("HOME")) |p| std.mem.span(p) else return error.NoHomeDirectory;
     return std.fs.path.join(allocator, &.{ home, DEFAULT_CACHE_SUBDIR });
 }
 
@@ -80,7 +80,7 @@ pub fn clone(allocator: Allocator, cache_root: []const u8, pkgbase: []const u8) 
 
     // Ensure parent directory exists
     if (std.fs.path.dirname(dest)) |parent| {
-        std.fs.cwd().makePath(parent) catch {};
+        std.Io.Dir.createDirPath(std.Io.Dir.cwd(), std.Options.debug_io, parent) catch {};
     }
 
     const url = try std.fmt.allocPrint(allocator, "{s}{s}.git", .{ AUR_GIT_BASE, pkgbase });
@@ -90,13 +90,13 @@ pub fn clone(allocator: Allocator, cache_root: []const u8, pkgbase: []const u8) 
         "git", "clone", "--depth=1", url, dest,
     }) catch {
         // git binary not found or spawn failure
-        std.fs.cwd().deleteTree(dest) catch {};
+        std.Io.Dir.deleteTree(std.Io.Dir.cwd(), std.Options.debug_io, dest) catch {};
         return error.CloneFailed;
     };
     defer result.deinit(allocator);
 
     if (!result.success()) {
-        std.fs.cwd().deleteTree(dest) catch {};
+        std.Io.Dir.deleteTree(std.Io.Dir.cwd(), std.Options.debug_io, dest) catch {};
         return error.CloneFailed;
     }
 
@@ -127,7 +127,7 @@ pub fn cloneOrUpdate(allocator: Allocator, cache_root: []const u8, pkgbase: []co
             };
         } else |err| switch (err) {
             error.InvalidRepository => {
-                std.fs.cwd().deleteTree(dest) catch {};
+                std.Io.Dir.deleteTree(std.Io.Dir.cwd(), std.Options.debug_io, dest) catch {};
                 _ = try clone(allocator, cache_root, pkgbase);
                 return .reCloned;
             },
@@ -172,7 +172,7 @@ pub fn listFiles(allocator: Allocator, cache_root: []const u8, pkgbase: []const 
         defer allocator.free(full_path);
 
         const size: u64 = blk: {
-            const stat = std.fs.cwd().statFile(full_path) catch break :blk 0;
+            const stat = std.Io.Dir.statFile(std.Io.Dir.cwd(), std.Options.debug_io, full_path, .{}) catch break :blk 0;
             break :blk stat.size;
         };
 
@@ -211,10 +211,10 @@ pub fn readFile(allocator: Allocator, cache_root: []const u8, pkgbase: []const u
     const full_path = try std.fs.path.join(allocator, &.{ dest, filename });
     defer allocator.free(full_path);
 
-    const file = std.fs.cwd().openFile(full_path, .{}) catch return error.InvalidFilePath;
-    defer file.close();
+    return std.Io.Dir.readFileAlloc(std.Io.Dir.cwd(), std.Options.debug_io, full_path, allocator, .limited(1024 * 1024)) catch error.InvalidFilePath;
+    
 
-    return file.readToEndAlloc(allocator, 1024 * 1024); // 1MB limit
+    
 }
 
 /// Show the diff between the previous HEAD and current HEAD.
@@ -285,7 +285,7 @@ fn createTestGitRepo(allocator: Allocator, base_dir: []const u8, name: []const u
     const repo_dir = try std.fs.path.join(allocator, &.{ base_dir, name });
     errdefer allocator.free(repo_dir);
 
-    std.fs.cwd().makePath(repo_dir) catch {};
+    std.Io.Dir.createDirPath(std.Io.Dir.cwd(), std.testing.io, repo_dir) catch {};
 
     // git init
     const init_result = try utils.runCommandIn(allocator, &.{ "git", "init" }, repo_dir);
@@ -301,9 +301,7 @@ fn createTestGitRepo(allocator: Allocator, base_dir: []const u8, name: []const u
     const pkgbuild_path = try std.fs.path.join(allocator, &.{ repo_dir, "PKGBUILD" });
     defer allocator.free(pkgbuild_path);
 
-    const pkgbuild_file = try std.fs.cwd().createFile(pkgbuild_path, .{});
-    try pkgbuild_file.writeAll("pkgname=test\npkgver=1.0\npkgrel=1\n");
-    pkgbuild_file.close();
+    try std.Io.Dir.writeFile(std.Io.Dir.cwd(), std.testing.io, .{ .sub_path = pkgbuild_path, .data = "pkgname=test\npkgver=1.0\npkgrel=1\n" });
 
     const add_result = try utils.runCommandIn(allocator, &.{ "git", "add", "." }, repo_dir);
     add_result.deinit(allocator);
@@ -322,7 +320,7 @@ test "cloneDir returns correct path" {
 test "defaultCacheRoot uses HOME" {
     const root = try defaultCacheRoot(std.testing.allocator);
     defer std.testing.allocator.free(root);
-    const home = std.posix.getenv("HOME").?;
+    const home = std.mem.span(std.c.getenv("HOME").?);
     try std.testing.expect(std.mem.startsWith(u8, root, home));
     try std.testing.expect(std.mem.endsWith(u8, root, "/.cache/aurodle"));
 }
@@ -335,7 +333,7 @@ test "isCloned returns true for valid git repo" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const tmp_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const tmp_path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(tmp_path);
 
     const repo_dir = try createTestGitRepo(std.testing.allocator, tmp_path, "test-pkg");
@@ -348,13 +346,13 @@ test "isCloned returns false for non-git directory" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const tmp_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const tmp_path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(tmp_path);
 
     // Create a plain directory (no .git)
     const plain_dir = try std.fs.path.join(std.testing.allocator, &.{ tmp_path, "plain-pkg" });
     defer std.testing.allocator.free(plain_dir);
-    try std.fs.cwd().makePath(plain_dir);
+    try std.Io.Dir.createDirPath(std.Io.Dir.cwd(), std.testing.io, plain_dir);
 
     try std.testing.expect(!try isCloned(std.testing.allocator, tmp_path, "plain-pkg"));
 }
@@ -363,7 +361,7 @@ test "clone returns already_exists for existing directory" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const tmp_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const tmp_path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(tmp_path);
 
     // Pre-create a repo
@@ -378,7 +376,7 @@ test "update returns up_to_date when no changes" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const tmp_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const tmp_path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(tmp_path);
 
     const repo_dir = try createTestGitRepo(std.testing.allocator, tmp_path, "uptodate-pkg");
@@ -399,7 +397,7 @@ test "listFiles returns PKGBUILD first" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const tmp_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const tmp_path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(tmp_path);
 
     const repo_dir = try createTestGitRepo(std.testing.allocator, tmp_path, "list-pkg");
@@ -408,15 +406,11 @@ test "listFiles returns PKGBUILD first" {
     // Add extra files
     const install_path = try std.fs.path.join(std.testing.allocator, &.{ repo_dir, "list-pkg.install" });
     defer std.testing.allocator.free(install_path);
-    const install_file = try std.fs.cwd().createFile(install_path, .{});
-    try install_file.writeAll("post_install() { true; }\n");
-    install_file.close();
+    try std.Io.Dir.writeFile(std.Io.Dir.cwd(), std.testing.io, .{ .sub_path = install_path, .data = "post_install() { true; }\n" });
 
     const patch_path = try std.fs.path.join(std.testing.allocator, &.{ repo_dir, "fix.patch" });
     defer std.testing.allocator.free(patch_path);
-    const patch_file = try std.fs.cwd().createFile(patch_path, .{});
-    try patch_file.writeAll("--- a/foo\n+++ b/foo\n");
-    patch_file.close();
+    try std.Io.Dir.writeFile(std.Io.Dir.cwd(), std.testing.io, .{ .sub_path = patch_path, .data = "--- a/foo\n+++ b/foo\n" });
 
     // Stage and commit new files
     const add_result = try utils.runCommandIn(std.testing.allocator, &.{ "git", "add", "." }, repo_dir);
@@ -455,7 +449,7 @@ test "readFile reads file content from clone" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const tmp_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const tmp_path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(tmp_path);
 
     const repo_dir = try createTestGitRepo(std.testing.allocator, tmp_path, "read-pkg");
@@ -471,7 +465,7 @@ test "readFile blocks path traversal with .." {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const tmp_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const tmp_path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(tmp_path);
 
     const repo_dir = try createTestGitRepo(std.testing.allocator, tmp_path, "traversal-pkg");
@@ -496,7 +490,7 @@ test "readFile blocks absolute paths" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const tmp_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const tmp_path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(tmp_path);
 
     const repo_dir = try createTestGitRepo(std.testing.allocator, tmp_path, "abs-pkg");
@@ -510,7 +504,7 @@ test "readFile returns error for non-existent file" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const tmp_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const tmp_path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(tmp_path);
 
     const repo_dir = try createTestGitRepo(std.testing.allocator, tmp_path, "nofile-pkg");
@@ -548,7 +542,7 @@ test "cloneOrUpdate returns NotCloned-free result for existing repo" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const tmp_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const tmp_path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(tmp_path);
 
     const repo_dir = try createTestGitRepo(std.testing.allocator, tmp_path, "cou-pkg");
@@ -563,7 +557,7 @@ test "hasOrigHead returns false for fresh clone" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const tmp_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const tmp_path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(tmp_path);
 
     const repo_dir = try createTestGitRepo(std.testing.allocator, tmp_path, "diff-pkg");

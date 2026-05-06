@@ -15,30 +15,28 @@ const ExitCode = commands.ExitCode;
 const build_options = @import("build_options");
 const version_string = build_options.version;
 
-pub fn main() u8 {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer {
-        const check = gpa.deinit();
-        if (check == .leak) {
-            std.log.err("memory leak detected", .{});
-        }
-    }
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) u8 {
+    const allocator = init.gpa;
 
-    const result = run(allocator) catch |err| {
-        stderrWriter().print("error: unexpected failure: {}\n", .{err}) catch {};
+    const result = run(allocator, init.io, init.minimal.args) catch |err| {
+        std.debug.print("error: unexpected failure: {}\n", .{err});
         return 1;
     };
 
     return @intFromEnum(result);
 }
 
-fn run(allocator: Allocator) !ExitCode {
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    // Skip argv[0] (the program name)
-    const user_args = if (args.len > 1) args[1..] else args[0..0];
+fn run(allocator: Allocator, io: std.Io, raw_args: std.process.Args) !ExitCode {
+    var args_iter = std.process.Args.Iterator.init(raw_args);
+    _ = args_iter.skip(); // skip argv[0]
+    var args_buf: [256][]const u8 = undefined;
+    var args_len: usize = 0;
+    while (args_iter.next()) |arg| {
+        if (args_len >= args_buf.len) break;
+        args_buf[args_len] = arg;
+        args_len += 1;
+    }
+    const user_args = args_buf[0..args_len];
 
     // Parse arguments
     var target_buf: [256][]const u8 = undefined;
@@ -77,11 +75,11 @@ fn run(allocator: Allocator) !ExitCode {
 
     // Commands that need the full module stack (pacman + registry + repo)
     if (parsed.operation.needsFullStack() or (parsed.operation == .clone and parsed.flags.recurse)) {
-        return runWithFullStack(allocator, &aur_client, parsed);
+        return runWithFullStack(allocator, io, &aur_client, parsed);
     }
 
     // Simple commands that only need the AUR client
-    var cmds = commands.Commands.init(allocator, &aur_client, parsed.flags);
+    var cmds = commands.Commands.init(allocator, io, &aur_client, parsed.flags);
 
     return switch (parsed.operation) {
         .info => try commands.query.info(&cmds, parsed.targets),
@@ -308,21 +306,19 @@ fn parseArgs(args: []const []const u8, target_buf: [][]const u8) ParseError!Pars
 /// Separated from run() to keep the initialization/cleanup lifecycle clear.
 fn runWithFullStack(
     allocator: Allocator,
+    io: std.Io,
     aur_client: *aur.Client,
     parsed: ParsedCommand,
 ) !ExitCode {
-    const w = stderrWriter();
-
     // Initialize local repository first (derives repo name from pacman.conf + PKGDEST)
-    var repository = repo_mod.Repository.init(allocator) catch |err| {
+    var repository = repo_mod.Repository.init(allocator, io) catch |err| {
         if (err == error.PkgdestNotSet) {
-            w.writeAll("error: PKGDEST is not set in /etc/makepkg.conf\n") catch {};
+            std.debug.print("error: PKGDEST is not set in /etc/makepkg.conf\n", .{});
         } else if (err == error.RepoNotInPacmanConf) {
-            w.writeAll("error: no pacman.conf repo has a Server = file:// matching PKGDEST\n") catch {};
-            w.writeAll(repo_mod.Repository.configInstructions()) catch {};
-            w.writeByte('\n') catch {};
+            std.debug.print("error: no pacman.conf repo has a Server = file:// matching PKGDEST\n", .{});
+            std.debug.print("{s}\n", .{repo_mod.Repository.configInstructions()});
         } else {
-            w.print("error: failed to initialize repository: {}\n", .{err}) catch {};
+            std.debug.print("error: failed to initialize repository: {}\n", .{err});
         }
         return .general_error;
     };
@@ -330,7 +326,7 @@ fn runWithFullStack(
 
     // Initialize pacman (libalpm) with the derived repo name
     var pm = pacman_mod.Pacman.init(allocator, repository.repo_name) catch |err| {
-        w.print("error: failed to initialize pacman: {}\n", .{err}) catch {};
+        std.debug.print("error: failed to initialize pacman: {}\n", .{err});
         return .general_error;
     };
     defer pm.deinit();
@@ -374,10 +370,10 @@ fn runWithFullStack(
     // Initialize privilege escalation (PACMAN_AUTH → sudo → su)
     var auth = auth_mod.Auth.init(allocator, repository.makepkg_conf.pacman_auth) catch |err| {
         if (err == error.NoAuthMethod) {
-            w.writeAll("error: no privilege escalation method found (sudo/su not on PATH)\n") catch {};
-            w.writeAll("hint: set PACMAN_AUTH in makepkg.conf or install sudo/doas\n") catch {};
+            std.debug.print("error: no privilege escalation method found (sudo/su not on PATH)\n", .{});
+            std.debug.print("hint: set PACMAN_AUTH in makepkg.conf or install sudo/doas\n", .{});
         } else {
-            w.print("error: failed to initialize auth: {}\n", .{err}) catch {};
+            std.debug.print("error: failed to initialize auth: {}\n", .{err});
         }
         return .general_error;
     };
@@ -390,13 +386,14 @@ fn runWithFullStack(
 
     // Get cache root for git operations
     const cache_root = git.defaultCacheRoot(allocator) catch {
-        w.writeAll("error: could not determine cache directory (HOME not set)\n") catch {};
+        std.debug.print("error: could not determine cache directory (HOME not set)\n", .{});
         return .general_error;
     };
     defer allocator.free(cache_root);
 
     var cmds = commands.Commands.initFull(
         allocator,
+        io,
         aur_client,
         &pm,
         &reg,
@@ -420,7 +417,7 @@ fn runWithFullStack(
 }
 
 fn printHelp() void {
-    stdoutWriter().writeAll(
+    commands.getStdout().writeAll(
         \\aurodle — newt your average AUR helper
         \\
         \\Usage: aurodle <command> [options] [targets...]
@@ -470,21 +467,12 @@ fn printHelp() void {
 }
 
 fn printVersion() void {
-    stdoutWriter().writeAll("aurodle " ++ version_string ++ "\n") catch {};
+    commands.getStdout().writeAll("aurodle " ++ version_string ++ "\n") catch {};
 }
 
 fn printUsageError(message: []const u8) void {
-    const w = stderrWriter();
-    w.print("error: {s}\n", .{message}) catch {};
-    w.writeAll("Try 'aurodle --help' for usage information.\n") catch {};
-}
-
-fn stderrWriter() std.fs.File.DeprecatedWriter {
-    return (std.fs.File{ .handle = std.posix.STDERR_FILENO }).deprecatedWriter();
-}
-
-fn stdoutWriter() std.fs.File.DeprecatedWriter {
-    return (std.fs.File{ .handle = std.posix.STDOUT_FILENO }).deprecatedWriter();
+    std.debug.print("error: {s}\n", .{message});
+    std.debug.print("Try 'aurodle --help' for usage information.\n", .{});
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────

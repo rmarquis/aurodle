@@ -433,8 +433,8 @@ test "SortField.fromString returns null for unknown" {
 }
 
 test "outdated returns general_error when pacman not initialized" {
-    var cmds2 = Commands.init(testing.allocator, undefined, .{});
-    cmds2.err_writer = std.io.null_writer.any();
+    var cmds2 = Commands.init(testing.allocator, std.testing.io, undefined, .{});
+    cmds2.err_writer = cmds.null_err_writer;
     cmds2.stderr_color = color.Style.disabled;
     const result = try outdated(&cmds2, &.{});
     try testing.expectEqual(ExitCode.general_error, result);

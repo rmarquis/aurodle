@@ -18,7 +18,7 @@ const FailedBuild = cmds.FailedBuild;
 const DEFAULT_CHROOT_DIR = "/var/lib/aurodle/chroot";
 
 fn chrootDir() []const u8 {
-    return std.posix.getenv("CHROOT_DIR") orelse DEFAULT_CHROOT_DIR;
+    return if (std.c.getenv("CHROOT_DIR")) |p| std.mem.span(p) else DEFAULT_CHROOT_DIR;
 }
 
 /// Ensure a clean chroot exists, creating it with mkarchroot if needed.
@@ -32,7 +32,7 @@ fn ensureChroot(allocator: Allocator, auth: *auth_mod.Auth, err_writer: anytype,
     const root_path = std.fmt.allocPrint(allocator, "{s}/root", .{chroot_path}) catch return false;
     defer allocator.free(root_path);
 
-    std.fs.accessAbsolute(root_path, .{}) catch {
+    std.Io.Dir.accessAbsolute(std.Options.debug_io, root_path, .{}) catch {
         err_writer.print("{s}::{s} creating chroot at {s}...\n", .{ ec.blue, ec.reset, chroot_path }) catch {};
         const exit_code = try auth.runInteractive(
             &.{ "mkarchroot", root_path, "base-devel" },
@@ -55,12 +55,12 @@ fn allPackagesBuilt(allocator: Allocator, clone_dir: []const u8) !bool {
 
     if (result.exit_code != 0) return false;
 
-    var lines = std.mem.splitScalar(u8, std.mem.trimRight(u8, result.stdout, "\n"), '\n');
+    var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, result.stdout, "\n"), '\n');
     var found_any = false;
     while (lines.next()) |line| {
         if (line.len == 0) continue;
         found_any = true;
-        std.fs.accessAbsolute(line, .{}) catch return false;
+        std.Io.Dir.accessAbsolute(std.Options.debug_io, line, .{}) catch return false;
     }
     return found_any;
 }
@@ -82,10 +82,10 @@ fn collectBuiltPackagePaths(allocator: Allocator, clone_dir: []const u8) !?[]con
         paths.deinit(allocator);
     }
 
-    var lines = std.mem.splitScalar(u8, std.mem.trimRight(u8, result.stdout, "\n"), '\n');
+    var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, result.stdout, "\n"), '\n');
     while (lines.next()) |line| {
         if (line.len == 0) continue;
-        std.fs.accessAbsolute(line, .{}) catch continue;
+        std.Io.Dir.accessAbsolute(std.Options.debug_io, line, .{}) catch continue;
         try paths.append(allocator, try allocator.dupe(u8, line));
     }
 

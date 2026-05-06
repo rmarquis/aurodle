@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const color_mod = @import("../color.zig");
+const commands = @import("../commands.zig");
 
 const MONITOR_URL = "https://status.archlinux.org/api/getMonitorList/vmM5ruWEAB";
 const MAX_RESPONSE_SIZE = 512 * 1024;
@@ -49,7 +50,7 @@ const MonitorList = struct {
 };
 
 pub fn run(allocator: Allocator, sty: color_mod.Style) !u8 {
-    var http_client = std.http.Client{ .allocator = allocator };
+    var http_client = std.http.Client{ .allocator = allocator, .io = std.Options.debug_io };
     defer http_client.deinit();
 
     var aw: std.Io.Writer.Allocating = .init(allocator);
@@ -87,8 +88,7 @@ pub fn run(allocator: Allocator, sty: color_mod.Style) !u8 {
 }
 
 fn writeError(msg: []const u8) void {
-    const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
-    stderr.writeAll(msg) catch {};
+    std.debug.print("{s}", .{msg});
 }
 
 fn ratioColor(sty: color_mod.Style, val: f64) []const u8 {
@@ -104,8 +104,7 @@ fn monitorColor(sty: color_mod.Style, monitor: Monitor) []const u8 {
 }
 
 fn printStatus(data: MonitorList, sty: color_mod.Style) !u8 {
-    const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
-    const w = stdout.deprecatedWriter();
+    const w = commands.getStdout();
 
     var aur: ?Monitor = null;
     var others_buf: [16]Monitor = undefined;

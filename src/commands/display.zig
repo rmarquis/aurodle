@@ -65,7 +65,7 @@ const ColWidths = struct {
 
 // ── Public API ───────────────────────────────────────────────────────
 
-pub fn displayPlan(plan: plan_mod.BuildPlan, repo_deps_full: []const []const u8, pm: ?*pacman_mod.Pacman, removals: []const []const u8, err_writer: std.io.AnyWriter, c: color.Style, ec: color.Style, hint: *const std.StringHashMapUnmanaged([]const u8)) void {
+pub fn displayPlan(plan: plan_mod.BuildPlan, repo_deps_full: []const []const u8, pm: ?*pacman_mod.Pacman, removals: []const []const u8, err_writer: cmds.ErrWriter, c: color.Style, ec: color.Style, hint: *const std.StringHashMapUnmanaged([]const u8)) void {
     const stdout = getStdout();
     const verbose = if (pm) |p| p.verbose_pkg_lists else false;
 
@@ -183,7 +183,7 @@ pub fn displayPlan(plan: plan_mod.BuildPlan, repo_deps_full: []const []const u8,
 
 /// Display an install-only package list (all packages from sync dbs),
 /// respecting VerbosePkgLists from pacman.conf.
-pub fn displayInstallList(names: []const []const u8, pm: ?*pacman_mod.Pacman, err_writer: std.io.AnyWriter, c: color.Style, ec: color.Style) void {
+pub fn displayInstallList(names: []const []const u8, pm: ?*pacman_mod.Pacman, err_writer: cmds.ErrWriter, c: color.Style, ec: color.Style) void {
     if (names.len == 0) return;
     const stdout = getStdout();
     const verbose = if (pm) |p| p.verbose_pkg_lists else false;

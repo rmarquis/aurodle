@@ -23,9 +23,9 @@ pub fn topoSort(allocator: Allocator, graph: *DepGraph) ![][]const u8 {
     // Build reverse edges (dependency → dependents) and in-degrees.
     // Forward edges point dependent → dependency; we invert them
     // so Kahn's BFS can efficiently find who to unblock.
-    var in_degree = std.StringHashMapUnmanaged(u32){};
+    var in_degree: std.StringHashMapUnmanaged(u32) = .empty;
     defer in_degree.deinit(allocator);
-    var reverse = std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)){};
+    var reverse: std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)) = .empty;
     defer {
         var it = reverse.valueIterator();
         while (it.next()) |list| list.deinit(allocator);

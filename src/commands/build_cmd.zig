@@ -473,7 +473,7 @@ pub fn clean(self: *Commands) !ExitCode {
     return .success;
 }
 
-fn printBuildSummary(result: BuildResult, err_writer: std.io.AnyWriter, ec: color.Style) void {
+fn printBuildSummary(result: BuildResult, err_writer: cmds.ErrWriter, ec: color.Style) void {
     err_writer.print("\n{s}::{s} Build summary: {d} succeeded, {d} failed\n", .{
         ec.blue, ec.reset, result.succeeded.len, result.failed.len,
     }) catch {};
@@ -545,16 +545,16 @@ test "anySubsequentEntryNeeds returns false when no future entry depends on pkgb
 }
 
 test "upgrade returns general_error when pacman not initialized" {
-    var cmd = Commands.init(testing.allocator, undefined, .{});
-    cmd.err_writer = std.io.null_writer.any();
+    var cmd = Commands.init(testing.allocator, std.testing.io, undefined, .{});
+    cmd.err_writer = cmds.null_err_writer;
     cmd.stderr_color = color.Style.disabled;
     const result = try upgrade(&cmd, &.{});
     try testing.expectEqual(ExitCode.general_error, result);
 }
 
 test "clean returns general_error when pacman not initialized" {
-    var cmd = Commands.init(testing.allocator, undefined, .{});
-    cmd.err_writer = std.io.null_writer.any();
+    var cmd = Commands.init(testing.allocator, std.testing.io, undefined, .{});
+    cmd.err_writer = cmds.null_err_writer;
     cmd.stderr_color = color.Style.disabled;
     const result = try clean(&cmd);
     try testing.expectEqual(ExitCode.general_error, result);

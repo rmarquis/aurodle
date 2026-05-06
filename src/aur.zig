@@ -151,7 +151,7 @@ pub const Client = struct {
         return .{
             .allocator = allocator,
             .arena = std.heap.ArenaAllocator.init(allocator),
-            .http_client = .{ .allocator = allocator },
+            .http_client = .{ .allocator = allocator, .io = std.Options.debug_io },
             .cache = .empty,
         };
     }

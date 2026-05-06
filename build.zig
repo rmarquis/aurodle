@@ -4,7 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const git_version = std.mem.trimRight(u8, b.run(&.{
+    const git_version = std.mem.trimEnd(u8, b.run(&.{
         "sh", "-c",
         "printf 'r%s.%s' \"$(git rev-list --count HEAD)\" \"$(git rev-parse --short HEAD)\"",
     }), "\n");

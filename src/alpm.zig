@@ -282,7 +282,7 @@ const CStringBuf = struct {
 // pacman database on an Arch Linux system.
 
 fn isArchLinux() bool {
-    std.fs.accessAbsolute("/var/lib/pacman/local", .{}) catch return false;
+    std.Io.Dir.accessAbsolute(std.Options.debug_io, "/var/lib/pacman/local", .{}) catch return false;
     return true;
 }
 

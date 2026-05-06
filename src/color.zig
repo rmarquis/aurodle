@@ -38,11 +38,11 @@ pub const Style = struct {
     /// Respects NO_COLOR env var and TERM=dumb.
     pub fn detect(fd: std.posix.fd_t, pacman_color: bool) Style {
         if (!pacman_color) return disabled;
-        if (std.posix.getenv("NO_COLOR")) |_| return disabled;
-        if (std.posix.getenv("TERM")) |term| {
-            if (std.mem.eql(u8, term, "dumb")) return disabled;
+        if (std.c.getenv("NO_COLOR") != null) return disabled;
+        if (std.c.getenv("TERM")) |ptr| {
+            if (std.mem.eql(u8, std.mem.span(ptr), "dumb")) return disabled;
         }
-        return if (std.posix.isatty(fd)) enabled else disabled;
+        return if (std.c.isatty(fd) != 0) enabled else disabled;
     }
 };
 

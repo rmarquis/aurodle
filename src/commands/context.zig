@@ -109,6 +109,17 @@ pub const OutdatedList = struct {
 
 // ── Commands Struct ──────────────────────────────────────────────────
 
+pub const ErrWriter = struct {
+    discard: bool = false,
+
+    pub fn print(self: ErrWriter, comptime fmt: []const u8, args: anytype) error{WriteFailed}!void {
+        if (self.discard) return;
+        std.debug.print(fmt, args);
+    }
+};
+
+// ── Commands Struct ──────────────────────────────────────────────────
+
 pub const Commands = struct {
     allocator: Allocator,
     aur_client: *aur.Client,
@@ -118,13 +129,14 @@ pub const Commands = struct {
     auth: ?*auth_mod.Auth,
     cache_root: ?[]const u8,
     flags: Flags,
-    err_writer: std.io.AnyWriter,
+    err_writer: ErrWriter,
+    io: std.Io,
     stdout_color: color.Style,
     stderr_color: color.Style,
     /// Populated by --devel upgrade check; used by displayPlan to show real versions.
     devel_version_hint: std.StringHashMapUnmanaged([]const u8) = .empty,
 
-    pub fn init(allocator: Allocator, aur_client: *aur.Client, flags: Flags) Commands {
+    pub fn init(allocator: Allocator, io: std.Io, aur_client: *aur.Client, flags: Flags) Commands {
         var c = Commands{
             .allocator = allocator,
             .aur_client = aur_client,
@@ -135,6 +147,7 @@ pub const Commands = struct {
             .cache_root = null,
             .flags = flags,
             .err_writer = defaultErrWriter(),
+            .io = io,
             .stdout_color = color.Style.detect(std.posix.STDOUT_FILENO, true),
             .stderr_color = color.Style.detect(std.posix.STDERR_FILENO, true),
         };
@@ -144,6 +157,7 @@ pub const Commands = struct {
 
     pub fn initFull(
         allocator: Allocator,
+        io: std.Io,
         aur_client: *aur.Client,
         pm: *pacman_mod.Pacman,
         reg: *registry_mod.PackageRegistry,
@@ -163,6 +177,7 @@ pub const Commands = struct {
             .cache_root = cache_root,
             .flags = flags,
             .err_writer = defaultErrWriter(),
+            .io = io,
             .stdout_color = color.Style.detect(std.posix.STDOUT_FILENO, use_color),
             .stderr_color = color.Style.detect(std.posix.STDERR_FILENO, use_color),
         };
@@ -210,7 +225,7 @@ pub const Commands = struct {
 
 // ── Shared Helpers (used by sub-modules) ─────────────────────────────
 
-pub fn handleResolveError(err: anyerror, err_writer: std.io.AnyWriter, ec: color.Style) ExitCode {
+pub fn handleResolveError(err: anyerror, err_writer: ErrWriter, ec: color.Style) ExitCode {
     if (err == error.CircularDependency) {
         err_writer.print("{s}error:{s} circular dependency detected\n", .{ ec.red, ec.reset }) catch {};
     } else if (err == error.UnresolvableDependency) {
@@ -223,7 +238,7 @@ pub fn handleResolveError(err: anyerror, err_writer: std.io.AnyWriter, ec: color
     return .general_error;
 }
 
-pub fn printError(err: anytype, err_writer: std.io.AnyWriter, ec: color.Style) !void {
+pub fn printError(err: anytype, err_writer: ErrWriter, ec: color.Style) !void {
     switch (err) {
         error.NetworkError => try err_writer.print("{s}error:{s} failed to connect to AUR\n", .{ ec.red, ec.reset }),
         error.RateLimited => try err_writer.print("{s}error:{s} AUR rate limit exceeded. Wait and retry.\n", .{ ec.red, ec.reset }),
@@ -233,29 +248,44 @@ pub fn printError(err: anytype, err_writer: std.io.AnyWriter, ec: color.Style) !
     }
 }
 
-/// Module-level stderr DeprecatedWriter — lives at static address so the
-/// AnyWriter returned by .any() holds a valid pointer for the entire
-/// process lifetime.  (Constructing a DeprecatedWriter on the stack and
-/// calling .any() returns a dangling pointer once the frame is gone.)
-const stderr_writer_static: std.fs.File.DeprecatedWriter = blk: {
-    const f: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
-    break :blk f.deprecatedWriter();
-};
-
-pub fn defaultErrWriter() std.io.AnyWriter {
-    return stderr_writer_static.any();
+pub fn defaultErrWriter() ErrWriter {
+    return .{};
 }
+
+pub const null_err_writer: ErrWriter = .{ .discard = true };
 
 // ── I/O Helpers ──────────────────────────────────────────────────────
 
-pub const StdWriter = @TypeOf(blk: {
-    const f: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
-    break :blk f.deprecatedWriter();
-});
+pub const StdWriter = struct {
+    pub fn print(self: StdWriter, comptime fmt: []const u8, args: anytype) error{WriteFailed}!void {
+        _ = self;
+        var buf: [8192]u8 = undefined;
+        const s = std.fmt.bufPrint(&buf, fmt, args) catch return error.WriteFailed;
+        _ = std.os.linux.write(std.posix.STDOUT_FILENO, s.ptr, s.len);
+    }
+
+    pub fn writeAll(self: StdWriter, bytes: []const u8) error{WriteFailed}!void {
+        _ = self;
+        if (bytes.len == 0) return;
+        _ = std.os.linux.write(std.posix.STDOUT_FILENO, bytes.ptr, bytes.len);
+    }
+
+    pub fn writeByte(self: StdWriter, byte: u8) error{WriteFailed}!void {
+        _ = self;
+        _ = std.os.linux.write(std.posix.STDOUT_FILENO, &.{byte}, 1);
+    }
+
+    pub fn writeByteNTimes(self: StdWriter, byte: u8, n: usize) error{WriteFailed}!void {
+        _ = self;
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            _ = std.os.linux.write(std.posix.STDOUT_FILENO, &.{byte}, 1);
+        }
+    }
+};
 
 pub fn getStdout() StdWriter {
-    const f: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
-    return f.deprecatedWriter();
+    return .{};
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -267,16 +297,16 @@ test {
 const testing = std.testing;
 
 test "handleResolveError returns general_error for CircularDependency" {
-    const result = handleResolveError(error.CircularDependency, std.io.null_writer.any(), color.Style.disabled);
+    const result = handleResolveError(error.CircularDependency, null_err_writer, color.Style.disabled);
     try testing.expectEqual(ExitCode.general_error, result);
 }
 
 test "handleResolveError returns general_error for UnresolvableDependency" {
-    const result = handleResolveError(error.UnresolvableDependency, std.io.null_writer.any(), color.Style.disabled);
+    const result = handleResolveError(error.UnresolvableDependency, null_err_writer, color.Style.disabled);
     try testing.expectEqual(ExitCode.general_error, result);
 }
 
 test "handleResolveError returns general_error for other errors" {
-    const result = handleResolveError(error.OutOfMemory, std.io.null_writer.any(), color.Style.disabled);
+    const result = handleResolveError(error.OutOfMemory, null_err_writer, color.Style.disabled);
     try testing.expectEqual(ExitCode.general_error, result);
 }

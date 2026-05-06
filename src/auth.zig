@@ -236,7 +236,7 @@ fn keepaliveLoop(auth: *Auth, argv: []const []const u8) void {
         auth.refreshSilent(argv);
         for (0..keepalive_interval_secs) |_| {
             if (auth.stop_keepalive.load(.acquire)) return;
-            std.Thread.sleep(std.time.ns_per_s);
+            std.Io.sleep(std.Options.debug_io, std.Io.Duration.fromSeconds(1), .real) catch {};
         }
     }
 }

@@ -170,7 +170,7 @@ pub fn purgePacmanCache(self: *Commands, basenames: []const []const u8) void {
     for (basenames) |basename| {
         const cache_path = std.fmt.allocPrint(self.allocator, "/var/cache/pacman/pkg/{s}", .{basename}) catch continue;
         defer self.allocator.free(cache_path);
-        std.fs.accessAbsolute(cache_path, .{}) catch continue;
+        std.Io.Dir.accessAbsolute(std.Options.debug_io, cache_path, .{}) catch continue;
         const result = self.auth.?.runCaptured(&.{ "rm", "-f", cache_path }) catch continue;
         result.deinit(self.allocator);
     }

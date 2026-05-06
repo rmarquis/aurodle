@@ -22,8 +22,8 @@ pub const ProcessResult = struct {
 
 fn termToExitCode(term: std.process.Child.Term) u8 {
     return switch (term) {
-        .Exited => |code| code,
-        .Signal => |sig| @truncate(128 +| @as(u16, @intCast(sig))),
+        .exited => |code| code,
+        .signal => |sig| @truncate(128 +| @as(u16, @intCast(@intFromEnum(sig)))),
         else => 1,
     };
 }
@@ -47,11 +47,10 @@ pub fn runCommandIn(
 ) !ProcessResult {
     if (argv.len == 0) return error.SpawnFailed;
 
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const io = if (@import("builtin").is_test) std.testing.io else std.Options.debug_io;
+    const result = try std.process.run(allocator, io, .{
         .argv = argv,
-        .cwd = cwd,
-        .max_output_bytes = MAX_OUTPUT,
+        .cwd = if (cwd) |p| .{ .path = p } else .inherit,
     });
 
     return .{
@@ -70,11 +69,14 @@ pub fn runInteractive(
     cwd: ?[]const u8,
 ) !u8 {
     if (argv.len == 0) return error.SpawnFailed;
+    _ = allocator;
 
-    var child = std.process.Child.init(argv, allocator);
-    child.cwd = cwd;
-    try child.spawn();
-    const term = try child.wait();
+    const io = if (@import("builtin").is_test) std.testing.io else std.Options.debug_io;
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .cwd = if (cwd) |p| .{ .path = p } else .inherit,
+    });
+    const term = try child.wait(io);
     return termToExitCode(term);
 }
 
@@ -87,13 +89,13 @@ pub fn promptYesNo(message: []const u8) !bool {
 }
 
 pub fn promptYesNoStyled(c: color.Style, message: []const u8) !bool {
-    const stdin = getTerminalStdin() orelse return false;
-    const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
-    const w = stdout.deprecatedWriter();
-    try w.print("{s}::{s} {s} [Y/n] ", .{ c.blue, c.reset, message });
+    if (!isTerminalFd(std.posix.STDIN_FILENO)) return false;
+    var prompt_buf: [256]u8 = undefined;
+    const prompt = std.fmt.bufPrint(&prompt_buf, "{s}::{s} {s} [Y/n] ", .{ c.blue, c.reset, message }) catch "";
+    _ = std.os.linux.write(std.posix.STDOUT_FILENO, prompt.ptr, prompt.len);
 
     var buf: [16]u8 = undefined;
-    const n = stdin.read(&buf) catch return true;
+    const n = std.posix.read(std.posix.STDIN_FILENO, &buf) catch return true;
     if (n == 0) return true;
 
     const response = std.mem.trim(u8, buf[0..n], " \t\n\r");
@@ -101,22 +103,20 @@ pub fn promptYesNoStyled(c: color.Style, message: []const u8) !bool {
     return response[0] != 'n' and response[0] != 'N';
 }
 
-/// Return stdin as a File if it's a terminal, null otherwise.
-fn getTerminalStdin() ?std.fs.File {
-    const stdin: std.fs.File = .{ .handle = std.posix.STDIN_FILENO };
-    if (!std.posix.isatty(stdin.handle)) return null;
-    return stdin;
+fn isTerminalFd(fd: std.posix.fd_t) bool {
+    return std.c.isatty(fd) != 0;
 }
 
 /// Check if a binary exists on PATH.
 pub fn findOnPath(name: []const u8) bool {
-    const path_env = std.posix.getenv("PATH") orelse return false;
+    const path_ptr = std.c.getenv("PATH") orelse return false;
+    const path_env = std.mem.span(path_ptr);
     var iter = std.mem.tokenizeScalar(u8, path_env, ':');
     while (iter.next()) |dir| {
         // Use a stack buffer to avoid allocation.
-        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         const full = std.fmt.bufPrint(&buf, "{s}/{s}", .{ dir, name }) catch continue;
-        std.fs.accessAbsolute(full, .{}) catch continue;
+        std.Io.Dir.accessAbsolute(std.Options.debug_io, full, .{}) catch continue;
         return true;
     }
     return false;
@@ -139,10 +139,8 @@ pub fn promptProviderChoice(
     candidates: []const provider_mod.ProviderCandidate,
     c: color.Style,
 ) ?usize {
-    const stdin = getTerminalStdin() orelse return 0;
-    const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
-    const w = stderr.deprecatedWriter();
-    w.print("{s}::{s} There are {d} providers available for {s}:\n", .{ c.blue, c.reset, candidates.len, dep_name }) catch {};
+    if (!isTerminalFd(std.posix.STDIN_FILENO)) return 0;
+    std.debug.print("{s}::{s} There are {d} providers available for {s}:\n", .{ c.blue, c.reset, candidates.len, dep_name });
 
     // Group by db_name and display
     var num: usize = 1;
@@ -150,32 +148,32 @@ pub fn promptProviderChoice(
     for (candidates) |cand| {
         if (!std.mem.eql(u8, cand.db_name, current_db)) {
             current_db = cand.db_name;
-            w.print("{s}::{s} Repository {s}\n   ", .{ c.blue, c.reset, current_db }) catch {};
+            std.debug.print("{s}::{s} Repository {s}\n   ", .{ c.blue, c.reset, current_db });
         }
-        w.print(" {d}) {s}", .{ num, cand.name }) catch {};
+        std.debug.print(" {d}) {s}", .{ num, cand.name });
         num += 1;
     }
-    w.writeByte('\n') catch {};
+    std.debug.print("\n", .{});
 
     // Prompt loop
     while (true) {
-        w.print("\nEnter a number (default=1): ", .{}) catch {};
+        std.debug.print("\nEnter a number (default=1): ", .{});
 
         var buf: [32]u8 = undefined;
-        const n = stdin.read(&buf) catch return 0;
+        const n = std.posix.read(std.posix.STDIN_FILENO, &buf) catch return 0;
         if (n == 0) return 0;
 
         const response = std.mem.trim(u8, buf[0..n], " \t\n\r");
         if (response.len == 0) return 0; // default
 
         const choice = std.fmt.parseInt(usize, response, 10) catch {
-            w.writeAll(":: Invalid number, try again.") catch {};
+            std.debug.print(":: Invalid number, try again.", .{});
             continue;
         };
         if (choice >= 1 and choice <= candidates.len) {
             return choice - 1;
         }
-        w.writeAll(":: Invalid number, try again.") catch {};
+        std.debug.print(":: Invalid number, try again.", .{});
     }
 }
 
@@ -186,7 +184,7 @@ pub fn expandHome(allocator: Allocator, path: []const u8) ![]u8 {
     if (path.len == 0) return try allocator.dupe(u8, path);
 
     if (path[0] == '~') {
-        const home = std.posix.getenv("HOME") orelse return error.NoHomeDirectory;
+        const home = if (std.c.getenv("HOME")) |p| std.mem.span(p) else return error.NoHomeDirectory;
         if (path.len == 1) {
             return try allocator.dupe(u8, home);
         }
@@ -200,7 +198,7 @@ pub fn expandHome(allocator: Allocator, path: []const u8) ![]u8 {
 
 /// Check if a path exists and is a directory.
 pub fn dirExists(path: []const u8) bool {
-    const stat = std.fs.cwd().statFile(path) catch return false;
+    const stat = std.Io.Dir.statFile(std.Io.Dir.cwd(), std.Options.debug_io, path, .{}) catch return false;
     return stat.kind == .directory;
 }
 
@@ -269,7 +267,7 @@ test "expandHome replaces tilde with HOME" {
     const result = try expandHome(std.testing.allocator, "~/foo/bar");
     defer std.testing.allocator.free(result);
 
-    const home = std.posix.getenv("HOME").?;
+    const home = std.mem.span(std.c.getenv("HOME").?);
     const expected = try std.fmt.allocPrint(std.testing.allocator, "{s}/foo/bar", .{home});
     defer std.testing.allocator.free(expected);
 
@@ -287,7 +285,7 @@ test "expandHome handles bare tilde" {
     const result = try expandHome(std.testing.allocator, "~");
     defer std.testing.allocator.free(result);
 
-    const home = std.posix.getenv("HOME").?;
+    const home = std.mem.span(std.c.getenv("HOME").?);
     try std.testing.expectEqualStrings(home, result);
 }
 

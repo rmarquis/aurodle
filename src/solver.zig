@@ -336,7 +336,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
             defer seen_pkgbase.deinit(alloc);
 
             // Temporary per-entry target name collectors
-            var target_lists = std.ArrayListUnmanaged(std.ArrayListUnmanaged([]const u8)){};
+            var target_lists: std.ArrayListUnmanaged(std.ArrayListUnmanaged([]const u8)) = .empty;
             defer target_lists.deinit(alloc);
 
             // Build order: AUR packages, deduplicated by pkgbase

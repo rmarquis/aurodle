@@ -406,7 +406,7 @@ pub const Pacman = struct {
         var result = std.StringArrayHashMapUnmanaged(void){};
         defer result.deinit(allocator);
 
-        var queue = std.ArrayListUnmanaged([]const u8){};
+        var queue: std.ArrayListUnmanaged([]const u8) = .empty;
         defer queue.deinit(allocator);
 
         var seen = std.StringHashMapUnmanaged(void){};
@@ -683,14 +683,10 @@ fn registerSyncDbs(allocator: Allocator, handle: alpm.Handle) !PacmanConf {
     var dbs: std.ArrayList(alpm.Database) = .empty;
     defer dbs.deinit(allocator);
 
-    const conf = std.fs.openFileAbsolute("/etc/pacman.conf", .{}) catch
-        return error.PacmanConfNotFound;
-    defer conf.close();
-
     // pacman.conf is small — read entire file
     var buf: [64 * 1024]u8 = undefined;
-    const len = conf.readAll(&buf) catch return error.PacmanConfNotFound;
-    const content = buf[0..len];
+    const content = std.Io.Dir.readFile(std.Io.Dir.cwd(), std.Options.debug_io, "/etc/pacman.conf", &buf) catch
+        return error.PacmanConfNotFound;
 
     var current_repo: ?alpm.Database = null;
     var in_options = false;
@@ -756,12 +752,8 @@ fn registerSyncDbs(allocator: Allocator, handle: alpm.Handle) !PacmanConf {
 
 /// Read a mirrorlist file and add each Server= URL to the database.
 fn addServersFromMirrorlist(db: alpm.Database, path: []const u8) void {
-    const file = std.fs.openFileAbsolute(path, .{}) catch return;
-    defer file.close();
-
     var buf: [256 * 1024]u8 = undefined;
-    const len = file.readAll(&buf) catch return;
-    const content = buf[0..len];
+    const content = std.Io.Dir.readFile(std.Io.Dir.cwd(), std.Options.debug_io, path, &buf) catch return;
 
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {
@@ -778,7 +770,7 @@ fn addServersFromMirrorlist(db: alpm.Database, path: []const u8) void {
 // ── Tests ────────────────────────────────────────────────────────────────
 
 fn isArchLinux() bool {
-    std.fs.accessAbsolute("/var/lib/pacman/local", .{}) catch return false;
+    std.Io.Dir.accessAbsolute(std.Options.debug_io, "/var/lib/pacman/local", .{}) catch return false;
     return true;
 }
 

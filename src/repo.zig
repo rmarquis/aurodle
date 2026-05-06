@@ -38,6 +38,7 @@ pub const MakepkgConfig = struct {
 
 pub const Repository = struct {
     allocator: Allocator,
+    io: std.Io,
     repo_name: []const u8,
     repo_dir: []const u8,
     db_path: []const u8,
@@ -51,8 +52,8 @@ pub const Repository = struct {
     /// - cache_dir: ~/.cache/aurodle (user-owned clones and logs)
     /// - repo_name: derived from pacman.conf by matching PKGDEST to a Server directive
     /// Parses makepkg.conf for PKGDEST and PKGEXT.
-    pub fn init(allocator: Allocator) !Repository {
-        const home = std.posix.getenv("HOME") orelse return error.NoHomeDirectory;
+    pub fn init(allocator: Allocator, io: std.Io) !Repository {
+        const home = if (std.c.getenv("HOME")) |p| std.mem.span(p) else return error.NoHomeDirectory;
         const cache_dir = try std.fs.path.join(allocator, &.{ home, ".cache/aurodle" });
         errdefer allocator.free(cache_dir);
 
@@ -66,22 +67,22 @@ pub const Repository = struct {
         const derived_name = try deriveRepoNameFromPacmanConf(allocator, repo_dir) orelse
             return error.RepoNotInPacmanConf;
 
-        return initFromParts(allocator, cache_dir, repo_dir, conf, derived_name);
+        return initFromParts(allocator, io, cache_dir, repo_dir, conf, derived_name);
     }
 
     /// Create a Repository with an explicit cache root (for testing).
     /// Both repo_dir and cache_dir are under cache_root.
     /// Does NOT parse system makepkg.conf.
-    pub fn initWithRoot(allocator: Allocator, cache_root: []const u8) !Repository {
+    pub fn initWithRoot(allocator: Allocator, io: std.Io, cache_root: []const u8) !Repository {
         const cache_dir = try allocator.dupe(u8, cache_root);
         errdefer allocator.free(cache_dir);
 
         const repo_dir = try std.fs.path.join(allocator, &.{ cache_root, DEFAULT_REPO_NAME });
 
-        return initFromParts(allocator, cache_dir, repo_dir, .{}, null);
+        return initFromParts(allocator, io, cache_dir, repo_dir, .{}, null);
     }
 
-    fn initFromParts(allocator: Allocator, cache_dir: []const u8, repo_dir: []const u8, conf: MakepkgConfig, derived_name: ?[]const u8) !Repository {
+    fn initFromParts(allocator: Allocator, io: std.Io, cache_dir: []const u8, repo_dir: []const u8, conf: MakepkgConfig, derived_name: ?[]const u8) !Repository {
         const repo_name = derived_name orelse DEFAULT_REPO_NAME;
         const owns_name = derived_name != null;
 
@@ -90,6 +91,7 @@ pub const Repository = struct {
 
         return .{
             .allocator = allocator,
+            .io = io,
             .repo_name = repo_name,
             .cache_dir = cache_dir,
             .repo_dir = repo_dir,
@@ -113,7 +115,7 @@ pub const Repository = struct {
     /// Create repository and log directories if they don't exist.
     /// Idempotent — safe to call multiple times.
     pub fn ensureExists(self: *const Repository) !void {
-        try std.fs.cwd().makePath(self.repo_dir);
+        try std.Io.Dir.createDirPath(std.Io.Dir.cwd(), self.io, self.repo_dir);
     }
 
     // ── Package Addition ─────────────────────────────────────────────────
@@ -169,14 +171,14 @@ pub const Repository = struct {
             results.deinit(self.allocator);
         }
 
-        var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| switch (err) {
+        var dir = std.Io.Dir.openDir(std.Io.Dir.cwd(), self.io, dir_path, .{ .iterate = true }) catch |err| switch (err) {
             error.FileNotFound => return results.toOwnedSlice(self.allocator),
             else => return err,
         };
-        defer dir.close();
+        defer dir.close(self.io);
 
         var it = dir.iterate();
-        while (try it.next()) |entry| {
+        while (try it.next(self.io)) |entry| {
             if (entry.kind != .file) continue;
             if (std.mem.endsWith(u8, entry.name, self.makepkg_conf.pkgext)) {
                 const full_path = try std.fs.path.join(self.allocator, &.{ dir_path, entry.name });
@@ -206,8 +208,7 @@ pub const Repository = struct {
 
         if (!result.success()) {
             if (result.stderr.len > 0) {
-                const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
-                stderr.deprecatedWriter().print("{s}", .{result.stderr}) catch {};
+                std.debug.print("{s}", .{result.stderr});
             }
             return error.RepoAddFailed;
         }
@@ -227,14 +228,14 @@ pub const Repository = struct {
             packages.deinit(self.allocator);
         }
 
-        var dir = std.fs.cwd().openDir(self.repo_dir, .{ .iterate = true }) catch |err| switch (err) {
+        var dir = std.Io.Dir.openDir(std.Io.Dir.cwd(), self.io, self.repo_dir, .{ .iterate = true }) catch |err| switch (err) {
             error.FileNotFound => return packages.toOwnedSlice(self.allocator),
             else => return err,
         };
-        defer dir.close();
+        defer dir.close(self.io);
 
         var it = dir.iterate();
-        while (try it.next()) |entry| {
+        while (try it.next(self.io)) |entry| {
             if (entry.kind != .file) continue;
             // Skip non-package files
             if (std.mem.indexOf(u8, entry.name, ".pkg.tar.") == null) continue;
@@ -257,10 +258,10 @@ pub const Repository = struct {
     /// exists in the repository directory.  Used to skip VCS rebuilds when the
     /// devel-computed version matches what is already in the local repo.
     pub fn hasPackageVersion(self: *const Repository, name: []const u8, version: []const u8) bool {
-        var dir = std.fs.cwd().openDir(self.repo_dir, .{ .iterate = true }) catch return false;
-        defer dir.close();
+        var dir = std.Io.Dir.openDir(std.Io.Dir.cwd(), self.io, self.repo_dir, .{ .iterate = true }) catch return false;
+        defer dir.close(self.io);
         var it = dir.iterate();
-        while (it.next() catch return false) |entry| {
+        while (it.next(self.io) catch return false) |entry| {
             if (entry.kind != .file) continue;
             if (std.mem.indexOf(u8, entry.name, ".pkg.tar.") == null) continue;
             if (self.isDbFile(entry.name)) continue;
@@ -328,12 +329,12 @@ pub const Repository = struct {
             clones.deinit(self.allocator);
         }
 
-        if (std.fs.cwd().openDir(self.cache_dir, .{ .iterate = true })) |dir_handle| {
+        if (std.Io.Dir.openDir(std.Io.Dir.cwd(), self.io, self.cache_dir, .{ .iterate = true })) |dir_handle| {
             var cache = dir_handle;
-            defer cache.close();
+            defer cache.close(self.io);
 
             var it = cache.iterate();
-            while (try it.next()) |entry| {
+            while (try it.next(self.io)) |entry| {
                 if (entry.kind != .directory) continue;
                 if (std.mem.eql(u8, entry.name, self.repo_name)) continue;
                 if (filter) |f| {
@@ -349,12 +350,12 @@ pub const Repository = struct {
             packages.deinit(self.allocator);
         }
 
-        if (std.fs.cwd().openDir(self.repo_dir, .{ .iterate = true })) |dir_handle| {
+        if (std.Io.Dir.openDir(std.Io.Dir.cwd(), self.io, self.repo_dir, .{ .iterate = true })) |dir_handle| {
             var repo_dir = dir_handle;
-            defer repo_dir.close();
+            defer repo_dir.close(self.io);
 
             var it = repo_dir.iterate();
-            while (try it.next()) |entry| {
+            while (try it.next(self.io)) |entry| {
                 if (entry.kind != .file) continue;
                 if (std.mem.indexOf(u8, entry.name, ".pkg.tar.") == null) continue;
                 if (self.isDbFile(entry.name)) continue;
@@ -379,7 +380,7 @@ pub const Repository = struct {
         for (plan.removed_clones) |name| {
             const path = std.fs.path.join(self.allocator, &.{ self.cache_dir, name }) catch continue;
             defer self.allocator.free(path);
-            std.fs.cwd().deleteTree(path) catch {};
+            std.Io.Dir.deleteTree(std.Io.Dir.cwd(), self.io, path) catch {};
         }
 
         // Remove stale package files and their database entries
@@ -392,7 +393,7 @@ pub const Repository = struct {
                 // Delete the package file from disk
                 const path = std.fs.path.join(self.allocator, &.{ self.repo_dir, filename }) catch continue;
                 defer self.allocator.free(path);
-                std.fs.cwd().deleteFile(path) catch {};
+                std.Io.Dir.deleteFile(std.Io.Dir.cwd(), self.io, path) catch {};
 
                 // Collect the package name for repo-remove
                 if (parsePackageFilename(filename)) |parsed| {
@@ -479,13 +480,9 @@ pub fn isConfiguredFromPath(path: []const u8) bool {
 
 /// Check if [name] is configured in a pacman.conf file.
 fn isConfiguredFromPathWithName(path: []const u8, name: []const u8) bool {
-    const file = std.fs.cwd().openFile(path, .{}) catch return false;
-    defer file.close();
-
     // pacman.conf is small — read entire file
     var buf: [64 * 1024]u8 = undefined;
-    const len = file.readAll(&buf) catch return false;
-    const content = buf[0..len];
+    const content = std.Io.Dir.readFile(std.Io.Dir.cwd(), std.Options.debug_io, path, &buf) catch return false;
 
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {
@@ -506,12 +503,8 @@ fn isConfiguredFromPathWithName(path: []const u8, name: []const u8) bool {
 ///
 /// This returns "mypkgs".
 fn deriveRepoNameFromPacmanConf(allocator: Allocator, pkgdest: []const u8) !?[]const u8 {
-    const file = std.fs.cwd().openFile("/etc/pacman.conf", .{}) catch return null;
-    defer file.close();
-
     var buf: [64 * 1024]u8 = undefined;
-    const len = file.readAll(&buf) catch return null;
-    const content = buf[0..len];
+    const content = std.Io.Dir.readFile(std.Io.Dir.cwd(), std.Options.debug_io, "/etc/pacman.conf", &buf) catch return null;
 
     var current_section: ?[]const u8 = null;
     var lines = std.mem.splitScalar(u8, content, '\n');
@@ -561,25 +554,25 @@ fn parseMakepkgConf(allocator: Allocator) !MakepkgConfig {
     parseMakepkgConfFromFile(allocator, "/etc/makepkg.conf", &config) catch {};
 
     // User config (overrides system)
-    if (std.posix.getenv("HOME")) |home| {
-        const user_conf = try std.fs.path.join(allocator, &.{ home, ".makepkg.conf" });
+    if (std.c.getenv("HOME")) |ptr| {
+        const user_conf = try std.fs.path.join(allocator, &.{ std.mem.span(ptr), ".makepkg.conf" });
         defer allocator.free(user_conf);
         parseMakepkgConfFromFile(allocator, user_conf, &config) catch {};
     }
 
     // Environment variables override everything
-    if (std.posix.getenv("PKGDEST")) |v| {
+    if (std.c.getenv("PKGDEST")) |ptr| {
         if (config.pkgdest) |old| allocator.free(old);
-        config.pkgdest = try allocator.dupe(u8, v);
+        config.pkgdest = try allocator.dupe(u8, std.mem.span(ptr));
     }
-    if (std.posix.getenv("PKGEXT")) |v| {
+    if (std.c.getenv("PKGEXT")) |ptr| {
         if (config.owns_pkgext) allocator.free(config.pkgext);
-        config.pkgext = try allocator.dupe(u8, v);
+        config.pkgext = try allocator.dupe(u8, std.mem.span(ptr));
         config.owns_pkgext = true;
     }
-    if (std.posix.getenv("PACMAN_AUTH")) |v| {
+    if (std.c.getenv("PACMAN_AUTH")) |ptr| {
         if (config.pacman_auth) |old| allocator.free(old);
-        config.pacman_auth = try allocator.dupe(u8, v);
+        config.pacman_auth = try allocator.dupe(u8, std.mem.span(ptr));
     }
 
     return config;
@@ -587,12 +580,11 @@ fn parseMakepkgConf(allocator: Allocator) !MakepkgConfig {
 
 /// Parse a single makepkg.conf file for PKGDEST and PKGEXT.
 pub fn parseMakepkgConfFromFile(allocator: Allocator, path: []const u8, config: *MakepkgConfig) !void {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
+    
+    
 
     var buf: [64 * 1024]u8 = undefined;
-    const len = try file.readAll(&buf);
-    const content = buf[0..len];
+    const content = std.Io.Dir.readFile(std.Io.Dir.cwd(), std.Options.debug_io, path, &buf) catch return error.RepoAddFailed;
 
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {
@@ -660,7 +652,9 @@ pub fn refreshAurpkgsSyncDb(allocator: std.mem.Allocator, repository: *Repositor
 // ── Tests ────────────────────────────────────────────────────────────────
 
 fn getTmpPath(tmp: std.testing.TmpDir) ![]u8 {
-    return tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try std.Io.Dir.realPathFile(tmp.dir, std.testing.io, ".", &buf);
+    return try std.testing.allocator.dupe(u8, buf[0..n]);
 }
 
 test "parsePackageFilename: simple name" {
@@ -739,7 +733,7 @@ test "isConfiguredFromPath detects aur section" {
     defer tmp.cleanup();
 
     // Write a test pacman.conf
-    try tmp.dir.writeFile(.{
+    try std.Io.Dir.writeFile(tmp.dir, std.testing.io, .{
         .sub_path = "pacman.conf",
         .data =
         \\[options]
@@ -754,7 +748,7 @@ test "isConfiguredFromPath detects aur section" {
         ,
     });
 
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "pacman.conf");
+    const path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, "pacman.conf", std.testing.allocator);
     defer std.testing.allocator.free(path);
 
     try std.testing.expect(isConfiguredFromPath(path));
@@ -764,7 +758,7 @@ test "isConfiguredFromPath returns false when missing" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{
+    try std.Io.Dir.writeFile(tmp.dir, std.testing.io, .{
         .sub_path = "pacman.conf",
         .data =
         \\[options]
@@ -773,7 +767,7 @@ test "isConfiguredFromPath returns false when missing" {
         ,
     });
 
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "pacman.conf");
+    const path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, "pacman.conf", std.testing.allocator);
     defer std.testing.allocator.free(path);
 
     try std.testing.expect(!isConfiguredFromPath(path));
@@ -787,7 +781,7 @@ test "isConfiguredFromPathWithName detects custom repo name" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{
+    try std.Io.Dir.writeFile(tmp.dir, std.testing.io, .{
         .sub_path = "pacman.conf",
         .data =
         \\[options]
@@ -802,7 +796,7 @@ test "isConfiguredFromPathWithName detects custom repo name" {
         ,
     });
 
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "pacman.conf");
+    const path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, "pacman.conf", std.testing.allocator);
     defer std.testing.allocator.free(path);
 
     try std.testing.expect(isConfiguredFromPathWithName(path, "myaur"));
@@ -816,7 +810,7 @@ test "ensureExists creates directories" {
     const tmp_path = try getTmpPath(tmp);
     defer std.testing.allocator.free(tmp_path);
 
-    var repo = try Repository.initWithRoot(std.testing.allocator, tmp_path);
+    var repo = try Repository.initWithRoot(std.testing.allocator, std.testing.io, tmp_path);
     defer repo.deinit();
 
     try repo.ensureExists();
@@ -831,7 +825,7 @@ test "ensureExists is idempotent" {
     const tmp_path = try getTmpPath(tmp);
     defer std.testing.allocator.free(tmp_path);
 
-    var repo = try Repository.initWithRoot(std.testing.allocator, tmp_path);
+    var repo = try Repository.initWithRoot(std.testing.allocator, std.testing.io, tmp_path);
     defer repo.deinit();
 
     try repo.ensureExists();
@@ -849,11 +843,11 @@ test "findBuiltPackages finds matching files" {
     defer std.testing.allocator.free(tmp_path);
 
     // Create fake package files
-    try tmp.dir.writeFile(.{ .sub_path = "yay-12.3.5-1-x86_64.pkg.tar.zst", .data = "fake" });
-    try tmp.dir.writeFile(.{ .sub_path = "paru-2.0.3-1-x86_64.pkg.tar.zst", .data = "fake" });
-    try tmp.dir.writeFile(.{ .sub_path = "README.md", .data = "not a package" });
+    try std.Io.Dir.writeFile(tmp.dir, std.testing.io, .{ .sub_path = "yay-12.3.5-1-x86_64.pkg.tar.zst", .data = "fake" });
+    try std.Io.Dir.writeFile(tmp.dir, std.testing.io, .{ .sub_path = "paru-2.0.3-1-x86_64.pkg.tar.zst", .data = "fake" });
+    try std.Io.Dir.writeFile(tmp.dir, std.testing.io, .{ .sub_path = "README.md", .data = "not a package" });
 
-    var repo = try Repository.initWithRoot(std.testing.allocator, tmp_path);
+    var repo = try Repository.initWithRoot(std.testing.allocator, std.testing.io, tmp_path);
     defer repo.deinit();
 
     const found = try repo.findBuiltPackages(tmp_path);
@@ -872,7 +866,7 @@ test "findBuiltPackages returns empty for nonexistent directory" {
     const tmp_path = try getTmpPath(tmp);
     defer std.testing.allocator.free(tmp_path);
 
-    var repo = try Repository.initWithRoot(std.testing.allocator, tmp_path);
+    var repo = try Repository.initWithRoot(std.testing.allocator, std.testing.io, tmp_path);
     defer repo.deinit();
 
     const not_exist = try std.fs.path.join(std.testing.allocator, &.{ tmp_path, "nonexistent" });
@@ -891,7 +885,7 @@ test "addBuiltPackages finds and registers split packages in repo dir" {
     const tmp_path = try getTmpPath(tmp);
     defer std.testing.allocator.free(tmp_path);
 
-    var repo = try Repository.initWithRoot(std.testing.allocator, tmp_path);
+    var repo = try Repository.initWithRoot(std.testing.allocator, std.testing.io, tmp_path);
     defer repo.deinit();
     repo.skip_repo_add = true;
 
@@ -904,8 +898,8 @@ test "addBuiltPackages finds and registers split packages in repo dir" {
     const pkg_b = try std.fs.path.join(std.testing.allocator, &.{ repo_dir, "python-attrs-tests-23.1-1-any.pkg.tar.zst" });
     defer std.testing.allocator.free(pkg_b);
 
-    try std.fs.cwd().writeFile(.{ .sub_path = pkg_a, .data = "pkg-a" });
-    try std.fs.cwd().writeFile(.{ .sub_path = pkg_b, .data = "pkg-b" });
+    try std.Io.Dir.writeFile(std.Io.Dir.cwd(), std.Options.debug_io, .{ .sub_path = pkg_a, .data = "pkg-a" });
+    try std.Io.Dir.writeFile(std.Io.Dir.cwd(), std.Options.debug_io, .{ .sub_path = pkg_b, .data = "pkg-b" });
 
     const added = try repo.addBuiltPackages();
     defer {
@@ -923,7 +917,7 @@ test "addBuiltPackages returns PackageNotFound for empty repo dir" {
     const tmp_path = try getTmpPath(tmp);
     defer std.testing.allocator.free(tmp_path);
 
-    var repo = try Repository.initWithRoot(std.testing.allocator, tmp_path);
+    var repo = try Repository.initWithRoot(std.testing.allocator, std.testing.io, tmp_path);
     defer repo.deinit();
     repo.skip_repo_add = true;
 
@@ -939,16 +933,16 @@ test "listPackages returns parsed packages" {
     const tmp_path = try getTmpPath(tmp);
     defer std.testing.allocator.free(tmp_path);
 
-    var repo = try Repository.initWithRoot(std.testing.allocator, tmp_path);
+    var repo = try Repository.initWithRoot(std.testing.allocator, std.testing.io, tmp_path);
     defer repo.deinit();
 
     try repo.ensureExists();
 
     // Create package files in the repo directory
-    var repo_dir = try std.fs.cwd().openDir(repo.repo_dir, .{});
-    defer repo_dir.close();
-    try repo_dir.writeFile(.{ .sub_path = "yay-12.3.5-1-x86_64.pkg.tar.zst", .data = "pkg" });
-    try repo_dir.writeFile(.{ .sub_path = "paru-2.0.3-1-x86_64.pkg.tar.zst", .data = "pkg" });
+    var repo_dir = try std.Io.Dir.openDir(std.Io.Dir.cwd(), std.testing.io, repo.repo_dir, .{});
+    defer repo_dir.close(std.testing.io);
+    try std.Io.Dir.writeFile(repo_dir, std.testing.io, .{ .sub_path = "yay-12.3.5-1-x86_64.pkg.tar.zst", .data = "pkg" });
+    try std.Io.Dir.writeFile(repo_dir, std.testing.io, .{ .sub_path = "paru-2.0.3-1-x86_64.pkg.tar.zst", .data = "pkg" });
 
     const pkgs = try repo.listPackages();
     defer {
@@ -970,7 +964,7 @@ test "listPackages returns empty for empty repo" {
     const tmp_path = try getTmpPath(tmp);
     defer std.testing.allocator.free(tmp_path);
 
-    var repo = try Repository.initWithRoot(std.testing.allocator, tmp_path);
+    var repo = try Repository.initWithRoot(std.testing.allocator, std.testing.io, tmp_path);
     defer repo.deinit();
 
     try repo.ensureExists();
@@ -988,16 +982,16 @@ test "listPackages skips database files" {
     const tmp_path = try getTmpPath(tmp);
     defer std.testing.allocator.free(tmp_path);
 
-    var repo = try Repository.initWithRoot(std.testing.allocator, tmp_path);
+    var repo = try Repository.initWithRoot(std.testing.allocator, std.testing.io, tmp_path);
     defer repo.deinit();
 
     try repo.ensureExists();
 
-    var repo_dir = try std.fs.cwd().openDir(repo.repo_dir, .{});
-    defer repo_dir.close();
-    try repo_dir.writeFile(.{ .sub_path = DEFAULT_REPO_NAME ++ ".db.tar.xz", .data = "db" });
-    try repo_dir.writeFile(.{ .sub_path = DEFAULT_REPO_NAME ++ ".files.tar.xz", .data = "files" });
-    try repo_dir.writeFile(.{ .sub_path = "yay-12.3.5-1-x86_64.pkg.tar.zst", .data = "pkg" });
+    var repo_dir = try std.Io.Dir.openDir(std.Io.Dir.cwd(), std.testing.io, repo.repo_dir, .{});
+    defer repo_dir.close(std.testing.io);
+    try std.Io.Dir.writeFile(repo_dir, std.testing.io, .{ .sub_path = DEFAULT_REPO_NAME ++ ".db.tar.xz", .data = "db" });
+    try std.Io.Dir.writeFile(repo_dir, std.testing.io, .{ .sub_path = DEFAULT_REPO_NAME ++ ".files.tar.xz", .data = "files" });
+    try std.Io.Dir.writeFile(repo_dir, std.testing.io, .{ .sub_path = "yay-12.3.5-1-x86_64.pkg.tar.zst", .data = "pkg" });
 
     const pkgs = try repo.listPackages();
     defer {
@@ -1020,7 +1014,7 @@ test "clean identifies stale clones" {
     const tmp_path = try getTmpPath(tmp);
     defer std.testing.allocator.free(tmp_path);
 
-    var repo = try Repository.initWithRoot(std.testing.allocator, tmp_path);
+    var repo = try Repository.initWithRoot(std.testing.allocator, std.testing.io, tmp_path);
     defer repo.deinit();
 
     try repo.ensureExists();
@@ -1028,10 +1022,10 @@ test "clean identifies stale clones" {
     // Create clone directories
     const yay_path = try std.fs.path.join(std.testing.allocator, &.{ tmp_path, "yay" });
     defer std.testing.allocator.free(yay_path);
-    try std.fs.cwd().makePath(yay_path);
+    try std.Io.Dir.createDirPath(std.Io.Dir.cwd(), std.testing.io, yay_path);
     const paru_path = try std.fs.path.join(std.testing.allocator, &.{ tmp_path, "paru" });
     defer std.testing.allocator.free(paru_path);
-    try std.fs.cwd().makePath(paru_path);
+    try std.Io.Dir.createDirPath(std.Io.Dir.cwd(), std.testing.io, paru_path);
 
     // "paru" is uninstalled — should be cleaned
     const result = try repo.clean(&.{"paru"});
@@ -1048,7 +1042,7 @@ test "clean skips repo directory" {
     const tmp_path = try getTmpPath(tmp);
     defer std.testing.allocator.free(tmp_path);
 
-    var repo = try Repository.initWithRoot(std.testing.allocator, tmp_path);
+    var repo = try Repository.initWithRoot(std.testing.allocator, std.testing.io, tmp_path);
     defer repo.deinit();
 
     try repo.ensureExists();
@@ -1070,17 +1064,17 @@ test "clean identifies stale package files" {
     const tmp_path = try getTmpPath(tmp);
     defer std.testing.allocator.free(tmp_path);
 
-    var repo = try Repository.initWithRoot(std.testing.allocator, tmp_path);
+    var repo = try Repository.initWithRoot(std.testing.allocator, std.testing.io, tmp_path);
     defer repo.deinit();
     repo.skip_repo_add = true;
 
     try repo.ensureExists();
 
     // Create package files in repo dir
-    var repo_dir = try std.fs.cwd().openDir(repo.repo_dir, .{});
-    defer repo_dir.close();
-    try repo_dir.writeFile(.{ .sub_path = "yay-12.3.5-1-x86_64.pkg.tar.zst", .data = "pkg" });
-    try repo_dir.writeFile(.{ .sub_path = "paru-2.0.3-1-x86_64.pkg.tar.zst", .data = "pkg" });
+    var repo_dir = try std.Io.Dir.openDir(std.Io.Dir.cwd(), std.testing.io, repo.repo_dir, .{});
+    defer repo_dir.close(std.testing.io);
+    try std.Io.Dir.writeFile(repo_dir, std.testing.io, .{ .sub_path = "yay-12.3.5-1-x86_64.pkg.tar.zst", .data = "pkg" });
+    try std.Io.Dir.writeFile(repo_dir, std.testing.io, .{ .sub_path = "paru-2.0.3-1-x86_64.pkg.tar.zst", .data = "pkg" });
 
     // "paru" is uninstalled
     const result = try repo.clean(&.{"paru"});
@@ -1098,7 +1092,7 @@ test "clean with no uninstalled packages finds nothing" {
     const tmp_path = try getTmpPath(tmp);
     defer std.testing.allocator.free(tmp_path);
 
-    var repo = try Repository.initWithRoot(std.testing.allocator, tmp_path);
+    var repo = try Repository.initWithRoot(std.testing.allocator, std.testing.io, tmp_path);
     defer repo.deinit();
 
     try repo.ensureExists();
@@ -1106,11 +1100,11 @@ test "clean with no uninstalled packages finds nothing" {
     // Create a clone dir and a package file
     const yay_path = try std.fs.path.join(std.testing.allocator, &.{ tmp_path, "yay" });
     defer std.testing.allocator.free(yay_path);
-    try std.fs.cwd().makePath(yay_path);
+    try std.Io.Dir.createDirPath(std.Io.Dir.cwd(), std.testing.io, yay_path);
 
-    var repo_dir = try std.fs.cwd().openDir(repo.repo_dir, .{});
-    defer repo_dir.close();
-    try repo_dir.writeFile(.{ .sub_path = "yay-12.3.5-1-x86_64.pkg.tar.zst", .data = "pkg" });
+    var repo_dir = try std.Io.Dir.openDir(std.Io.Dir.cwd(), std.testing.io, repo.repo_dir, .{});
+    defer repo_dir.close(std.testing.io);
+    try std.Io.Dir.writeFile(repo_dir, std.testing.io, .{ .sub_path = "yay-12.3.5-1-x86_64.pkg.tar.zst", .data = "pkg" });
 
     // Empty uninstalled list — everything is still installed
     const result = try repo.clean(&.{});
@@ -1127,7 +1121,7 @@ test "cleanAll removes all clones and packages" {
     const tmp_path = try getTmpPath(tmp);
     defer std.testing.allocator.free(tmp_path);
 
-    var repo = try Repository.initWithRoot(std.testing.allocator, tmp_path);
+    var repo = try Repository.initWithRoot(std.testing.allocator, std.testing.io, tmp_path);
     defer repo.deinit();
 
     try repo.ensureExists();
@@ -1135,17 +1129,17 @@ test "cleanAll removes all clones and packages" {
     // Create clone dirs
     const yay_path = try std.fs.path.join(std.testing.allocator, &.{ tmp_path, "yay" });
     defer std.testing.allocator.free(yay_path);
-    try std.fs.cwd().makePath(yay_path);
+    try std.Io.Dir.createDirPath(std.Io.Dir.cwd(), std.testing.io, yay_path);
 
     const paru_path = try std.fs.path.join(std.testing.allocator, &.{ tmp_path, "paru" });
     defer std.testing.allocator.free(paru_path);
-    try std.fs.cwd().makePath(paru_path);
+    try std.Io.Dir.createDirPath(std.Io.Dir.cwd(), std.testing.io, paru_path);
 
     // Create package files
-    var repo_dir = try std.fs.cwd().openDir(repo.repo_dir, .{});
-    defer repo_dir.close();
-    try repo_dir.writeFile(.{ .sub_path = "yay-12.3.5-1-x86_64.pkg.tar.zst", .data = "pkg" });
-    try repo_dir.writeFile(.{ .sub_path = "paru-2.0.3-1-x86_64.pkg.tar.zst", .data = "pkg" });
+    var repo_dir = try std.Io.Dir.openDir(std.Io.Dir.cwd(), std.testing.io, repo.repo_dir, .{});
+    defer repo_dir.close(std.testing.io);
+    try std.Io.Dir.writeFile(repo_dir, std.testing.io, .{ .sub_path = "yay-12.3.5-1-x86_64.pkg.tar.zst", .data = "pkg" });
+    try std.Io.Dir.writeFile(repo_dir, std.testing.io, .{ .sub_path = "paru-2.0.3-1-x86_64.pkg.tar.zst", .data = "pkg" });
 
     const result = try repo.cleanAll();
     defer repo.freeCleanResult(result);
@@ -1161,7 +1155,7 @@ test "cleanAll with empty repo finds nothing" {
     const tmp_path = try getTmpPath(tmp);
     defer std.testing.allocator.free(tmp_path);
 
-    var repo = try Repository.initWithRoot(std.testing.allocator, tmp_path);
+    var repo = try Repository.initWithRoot(std.testing.allocator, std.testing.io, tmp_path);
     defer repo.deinit();
 
     try repo.ensureExists();
@@ -1177,7 +1171,7 @@ test "parseMakepkgConfFromFile reads PKGDEST and PKGEXT" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{
+    try std.Io.Dir.writeFile(tmp.dir, std.testing.io, .{
         .sub_path = "makepkg.conf",
         .data =
         \\# Test config
@@ -1186,7 +1180,7 @@ test "parseMakepkgConfFromFile reads PKGDEST and PKGEXT" {
         ,
     });
 
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "makepkg.conf");
+    const path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, "makepkg.conf", std.testing.allocator);
     defer std.testing.allocator.free(path);
 
     var config = MakepkgConfig{};
@@ -1202,7 +1196,7 @@ test "parseMakepkgConfFromFile skips comments and empty lines" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{
+    try std.Io.Dir.writeFile(tmp.dir, std.testing.io, .{
         .sub_path = "makepkg.conf",
         .data =
         \\# PKGEXT="/should/be/ignored"
@@ -1211,7 +1205,7 @@ test "parseMakepkgConfFromFile skips comments and empty lines" {
         ,
     });
 
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "makepkg.conf");
+    const path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, "makepkg.conf", std.testing.allocator);
     defer std.testing.allocator.free(path);
 
     var config = MakepkgConfig{};
@@ -1225,14 +1219,14 @@ test "parseMakepkgConfFromFile reads PACMAN_AUTH with array syntax" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{
+    try std.Io.Dir.writeFile(tmp.dir, std.testing.io, .{
         .sub_path = "makepkg.conf",
         .data =
         \\PACMAN_AUTH=(sudo)
         ,
     });
 
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "makepkg.conf");
+    const path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, "makepkg.conf", std.testing.allocator);
     defer std.testing.allocator.free(path);
 
     var config = MakepkgConfig{};
@@ -1246,14 +1240,14 @@ test "parseMakepkgConfFromFile reads PACMAN_AUTH with quoted array" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{
+    try std.Io.Dir.writeFile(tmp.dir, std.testing.io, .{
         .sub_path = "makepkg.conf",
         .data =
         \\PACMAN_AUTH=("doas")
         ,
     });
 
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "makepkg.conf");
+    const path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, "makepkg.conf", std.testing.allocator);
     defer std.testing.allocator.free(path);
 
     var config = MakepkgConfig{};
@@ -1267,14 +1261,14 @@ test "parseMakepkgConfFromFile reads PACMAN_AUTH with args" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{
+    try std.Io.Dir.writeFile(tmp.dir, std.testing.io, .{
         .sub_path = "makepkg.conf",
         .data =
         \\PACMAN_AUTH=(sudo --askpass)
         ,
     });
 
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "makepkg.conf");
+    const path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, "makepkg.conf", std.testing.allocator);
     defer std.testing.allocator.free(path);
 
     var config = MakepkgConfig{};
@@ -1288,14 +1282,14 @@ test "parseMakepkgConfFromFile reads PACMAN_AUTH plain value" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{
+    try std.Io.Dir.writeFile(tmp.dir, std.testing.io, .{
         .sub_path = "makepkg.conf",
         .data =
         \\PACMAN_AUTH="doas"
         ,
     });
 
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "makepkg.conf");
+    const path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, "makepkg.conf", std.testing.allocator);
     defer std.testing.allocator.free(path);
 
     var config = MakepkgConfig{};
@@ -1309,7 +1303,7 @@ test "parseMakepkgConfFromFile PACMAN_AUTH last value wins" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{
+    try std.Io.Dir.writeFile(tmp.dir, std.testing.io, .{
         .sub_path = "makepkg.conf",
         .data =
         \\PACMAN_AUTH=(sudo)
@@ -1317,7 +1311,7 @@ test "parseMakepkgConfFromFile PACMAN_AUTH last value wins" {
         ,
     });
 
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "makepkg.conf");
+    const path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, "makepkg.conf", std.testing.allocator);
     defer std.testing.allocator.free(path);
 
     var config = MakepkgConfig{};
@@ -1342,7 +1336,7 @@ test "Repository paths are correct" {
     const tmp_path = try getTmpPath(tmp);
     defer std.testing.allocator.free(tmp_path);
 
-    var repo = try Repository.initWithRoot(std.testing.allocator, tmp_path);
+    var repo = try Repository.initWithRoot(std.testing.allocator, std.testing.io, tmp_path);
     defer repo.deinit();
 
     try std.testing.expect(std.mem.endsWith(u8, repo.repo_dir, "/" ++ DEFAULT_REPO_NAME));

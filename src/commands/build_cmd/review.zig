@@ -13,9 +13,9 @@ const Commands = cmds.Commands;
 /// Resolve the preferred file viewer from the environment.
 /// Priority: $PAGER → $VISUAL → $EDITOR → vim.
 pub fn getViewer() []const u8 {
-    if (std.posix.getenv("PAGER")) |p| if (p.len > 0) return p;
-    if (std.posix.getenv("VISUAL")) |v| if (v.len > 0) return v;
-    if (std.posix.getenv("EDITOR")) |e| if (e.len > 0) return e;
+    if (std.c.getenv("PAGER")) |p| if (std.mem.span(p).len > 0) return std.mem.span(p);
+    if (std.c.getenv("VISUAL")) |v| if (std.mem.span(v).len > 0) return std.mem.span(v);
+    if (std.c.getenv("EDITOR")) |e| if (std.mem.span(e).len > 0) return std.mem.span(e);
     return "vim";
 }
 
@@ -77,36 +77,36 @@ pub fn reviewPackages(
 /// Prompt the user to resolve each detected conflict.
 /// Returns the list of packages accepted for removal, or null if any conflict was rejected.
 pub fn resolveConflicts(allocator: Allocator, conflicts: []const plan_mod.Conflict, c: color.Style) !?[]const []const u8 {
-    const stdout: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
-    const stdin: std.fs.File = .{ .handle = std.posix.STDIN_FILENO };
-    if (!std.posix.isatty(stdin.handle)) return null;
+    
+    
+    if (std.c.isatty(std.posix.STDIN_FILENO) == 0) return null;
 
-    const w = stdout.deprecatedWriter();
+    
     var removals: std.ArrayListUnmanaged([]const u8) = .empty;
     defer removals.deinit(allocator);
 
     for (conflicts) |conflict| {
         switch (conflict.kind) {
-            .aur_aur => w.print(
+            .aur_aur => std.debug.print(
                 "{s}::{s} {s} and {s} are in conflict. Continue anyway? [y/N] ",
                 .{ c.yellow, c.reset, conflict.package, conflict.conflicts_with },
-            ) catch {},
-            .aur_installed, .repo_installed => w.print(
+            ),
+            .aur_installed, .repo_installed => std.debug.print(
                 "{s}::{s} {s} and {s} are in conflict ({s}). Remove {s}? [y/N] ",
                 .{ c.yellow, c.reset, conflict.package, conflict.conflicts_with, conflict.conflicts_with, conflict.conflicts_with },
-            ) catch {},
-            .aur_replaces => w.print(
+            ),
+            .aur_replaces => std.debug.print(
                 "{s}::{s} Replace {s} with aur/{s}? [y/N] ",
                 .{ c.yellow, c.reset, conflict.conflicts_with, conflict.package },
-            ) catch {},
-            .repo_replaces => w.print(
+            ),
+            .repo_replaces => std.debug.print(
                 "{s}::{s} Replace {s} with {s}? [y/N] ",
                 .{ c.yellow, c.reset, conflict.conflicts_with, conflict.package },
-            ) catch {},
+            ),
         }
 
         var buf: [16]u8 = undefined;
-        const n = stdin.read(&buf) catch return null;
+        const n = std.posix.read(std.posix.STDIN_FILENO, &buf) catch return null;
         if (n == 0) return null;
         const response = std.mem.trim(u8, buf[0..n], " \t\n\r");
         if (response.len == 0 or (response[0] != 'y' and response[0] != 'Y')) return null;

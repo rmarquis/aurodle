@@ -73,7 +73,7 @@ pub fn parseSrcinfoVersion(allocator: Allocator, srcinfo: []const u8) ![]const u
 
     var lines = std.mem.splitScalar(u8, srcinfo, '\n');
     while (lines.next()) |line| {
-        const trimmed = std.mem.trimLeft(u8, line, " \t");
+        const trimmed = std.mem.trimStart(u8, line, " \t");
 
         if (parseField(trimmed, "pkgver")) |val| {
             pkgver = val;
