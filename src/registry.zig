@@ -7,6 +7,7 @@ const devel = @import("devel.zig");
 const pacman_mod = @import("pacman.zig");
 const provider_types = @import("provider.zig");
 const source_mod = @import("source.zig");
+const dep_spec = @import("dep_spec.zig");
 
 pub const ProviderCandidate = provider_types.ProviderCandidate;
 pub const ProviderChooserFn = provider_types.ProviderChooserFn;
@@ -24,10 +25,8 @@ pub const Resolution = struct {
     provider: ?[]const u8 = null,
 };
 
-pub const DepSpec = struct {
-    name: []const u8,
-    constraint: ?pacman_mod.VersionConstraint = null,
-};
+pub const DepSpec = dep_spec.DepSpec;
+pub const parseDep = dep_spec.parseDep;
 
 // ── Production Type Alias ────────────────────────────────────────────────
 
@@ -69,7 +68,7 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
         /// Resolve a single dependency string through the cascade:
         /// cache → installed → sync → pacman provider → AUR → AUR provider → unknown
         pub fn resolve(self: *Self, dep_string: []const u8) !Resolution {
-            const spec = parseDep(dep_string);
+            const spec = dep_spec.parseDep(dep_string);
 
             // Cache check (by name, not dep string)
             if (self.cache.get(spec.name)) |cached| {
@@ -136,7 +135,7 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
 
             // Pass 1: resolve locally + sync, defer AUR
             for (dep_strings) |dep_str| {
-                const spec = parseDep(dep_str);
+                const spec = dep_spec.parseDep(dep_str);
 
                 if (self.cache.get(spec.name)) |cached| {
                     results.appendAssumeCapacity(cached);
@@ -438,34 +437,6 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
 
 // ── Pure Functions ───────────────────────────────────────────────────────
 
-/// Parse a dependency string like "pkg>=1.0" into name + constraint.
-/// Handles: >=, <=, =, >, <
-/// Pure function — no state, no errors.
-pub fn parseDep(dep_string: []const u8) DepSpec {
-    // Order matters: check two-char operators before single-char
-    const operators = [_]struct { str: []const u8, op: pacman_mod.CmpOp }{
-        .{ .str = ">=", .op = .ge },
-        .{ .str = "<=", .op = .le },
-        .{ .str = "=", .op = .eq },
-        .{ .str = ">", .op = .gt },
-        .{ .str = "<", .op = .lt },
-    };
-
-    for (operators) |entry| {
-        if (std.mem.indexOf(u8, dep_string, entry.str)) |pos| {
-            return .{
-                .name = dep_string[0..pos],
-                .constraint = .{
-                    .op = entry.op,
-                    .version = dep_string[pos + entry.str.len ..],
-                },
-            };
-        }
-    }
-
-    return .{ .name = dep_string };
-}
-
 // ── Tests ────────────────────────────────────────────────────────────────
 
 const testing = std.testing;
@@ -474,50 +445,6 @@ const MockPacman = mocks_mod.MockPacman;
 const MockAurClient = mocks_mod.MockAurClient;
 
 const TestRegistry = RegistryImpl(MockPacman, MockAurClient);
-
-// ── parseDep Pure Tests ─────────────────────────────────────────────────
-
-test "parseDep: bare package name" {
-    const spec = parseDep("zlib");
-    try testing.expectEqualStrings("zlib", spec.name);
-    try testing.expect(spec.constraint == null);
-}
-
-test "parseDep: >= constraint" {
-    const spec = parseDep("zlib>=1.3");
-    try testing.expectEqualStrings("zlib", spec.name);
-    try testing.expectEqual(pacman_mod.CmpOp.ge, spec.constraint.?.op);
-    try testing.expectEqualStrings("1.3", spec.constraint.?.version);
-}
-
-test "parseDep: <= constraint" {
-    const spec = parseDep("pkg<=2.0");
-    try testing.expectEqualStrings("pkg", spec.name);
-    try testing.expectEqual(pacman_mod.CmpOp.le, spec.constraint.?.op);
-    try testing.expectEqualStrings("2.0", spec.constraint.?.version);
-}
-
-test "parseDep: = constraint" {
-    const spec = parseDep("exact=1.0-1");
-    try testing.expectEqualStrings("exact", spec.name);
-    try testing.expectEqual(pacman_mod.CmpOp.eq, spec.constraint.?.op);
-    try testing.expectEqualStrings("1.0-1", spec.constraint.?.version);
-}
-
-test "parseDep: > and < constraints" {
-    const gt = parseDep("foo>3.0");
-    try testing.expectEqual(pacman_mod.CmpOp.gt, gt.constraint.?.op);
-
-    const lt = parseDep("bar<1.0");
-    try testing.expectEqual(pacman_mod.CmpOp.lt, lt.constraint.?.op);
-}
-
-test "parseDep: complex package name with hyphens" {
-    const spec = parseDep("lib32-mesa>=24.0");
-    try testing.expectEqualStrings("lib32-mesa", spec.name);
-    try testing.expectEqual(pacman_mod.CmpOp.ge, spec.constraint.?.op);
-    try testing.expectEqualStrings("24.0", spec.constraint.?.version);
-}
 
 // ── resolve() Single Lookup Tests ───────────────────────────────────────
 
