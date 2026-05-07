@@ -14,9 +14,9 @@ const build_ctx = @import("build_context.zig");
 const display_mod = @import("display.zig");
 const outdated_mod = @import("outdated.zig");
 
-const build_phase = @import("build_cmd/build.zig");
-const install_phase = @import("build_cmd/install.zig");
-const review_phase = @import("build_cmd/review.zig");
+const build_phase = @import("build_execute.zig");
+const install_phase = @import("build_install.zig");
+const review_phase = @import("build_review.zig");
 
 const QueryContext = query_ctx.QueryContext;
 const BuildContext = build_ctx.BuildContext;

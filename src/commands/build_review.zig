@@ -2,12 +2,12 @@
 /// and prompt for conflict resolution before any packages are installed.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const git = @import("../../git.zig");
-const plan_mod = @import("../../plan.zig");
-const utils = @import("../../utils.zig");
-const color = @import("../../color.zig");
-const types = @import("../types.zig");
-const build_ctx = @import("../build_context.zig");
+const git = @import("../git.zig");
+const plan_mod = @import("../plan.zig");
+const utils = @import("../utils.zig");
+const color = @import("../color.zig");
+const types = @import("types.zig");
+const build_ctx = @import("build_context.zig");
 
 const BuildContext = build_ctx.BuildContext;
 

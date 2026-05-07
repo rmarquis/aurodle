@@ -2,15 +2,15 @@
 /// packages to the local repo, and propagate failures to downstream entries.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const git = @import("../../git.zig");
-const devel = @import("../../devel.zig");
-const plan_mod = @import("../../plan.zig");
-const repo_mod = @import("../../repo.zig");
-const utils = @import("../../utils.zig");
-const auth_mod = @import("../../auth.zig");
-const color = @import("../../color.zig");
-const types = @import("../types.zig");
-const build_ctx = @import("../build_context.zig");
+const git = @import("../git.zig");
+const devel = @import("../devel.zig");
+const plan_mod = @import("../plan.zig");
+const repo_mod = @import("../repo.zig");
+const utils = @import("../utils.zig");
+const auth_mod = @import("../auth.zig");
+const color = @import("../color.zig");
+const types = @import("types.zig");
+const build_ctx = @import("build_context.zig");
 
 const BuildContext = build_ctx.BuildContext;
 const BuildResult = types.BuildResult;

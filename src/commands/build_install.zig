@@ -2,13 +2,13 @@
 /// state (sync DB refresh, cache purge, provider selection, credential setup).
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const repo_mod = @import("../../repo.zig");
-const utils = @import("../../utils.zig");
-const registry_mod = @import("../../registry.zig");
-const pacman_mod = @import("../../pacman.zig");
-const color = @import("../../color.zig");
-const types = @import("../types.zig");
-const build_ctx = @import("../build_context.zig");
+const repo_mod = @import("../repo.zig");
+const utils = @import("../utils.zig");
+const registry_mod = @import("../registry.zig");
+const pacman_mod = @import("../pacman.zig");
+const color = @import("../color.zig");
+const types = @import("types.zig");
+const build_ctx = @import("build_context.zig");
 
 const BuildContext = build_ctx.BuildContext;
 const BuildResult = types.BuildResult;
