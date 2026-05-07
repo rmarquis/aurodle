@@ -1,11 +1,11 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const utils = @import("utils.zig");
+const makepkg = @import("makepkg.zig");
+const repo_conf = @import("repo_conf.zig");
 
-// ── Constants ────────────────────────────────────────────────────────────
-
-pub const DEFAULT_REPO_NAME = "aur";
-pub const DEFAULT_PKGEXT = ".pkg.tar.zst";
+pub const DEFAULT_REPO_NAME = repo_conf.DEFAULT_REPO_NAME;
+pub const MakepkgConfig = makepkg.MakepkgConfig;
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -19,19 +19,6 @@ pub const CleanResult = struct {
     removed_clones: []const []const u8,
     removed_packages: []const []const u8,
     bytes_freed: u64,
-};
-
-pub const MakepkgConfig = struct {
-    pkgdest: ?[]const u8 = null,
-    pkgext: []const u8 = DEFAULT_PKGEXT,
-    owns_pkgext: bool = false,
-    pacman_auth: ?[]const u8 = null,
-
-    fn deinit(self: MakepkgConfig, allocator: Allocator) void {
-        if (self.pkgdest) |p| allocator.free(p);
-        if (self.owns_pkgext) allocator.free(self.pkgext);
-        if (self.pacman_auth) |a| allocator.free(a);
-    }
 };
 
 // ── Repository ───────────────────────────────────────────────────────────
@@ -57,14 +44,14 @@ pub const Repository = struct {
         const cache_dir = try std.fs.path.join(allocator, &.{ home, ".cache/aurodle" });
         errdefer allocator.free(cache_dir);
 
-        const conf = parseMakepkgConf(allocator) catch MakepkgConfig{};
+        const conf = makepkg.parseMakepkgConf(allocator) catch MakepkgConfig{};
 
         const repo_dir = try allocator.dupe(u8, conf.pkgdest orelse return error.PkgdestNotSet);
         errdefer allocator.free(repo_dir);
 
         // Derive the repo name from pacman.conf by finding which section
         // has a Server = file:// URL pointing to PKGDEST.
-        const derived_name = try deriveRepoNameFromPacmanConf(allocator, repo_dir) orelse
+        const derived_name = try repo_conf.deriveRepoNameFromPacmanConf(allocator, repo_dir) orelse
             return error.RepoNotInPacmanConf;
 
         return initFromParts(allocator, io, cache_dir, repo_dir, conf, derived_name);
@@ -276,7 +263,7 @@ pub const Repository = struct {
 
     /// Check if the local AUR repository is configured in pacman.conf.
     pub fn isConfigured(self: *const Repository) !bool {
-        return isConfiguredFromPathWithName("/etc/pacman.conf", self.repo_name);
+        return repo_conf.isConfiguredFromPathWithName("/etc/pacman.conf", self.repo_name);
     }
 
     /// Copy-pasteable pacman.conf configuration for the local AUR repository.
@@ -474,25 +461,8 @@ pub fn parsePackageFilename(filename: []const u8) ?struct { name: []const u8, ve
 }
 
 /// Check if [repo_name] is configured in a pacman.conf file.
-pub fn isConfiguredFromPath(path: []const u8) bool {
-    return isConfiguredFromPathWithName(path, DEFAULT_REPO_NAME);
-}
 
 /// Check if [name] is configured in a pacman.conf file.
-fn isConfiguredFromPathWithName(path: []const u8, name: []const u8) bool {
-    // pacman.conf is small — read entire file
-    var buf: [64 * 1024]u8 = undefined;
-    const content = std.Io.Dir.readFile(std.Io.Dir.cwd(), std.Options.debug_io, path, &buf) catch return false;
-
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    while (lines.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-        // Match [name] section header
-        if (trimmed.len < 3 or trimmed[0] != '[' or trimmed[trimmed.len - 1] != ']') continue;
-        if (std.mem.eql(u8, trimmed[1 .. trimmed.len - 1], name)) return true;
-    }
-    return false;
-}
 
 /// Derive the local AUR repository name from pacman.conf by finding a section
 /// whose `Server = file://` URL matches the given PKGDEST path.
@@ -502,139 +472,22 @@ fn isConfiguredFromPathWithName(path: []const u8, name: []const u8) bool {
 ///   Server = file:///var/lib/aurodle/mypkgs
 ///
 /// This returns "mypkgs".
-fn deriveRepoNameFromPacmanConf(allocator: Allocator, pkgdest: []const u8) !?[]const u8 {
-    var buf: [64 * 1024]u8 = undefined;
-    const content = std.Io.Dir.readFile(std.Io.Dir.cwd(), std.Options.debug_io, "/etc/pacman.conf", &buf) catch return null;
 
-    var current_section: ?[]const u8 = null;
-    var lines = std.mem.splitScalar(u8, content, '\n');
-
-    while (lines.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (trimmed.len == 0 or trimmed[0] == '#') continue;
-
-        // Section header: [reponame]
-        if (trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']') {
-            const name = trimmed[1 .. trimmed.len - 1];
-            if (std.mem.eql(u8, name, "options")) {
-                current_section = null;
-            } else {
-                current_section = name;
-            }
-            continue;
-        }
-
-        // Server directive with file:// protocol
-        if (current_section != null and std.mem.startsWith(u8, trimmed, "Server")) {
-            const eq_pos = std.mem.indexOfScalar(u8, trimmed, '=') orelse continue;
-            const url = std.mem.trim(u8, trimmed[eq_pos + 1 ..], " \t");
-
-            // Match "file:///path" against pkgdest
-            if (std.mem.startsWith(u8, url, "file://")) {
-                const server_path = url["file://".len..];
-                if (std.mem.eql(u8, server_path, pkgdest)) {
-                    return try allocator.dupe(u8, current_section.?);
-                }
-            }
-        }
-    }
-
-    return null;
-}
-
-// ── makepkg.conf Parsing ─────────────────────────────────────────────────
 
 /// Parse PKGDEST and PKGEXT from makepkg.conf files.
 /// Reads /etc/makepkg.conf first, then ~/.makepkg.conf (user overrides).
 /// Environment variables override config files.
-fn parseMakepkgConf(allocator: Allocator) !MakepkgConfig {
-    var config = MakepkgConfig{};
-
-    // System config
-    parseMakepkgConfFromFile(allocator, "/etc/makepkg.conf", &config) catch {};
-
-    // User config (overrides system)
-    if (std.c.getenv("HOME")) |ptr| {
-        const user_conf = try std.fs.path.join(allocator, &.{ std.mem.span(ptr), ".makepkg.conf" });
-        defer allocator.free(user_conf);
-        parseMakepkgConfFromFile(allocator, user_conf, &config) catch {};
-    }
-
-    // Environment variables override everything
-    if (std.c.getenv("PKGDEST")) |ptr| {
-        if (config.pkgdest) |old| allocator.free(old);
-        config.pkgdest = try allocator.dupe(u8, std.mem.span(ptr));
-    }
-    if (std.c.getenv("PKGEXT")) |ptr| {
-        if (config.owns_pkgext) allocator.free(config.pkgext);
-        config.pkgext = try allocator.dupe(u8, std.mem.span(ptr));
-        config.owns_pkgext = true;
-    }
-    if (std.c.getenv("PACMAN_AUTH")) |ptr| {
-        if (config.pacman_auth) |old| allocator.free(old);
-        config.pacman_auth = try allocator.dupe(u8, std.mem.span(ptr));
-    }
-
-    return config;
-}
 
 /// Parse a single makepkg.conf file for PKGDEST and PKGEXT.
-pub fn parseMakepkgConfFromFile(allocator: Allocator, path: []const u8, config: *MakepkgConfig) !void {
-    
-    
 
-    var buf: [64 * 1024]u8 = undefined;
-    const content = std.Io.Dir.readFile(std.Io.Dir.cwd(), std.Options.debug_io, path, &buf) catch return error.RepoAddFailed;
-
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    while (lines.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (trimmed.len == 0 or trimmed[0] == '#') continue;
-
-        if (parseAssignment(trimmed, "PKGDEST")) |val| {
-            if (config.pkgdest) |old| allocator.free(old);
-            config.pkgdest = try allocator.dupe(u8, stripQuotes(val));
-        } else if (parseAssignment(trimmed, "PKGEXT")) |val| {
-            if (config.owns_pkgext) allocator.free(config.pkgext);
-            config.pkgext = try allocator.dupe(u8, stripQuotes(val));
-            config.owns_pkgext = true;
-        } else if (parseAssignment(trimmed, "PACMAN_AUTH")) |val| {
-            if (config.pacman_auth) |old| allocator.free(old);
-            config.pacman_auth = try allocator.dupe(u8, stripBashArray(stripQuotes(val)));
-        }
-    }
-}
-
-// ── Internal Helpers ─────────────────────────────────────────────────────
 
 /// Parse "KEY=value" and return value if key matches.
-fn parseAssignment(line: []const u8, key: []const u8) ?[]const u8 {
-    if (!std.mem.startsWith(u8, line, key)) return null;
-    if (line.len <= key.len or line[key.len] != '=') return null;
-    return line[key.len + 1 ..];
-}
 
 /// Strip surrounding single or double quotes from a value.
-fn stripQuotes(val: []const u8) []const u8 {
-    if (val.len >= 2) {
-        if ((val[0] == '"' and val[val.len - 1] == '"') or
-            (val[0] == '\'' and val[val.len - 1] == '\''))
-        {
-            return val[1 .. val.len - 1];
-        }
-    }
-    return val;
-}
 
 /// Strip bash array syntax: "(content)" → "content".
 /// Also strips quotes from the inner content.
 /// Handles: (sudo), ("doas"), ('doas -s'), (sudo --askpass)
-fn stripBashArray(val: []const u8) []const u8 {
-    if (val.len >= 2 and val[0] == '(' and val[val.len - 1] == ')') {
-        return stripQuotes(val[1 .. val.len - 1]);
-    }
-    return val;
-}
 
 const dirExists = utils.dirExists;
 
@@ -693,33 +546,12 @@ test "parsePackageFilename: invalid input returns null" {
     try std.testing.expect(parsePackageFilename("a.pkg.tar.zst") == null); // too few hyphens
 }
 
-test "parseAssignment: matches key" {
-    try std.testing.expectEqualStrings("/home/packages", parseAssignment("PKGDEST=/home/packages", "PKGDEST").?);
-}
 
-test "parseAssignment: rejects non-matching key" {
-    try std.testing.expect(parseAssignment("BUILDDIR=/tmp", "PKGDEST") == null);
-}
 
-test "parseAssignment: rejects partial key match" {
-    try std.testing.expect(parseAssignment("PKGDEST_EXTRA=foo", "PKGDEST") == null);
-}
 
-test "stripQuotes: double quotes" {
-    try std.testing.expectEqualStrings("/home/packages", stripQuotes("\"/home/packages\""));
-}
 
-test "stripQuotes: single quotes" {
-    try std.testing.expectEqualStrings(".pkg.tar.zst", stripQuotes("'.pkg.tar.zst'"));
-}
 
-test "stripQuotes: no quotes" {
-    try std.testing.expectEqualStrings("/tmp/build", stripQuotes("/tmp/build"));
-}
 
-test "stripQuotes: mismatched quotes" {
-    try std.testing.expectEqualStrings("\"foo'", stripQuotes("\"foo'"));
-}
 
 test "configInstructions contains required elements" {
     const instructions = Repository.configInstructions();
@@ -728,80 +560,9 @@ test "configInstructions contains required elements" {
     try std.testing.expect(std.mem.indexOf(u8, instructions, "PKGDEST=") != null);
 }
 
-test "isConfiguredFromPath detects aur section" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
 
-    // Write a test pacman.conf
-    try std.Io.Dir.writeFile(tmp.dir, std.testing.io, .{
-        .sub_path = "pacman.conf",
-        .data =
-        \\[options]
-        \\HoldPkg = pacman glibc
-        \\
-        \\[core]
-        \\Include = /etc/pacman.d/mirrorlist
-        \\
-        \\[aur]
-        \\SigLevel = Optional TrustAll
-        \\Server = file:///home/user/.cache/aurodle/aur
-        ,
-    });
 
-    const path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, "pacman.conf", std.testing.allocator);
-    defer std.testing.allocator.free(path);
 
-    try std.testing.expect(isConfiguredFromPath(path));
-}
-
-test "isConfiguredFromPath returns false when missing" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try std.Io.Dir.writeFile(tmp.dir, std.testing.io, .{
-        .sub_path = "pacman.conf",
-        .data =
-        \\[options]
-        \\[core]
-        \\Include = /etc/pacman.d/mirrorlist
-        ,
-    });
-
-    const path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, "pacman.conf", std.testing.allocator);
-    defer std.testing.allocator.free(path);
-
-    try std.testing.expect(!isConfiguredFromPath(path));
-}
-
-test "isConfiguredFromPath returns false for nonexistent file" {
-    try std.testing.expect(!isConfiguredFromPath("/tmp/nonexistent-aurodle-test-pacman.conf"));
-}
-
-test "isConfiguredFromPathWithName detects custom repo name" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try std.Io.Dir.writeFile(tmp.dir, std.testing.io, .{
-        .sub_path = "pacman.conf",
-        .data =
-        \\[options]
-        \\HoldPkg = pacman glibc
-        \\
-        \\[core]
-        \\Include = /etc/pacman.d/mirrorlist
-        \\
-        \\[myaur]
-        \\SigLevel = Optional TrustAll
-        \\Server = file:///var/lib/aurodle/myaur
-        ,
-    });
-
-    const path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, "pacman.conf", std.testing.allocator);
-    defer std.testing.allocator.free(path);
-
-    try std.testing.expect(isConfiguredFromPathWithName(path, "myaur"));
-    try std.testing.expect(!isConfiguredFromPathWithName(path, "aurpkgs"));
-}
 
 test "ensureExists creates directories" {
     var tmp = std.testing.tmpDir(.{});
@@ -1167,167 +928,13 @@ test "cleanAll with empty repo finds nothing" {
     try std.testing.expectEqual(@as(usize, 0), result.removed_packages.len);
 }
 
-test "parseMakepkgConfFromFile reads PKGDEST and PKGEXT" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
 
-    try std.Io.Dir.writeFile(tmp.dir, std.testing.io, .{
-        .sub_path = "makepkg.conf",
-        .data =
-        \\# Test config
-        \\PKGDEST="/home/user/packages"
-        \\PKGEXT='.pkg.tar.zst'
-        ,
-    });
 
-    const path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, "makepkg.conf", std.testing.allocator);
-    defer std.testing.allocator.free(path);
 
-    var config = MakepkgConfig{};
-    try parseMakepkgConfFromFile(std.testing.allocator, path, &config);
-    defer config.deinit(std.testing.allocator);
 
-    try std.testing.expectEqualStrings("/home/user/packages", config.pkgdest.?);
-    try std.testing.expectEqualStrings(".pkg.tar.zst", config.pkgext);
-    try std.testing.expect(config.owns_pkgext);
-}
 
-test "parseMakepkgConfFromFile skips comments and empty lines" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
 
-    try std.Io.Dir.writeFile(tmp.dir, std.testing.io, .{
-        .sub_path = "makepkg.conf",
-        .data =
-        \\# PKGEXT="/should/be/ignored"
-        \\
-        \\PKGEXT='.pkg.tar.xz'
-        ,
-    });
 
-    const path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, "makepkg.conf", std.testing.allocator);
-    defer std.testing.allocator.free(path);
-
-    var config = MakepkgConfig{};
-    try parseMakepkgConfFromFile(std.testing.allocator, path, &config);
-    defer config.deinit(std.testing.allocator);
-
-    try std.testing.expectEqualStrings(".pkg.tar.xz", config.pkgext);
-}
-
-test "parseMakepkgConfFromFile reads PACMAN_AUTH with array syntax" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try std.Io.Dir.writeFile(tmp.dir, std.testing.io, .{
-        .sub_path = "makepkg.conf",
-        .data =
-        \\PACMAN_AUTH=(sudo)
-        ,
-    });
-
-    const path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, "makepkg.conf", std.testing.allocator);
-    defer std.testing.allocator.free(path);
-
-    var config = MakepkgConfig{};
-    try parseMakepkgConfFromFile(std.testing.allocator, path, &config);
-    defer config.deinit(std.testing.allocator);
-
-    try std.testing.expectEqualStrings("sudo", config.pacman_auth.?);
-}
-
-test "parseMakepkgConfFromFile reads PACMAN_AUTH with quoted array" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try std.Io.Dir.writeFile(tmp.dir, std.testing.io, .{
-        .sub_path = "makepkg.conf",
-        .data =
-        \\PACMAN_AUTH=("doas")
-        ,
-    });
-
-    const path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, "makepkg.conf", std.testing.allocator);
-    defer std.testing.allocator.free(path);
-
-    var config = MakepkgConfig{};
-    try parseMakepkgConfFromFile(std.testing.allocator, path, &config);
-    defer config.deinit(std.testing.allocator);
-
-    try std.testing.expectEqualStrings("doas", config.pacman_auth.?);
-}
-
-test "parseMakepkgConfFromFile reads PACMAN_AUTH with args" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try std.Io.Dir.writeFile(tmp.dir, std.testing.io, .{
-        .sub_path = "makepkg.conf",
-        .data =
-        \\PACMAN_AUTH=(sudo --askpass)
-        ,
-    });
-
-    const path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, "makepkg.conf", std.testing.allocator);
-    defer std.testing.allocator.free(path);
-
-    var config = MakepkgConfig{};
-    try parseMakepkgConfFromFile(std.testing.allocator, path, &config);
-    defer config.deinit(std.testing.allocator);
-
-    try std.testing.expectEqualStrings("sudo --askpass", config.pacman_auth.?);
-}
-
-test "parseMakepkgConfFromFile reads PACMAN_AUTH plain value" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try std.Io.Dir.writeFile(tmp.dir, std.testing.io, .{
-        .sub_path = "makepkg.conf",
-        .data =
-        \\PACMAN_AUTH="doas"
-        ,
-    });
-
-    const path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, "makepkg.conf", std.testing.allocator);
-    defer std.testing.allocator.free(path);
-
-    var config = MakepkgConfig{};
-    try parseMakepkgConfFromFile(std.testing.allocator, path, &config);
-    defer config.deinit(std.testing.allocator);
-
-    try std.testing.expectEqualStrings("doas", config.pacman_auth.?);
-}
-
-test "parseMakepkgConfFromFile PACMAN_AUTH last value wins" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try std.Io.Dir.writeFile(tmp.dir, std.testing.io, .{
-        .sub_path = "makepkg.conf",
-        .data =
-        \\PACMAN_AUTH=(sudo)
-        \\PACMAN_AUTH=(doas)
-        ,
-    });
-
-    const path = try std.Io.Dir.realPathFileAlloc(tmp.dir, std.testing.io, "makepkg.conf", std.testing.allocator);
-    defer std.testing.allocator.free(path);
-
-    var config = MakepkgConfig{};
-    try parseMakepkgConfFromFile(std.testing.allocator, path, &config);
-    defer config.deinit(std.testing.allocator);
-
-    try std.testing.expectEqualStrings("doas", config.pacman_auth.?);
-}
-
-test "stripBashArray strips parens" {
-    try std.testing.expectEqualStrings("sudo", stripBashArray("(sudo)"));
-    try std.testing.expectEqualStrings("doas -s", stripBashArray("(doas -s)"));
-    try std.testing.expectEqualStrings("sudo", stripBashArray("sudo"));
-    try std.testing.expectEqualStrings("doas", stripBashArray("(\"doas\")"));
-    try std.testing.expectEqualStrings("doas", stripBashArray("('doas')"));
-}
 
 test "Repository paths are correct" {
     var tmp = std.testing.tmpDir(.{});
