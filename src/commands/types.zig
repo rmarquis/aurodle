@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const aur = @import("../aur.zig");
 const color = @import("../color.zig");
+const utils = @import("../utils.zig");
 
 // ── Exit Codes ───────────────────────────────────────────────────────────
 
@@ -182,6 +183,49 @@ pub fn printError(err: anytype, err_writer: ErrWriter, ec: color.Style) !void {
         error.MalformedResponse => try err_writer.print("{s}error:{s} received malformed response from AUR\n", .{ ec.red, ec.reset }),
         else => try err_writer.print("{s}error:{s} {}\n", .{ ec.red, ec.reset, err }),
     }
+}
+
+// ── Target Filtering ─────────────────────────────────────────────────────
+
+pub fn isIgnored(flags: Flags, name: []const u8) bool {
+    for (flags.ignore) |ignored| {
+        if (std.mem.eql(u8, ignored, name)) return true;
+    }
+    return false;
+}
+
+pub fn filterIgnored(
+    stdout_color: color.Style,
+    stderr_color: color.Style,
+    err_writer: ErrWriter,
+    flags: Flags,
+    targets: []const []const u8,
+    buf: [][]const u8,
+) []const []const u8 {
+    if (flags.ignore.len == 0) return targets;
+
+    const ec = stderr_color;
+    var count: usize = 0;
+    for (targets) |target| {
+        if (isIgnored(flags, target)) {
+            var msg_buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&msg_buf, "{s} is in IgnorePkg. Install anyway?", .{target}) catch target;
+            const install = utils.promptYesNoStyled(stdout_color, msg) catch false;
+            if (install) {
+                buf[count] = target;
+                count += 1;
+            } else {
+                err_writer.print(
+                    "{s}warning:{s} skipping target: {s}\n",
+                    .{ ec.yellow, ec.reset, target },
+                ) catch {};
+            }
+        } else {
+            buf[count] = target;
+            count += 1;
+        }
+    }
+    return buf[0..count];
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────

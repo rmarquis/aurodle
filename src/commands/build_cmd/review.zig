@@ -6,9 +6,10 @@ const git = @import("../../git.zig");
 const plan_mod = @import("../../plan.zig");
 const utils = @import("../../utils.zig");
 const color = @import("../../color.zig");
-const cmds = @import("../context.zig");
+const types = @import("../types.zig");
+const build_ctx = @import("../build_context.zig");
 
-const Commands = cmds.Commands;
+const BuildContext = build_ctx.BuildContext;
 
 /// Resolve the preferred file viewer from the environment.
 /// Priority: $PAGER → $VISUAL → $EDITOR → vim.
@@ -22,11 +23,11 @@ pub fn getViewer() []const u8 {
 /// For each build entry: if the clone was just updated show an interactive diff,
 /// otherwise open all files in the viewer for fresh-clone review.
 pub fn reviewPackages(
-    self: *Commands,
+    self: *BuildContext,
     entries: []const plan_mod.BuildEntry,
     c_root: []const u8,
 ) !void {
-    const stdout = cmds.getStdout();
+    const stdout = types.getStdout();
     const sc = self.stdout_color;
     const editor = getViewer();
 

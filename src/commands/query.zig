@@ -4,18 +4,21 @@ const aur = @import("../aur.zig");
 const registry_mod = @import("../registry.zig");
 const devel = @import("../devel.zig");
 const pacman_mod = @import("../pacman.zig");
-const cmds = @import("context.zig");
+const types = @import("types.zig");
+const query_ctx = @import("query_context.zig");
+const build_ctx = @import("build_context.zig");
 const outdated_mod = @import("outdated.zig");
 const color = @import("../color.zig");
 
-const Commands = cmds.Commands;
-const ExitCode = cmds.ExitCode;
-const Flags = cmds.Flags;
-const SortField = cmds.SortField;
-const OutdatedEntry = cmds.OutdatedEntry;
-const OutdatedList = cmds.OutdatedList;
-const getStdout = cmds.getStdout;
-const printError = cmds.printError;
+const QueryContext = query_ctx.QueryContext;
+const BuildContext = build_ctx.BuildContext;
+const ExitCode = types.ExitCode;
+const Flags = types.Flags;
+const SortField = types.SortField;
+const OutdatedEntry = types.OutdatedEntry;
+const OutdatedList = types.OutdatedList;
+const getStdout = types.getStdout;
+const printError = types.printError;
 
 pub const collectOutdated = outdated_mod.collectOutdated;
 pub const checkDevelPackages = outdated_mod.checkDevelPackages;
@@ -23,7 +26,7 @@ pub const checkDevelPackages = outdated_mod.checkDevelPackages;
 // ── Info Command ─────────────────────────────────────────────────────
 
 /// Display detailed info for AUR packages.
-pub fn info(self: *Commands, targets: []const []const u8) !ExitCode {
+pub fn info(self: *QueryContext, targets: []const []const u8) !ExitCode {
     const packages = self.aur_client.multiInfo(targets) catch |err| {
         try printError(err, self.err_writer, self.stderr_color);
         return .general_error;
@@ -60,7 +63,7 @@ pub fn info(self: *Commands, targets: []const []const u8) !ExitCode {
 /// Search AUR and display matching packages.
 /// When multiple terms are given, the AUR is queried with the first term and
 /// remaining terms are filtered client-side (intersection / AND semantics).
-pub fn search(self: *Commands, terms: []const []const u8) !ExitCode {
+pub fn search(self: *QueryContext, terms: []const []const u8) !ExitCode {
     const by_field = self.flags.by orelse .name_desc;
     const packages = self.aur_client.search(terms[0], by_field) catch |err| {
         try printError(err, self.err_writer, self.stderr_color);
@@ -96,7 +99,7 @@ pub fn search(self: *Commands, terms: []const []const u8) !ExitCode {
 // ── Outdated Command ─────────────────────────────────────────────────
 
 /// List installed AUR packages with newer versions available.
-pub fn outdated(self: *Commands, filter: []const []const u8) !ExitCode {
+pub fn outdated(self: *BuildContext, filter: []const []const u8) !ExitCode {
     const result = (try outdated_mod.collectOutdated(self, filter, false)) orelse return .general_error;
     defer result.deinit(self.allocator);
 
@@ -432,13 +435,6 @@ test "SortField.fromString returns null for unknown" {
     try testing.expect(SortField.fromString("invalid") == null);
 }
 
-test "outdated returns general_error when pacman not initialized" {
-    var cmds2 = Commands.init(testing.allocator, std.testing.io, undefined, .{});
-    cmds2.err_writer = cmds.null_err_writer;
-    cmds2.stderr_color = color.Style.disabled;
-    const result = try outdated(&cmds2, &.{});
-    try testing.expectEqual(ExitCode.general_error, result);
-}
 
 test "OutdatedEntry struct has required fields" {
     const entry = OutdatedEntry{

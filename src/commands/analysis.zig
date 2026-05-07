@@ -1,32 +1,29 @@
 const std = @import("std");
 const registry_mod = @import("../registry.zig");
 const solver_mod = @import("../solver.zig");
-const cmds = @import("context.zig");
+const types = @import("types.zig");
+const build_ctx = @import("build_context.zig");
 const display_mod = @import("display.zig");
 const color = @import("../color.zig");
 
-const Commands = cmds.Commands;
-const ExitCode = cmds.ExitCode;
-const getStdout = cmds.getStdout;
-const handleResolveError = cmds.handleResolveError;
+const BuildContext = build_ctx.BuildContext;
+const ExitCode = types.ExitCode;
+const getStdout = types.getStdout;
+const handleResolveError = types.handleResolveError;
 const displayPlan = display_mod.displayPlan;
 
 // ── Resolve Command ──────────────────────────────────────────────────
 
 /// Display the resolved dependency tree (human-readable).
-pub fn resolve(self: *Commands, targets: []const []const u8) !ExitCode {
+pub fn resolve(self: *BuildContext, targets: []const []const u8) !ExitCode {
     const ec = self.stderr_color;
-    const reg = self.registry orelse {
-        self.err_writer.print("{s}error:{s} registry not initialized\n", .{ ec.red, ec.reset }) catch {};
-        return .general_error;
-    };
 
     // Filter ignored targets
     var ignore_buf: [256][]const u8 = undefined;
-    const filtered = self.filterIgnored(targets, &ignore_buf);
+    const filtered = types.filterIgnored(self.stdout_color, self.stderr_color, self.err_writer, self.flags, targets, &ignore_buf);
     if (filtered.len == 0) return .success;
 
-    var s = solver_mod.Solver.init(self.allocator, reg);
+    var s = solver_mod.Solver.init(self.allocator, self.registry);
     s.ignore = self.flags.ignore;
     defer s.deinit();
 
@@ -43,19 +40,15 @@ pub fn resolve(self: *Commands, targets: []const []const u8) !ExitCode {
 
 /// Display the build order as a plain list (machine-readable).
 /// One package per line, in build order.
-pub fn buildorder(self: *Commands, targets: []const []const u8) !ExitCode {
+pub fn buildorder(self: *BuildContext, targets: []const []const u8) !ExitCode {
     const ec = self.stderr_color;
-    const reg = self.registry orelse {
-        self.err_writer.print("{s}error:{s} registry not initialized\n", .{ ec.red, ec.reset }) catch {};
-        return .general_error;
-    };
 
     // Filter ignored targets
     var ignore_buf: [256][]const u8 = undefined;
-    const filtered = self.filterIgnored(targets, &ignore_buf);
+    const filtered = types.filterIgnored(self.stdout_color, self.stderr_color, self.err_writer, self.flags, targets, &ignore_buf);
     if (filtered.len == 0) return .success;
 
-    var s = solver_mod.Solver.init(self.allocator, reg);
+    var s = solver_mod.Solver.init(self.allocator, self.registry);
     s.ignore = self.flags.ignore;
     defer s.deinit();
 

@@ -73,27 +73,34 @@ fn run(allocator: Allocator, io: std.Io, raw_args: std.process.Args) !ExitCode {
     var aur_client = aur.Client.init(allocator);
     defer aur_client.deinit();
 
+    // Get cache root for git operations (needed by show/clone even in simple path)
+    const cache_root = git.defaultCacheRoot(allocator) catch {
+        std.debug.print("error: could not determine cache directory (HOME not set)\n", .{});
+        return .general_error;
+    };
+    defer allocator.free(cache_root);
+
     // Commands that need the full module stack (pacman + registry + repo)
     if (parsed.operation.needsFullStack() or (parsed.operation == .clone and parsed.flags.recurse)) {
-        return runWithFullStack(allocator, io, &aur_client, parsed);
+        return runWithFullStack(allocator, io, &aur_client, cache_root, parsed);
     }
 
     // Simple commands that only need the AUR client
-    var cmds = commands.Commands.init(allocator, io, &aur_client, parsed.flags);
+    var qctx = commands.QueryContext.init(allocator, io, &aur_client, cache_root, parsed.flags);
 
     return switch (parsed.operation) {
-        .info => try commands.query.info(&cmds, parsed.targets),
+        .info => try commands.query.info(&qctx, parsed.targets),
         .search => blk: {
             if (parsed.targets.len == 0) {
                 printUsageError("search requires a query term");
                 break :blk .usage_error;
             }
-            break :blk try commands.query.search(&cmds, parsed.targets);
+            break :blk try commands.query.search(&qctx, parsed.targets);
         },
-        .clone => try commands.build_cmd.clonePackages(&cmds, parsed.targets),
-        .show => try commands.build_cmd.show(&cmds, parsed.targets[0]),
+        .clone => try commands.build_cmd.clonePackages(&qctx, parsed.targets),
+        .show => try commands.build_cmd.show(&qctx, parsed.targets[0]),
         .status => blk: {
-            const code = try commands.status_cmd.run(cmds.allocator, cmds.stdout_color);
+            const code = try commands.status_cmd.run(qctx.allocator, qctx.stdout_color);
             break :blk if (code == 0) .success else .general_error;
         },
         // Full-stack commands handled above
@@ -308,6 +315,7 @@ fn runWithFullStack(
     allocator: Allocator,
     io: std.Io,
     aur_client: *aur.Client,
+    cache_root: []const u8,
     parsed: ParsedCommand,
 ) !ExitCode {
     // Initialize local repository first (derives repo name from pacman.conf + PKGDEST)
@@ -384,14 +392,7 @@ fn runWithFullStack(
     // here so the struct is available; acquireCredentials()+startKeepalive() are
     // called just before the build loop begins.
 
-    // Get cache root for git operations
-    const cache_root = git.defaultCacheRoot(allocator) catch {
-        std.debug.print("error: could not determine cache directory (HOME not set)\n", .{});
-        return .general_error;
-    };
-    defer allocator.free(cache_root);
-
-    var cmds = commands.Commands.initFull(
+    var bctx = commands.BuildContext.init(
         allocator,
         io,
         aur_client,
@@ -404,14 +405,28 @@ fn runWithFullStack(
     );
 
     return switch (parsed.operation) {
-        .sync => try commands.build_cmd.sync(&cmds, parsed.targets),
-        .build => try commands.build_cmd.build(&cmds, parsed.targets),
-        .resolve => try commands.analysis.resolve(&cmds, parsed.targets),
-        .buildorder => try commands.analysis.buildorder(&cmds, parsed.targets),
-        .outdated => try commands.query.outdated(&cmds, parsed.targets),
-        .upgrade => try commands.build_cmd.upgrade(&cmds, parsed.targets),
-        .clean => try commands.build_cmd.clean(&cmds),
-        .clone => try commands.build_cmd.clonePackages(&cmds, parsed.targets),
+        .sync => try commands.build_cmd.sync(&bctx, parsed.targets),
+        .build => try commands.build_cmd.build(&bctx, parsed.targets),
+        .resolve => try commands.analysis.resolve(&bctx, parsed.targets),
+        .buildorder => try commands.analysis.buildorder(&bctx, parsed.targets),
+        .outdated => try commands.query.outdated(&bctx, parsed.targets),
+        .upgrade => try commands.build_cmd.upgrade(&bctx, parsed.targets),
+        .clean => try commands.build_cmd.clean(&bctx),
+        .clone => blk: {
+            var qctx = commands.QueryContext{
+                .allocator = bctx.allocator,
+                .io = bctx.io,
+                .aur_client = bctx.aur_client,
+                .pacman = bctx.pacman,
+                .registry = bctx.registry,
+                .cache_root = bctx.cache_root,
+                .flags = bctx.flags,
+                .stdout_color = bctx.stdout_color,
+                .stderr_color = bctx.stderr_color,
+                .err_writer = bctx.err_writer,
+            };
+            break :blk try commands.build_cmd.clonePackages(&qctx, parsed.targets);
+        },
         else => unreachable,
     };
 }

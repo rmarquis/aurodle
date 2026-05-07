@@ -7,17 +7,18 @@ const utils = @import("../../utils.zig");
 const registry_mod = @import("../../registry.zig");
 const pacman_mod = @import("../../pacman.zig");
 const color = @import("../../color.zig");
-const cmds = @import("../context.zig");
+const types = @import("../types.zig");
+const build_ctx = @import("../build_context.zig");
 
-const Commands = cmds.Commands;
-const BuildResult = cmds.BuildResult;
+const BuildContext = build_ctx.BuildContext;
+const BuildResult = types.BuildResult;
 
 /// Acquire privilege credentials and start the keepalive thread.
 /// Called after the user has confirmed the plan and reviewed PKGBUILDs,
 /// so we don't prompt for a password if they're going to bail out anyway.
 /// Returns an ExitCode if acquisition failed, null on success.
-pub fn acquireAuth(self: *Commands) !?cmds.ExitCode {
-    const auth = self.auth orelse return null;
+pub fn acquireAuth(self: *BuildContext) !?types.ExitCode {
+    const auth = self.auth;
     const ec = self.stderr_color;
     const cred_exit = auth.acquireCredentials() catch 0;
     if (cred_exit != 0) {
@@ -77,7 +78,7 @@ pub fn selectRepoDepsProviders(
 
 /// Install AUR targets (from aurpkgs) and repo targets (from their sync db)
 /// in a single `pacman -S` transaction.
-pub fn installAllTargets(self: *Commands, aurpkgs_names: []const []const u8, repo_names: []const []const u8) !void {
+pub fn installAllTargets(self: *BuildContext, aurpkgs_names: []const []const u8, repo_names: []const []const u8) !void {
     var argv: std.ArrayListUnmanaged([]const u8) = .empty;
     defer argv.deinit(self.allocator);
 
@@ -105,7 +106,7 @@ pub fn installAllTargets(self: *Commands, aurpkgs_names: []const []const u8, rep
     }
 
     // AUR targets qualified with the local AUR repo name (e.g., aurpkgs/pkgname)
-    const aur_repo_name = if (self.repo) |r| r.repo_name else repo_mod.DEFAULT_REPO_NAME;
+    const aur_repo_name = self.repository.repo_name;
     for (aurpkgs_names) |name| {
         const qualified = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ aur_repo_name, name });
         try qualified_names.append(self.allocator, qualified);
@@ -114,7 +115,7 @@ pub fn installAllTargets(self: *Commands, aurpkgs_names: []const []const u8, rep
 
     // Repo targets qualified with their actual sync db (e.g., extra/expac)
     for (repo_names) |name| {
-        const repo = if (self.pacman) |pm| pm.syncDbFor(name) else null;
+        const repo = self.pacman.syncDbFor(name);
         if (repo) |r| {
             const qualified = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ r, name });
             try qualified_names.append(self.allocator, qualified);
@@ -124,7 +125,7 @@ pub fn installAllTargets(self: *Commands, aurpkgs_names: []const []const u8, rep
         }
     }
 
-    const exit_code = try self.auth.?.runInteractive(argv.items, null);
+    const exit_code = try self.auth.runInteractive(argv.items, null);
     if (exit_code != 0) {
         const ec = self.stderr_color;
         self.err_writer.print("{s}error:{s} installation failed (exit {d})\n", .{ ec.red, ec.reset, exit_code }) catch {};
@@ -134,12 +135,12 @@ pub fn installAllTargets(self: *Commands, aurpkgs_names: []const []const u8, rep
 /// Pre-install chosen virtual-dep providers via `pacman -S --needed --asdeps`
 /// so that makepkg -s finds them already installed and skips its own prompt.
 /// Returns false if pacman exits non-zero.
-pub fn preInstallProviders(self: *Commands, pkg_names: []const []const u8) !bool {
+pub fn preInstallProviders(self: *BuildContext, pkg_names: []const []const u8) !bool {
     var argv: std.ArrayListUnmanaged([]const u8) = .empty;
     defer argv.deinit(self.allocator);
     try argv.appendSlice(self.allocator, &.{ "pacman", "-S", "--needed", "--asdeps", "--noconfirm" });
     try argv.appendSlice(self.allocator, pkg_names);
-    const exit_code = try self.auth.?.runInteractive(argv.items, null);
+    const exit_code = try self.auth.runInteractive(argv.items, null);
     if (exit_code != 0) {
         const ec = self.stderr_color;
         self.err_writer.print("{s}error:{s} failed to pre-install providers (exit {d})\n", .{ ec.red, ec.reset, exit_code }) catch {};
@@ -149,7 +150,7 @@ pub fn preInstallProviders(self: *Commands, pkg_names: []const []const u8) !bool
 }
 
 /// Filter the AUR targets list down to packages whose builds succeeded.
-pub fn filterInstallable(self: *Commands, targets: []const []const u8, result: BuildResult) ![]const []const u8 {
+pub fn filterInstallable(self: *BuildContext, targets: []const []const u8, result: BuildResult) ![]const []const u8 {
     var failed_set: std.StringHashMapUnmanaged(void) = .empty;
     defer failed_set.deinit(self.allocator);
     for (result.failed) |f| {
@@ -166,12 +167,12 @@ pub fn filterInstallable(self: *Commands, targets: []const []const u8, result: B
 
 /// Delete package files from pacman's pkg cache so a rebuild with the same
 /// version doesn't trigger a checksum mismatch on the stale cached copy.
-pub fn purgePacmanCache(self: *Commands, basenames: []const []const u8) void {
+pub fn purgePacmanCache(self: *BuildContext, basenames: []const []const u8) void {
     for (basenames) |basename| {
         const cache_path = std.fmt.allocPrint(self.allocator, "/var/cache/pacman/pkg/{s}", .{basename}) catch continue;
         defer self.allocator.free(cache_path);
         std.Io.Dir.accessAbsolute(std.Options.debug_io, cache_path, .{}) catch continue;
-        const result = self.auth.?.runCaptured(&.{ "rm", "-f", cache_path }) catch continue;
+        const result = self.auth.runCaptured(&.{ "rm", "-f", cache_path }) catch continue;
         result.deinit(self.allocator);
     }
 }

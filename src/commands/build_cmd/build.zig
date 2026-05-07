@@ -9,11 +9,12 @@ const repo_mod = @import("../../repo.zig");
 const utils = @import("../../utils.zig");
 const auth_mod = @import("../../auth.zig");
 const color = @import("../../color.zig");
-const cmds = @import("../context.zig");
+const types = @import("../types.zig");
+const build_ctx = @import("../build_context.zig");
 
-const Commands = cmds.Commands;
-const BuildResult = cmds.BuildResult;
-const FailedBuild = cmds.FailedBuild;
+const BuildContext = build_ctx.BuildContext;
+const BuildResult = types.BuildResult;
+const FailedBuild = types.FailedBuild;
 
 const DEFAULT_CHROOT_DIR = "/var/lib/aurodle/chroot";
 
@@ -97,7 +98,7 @@ fn collectBuiltPackagePaths(allocator: Allocator, clone_dir: []const u8) !?[]con
 /// Injects previously-built AUR dependencies via -I flags so the
 /// isolated chroot can satisfy AUR-to-AUR dependency chains.
 fn runChrootBuild(
-    self: *const Commands,
+    self: *const BuildContext,
     entry: plan_mod.BuildEntry,
     built_pkg_paths: *const std.StringHashMapUnmanaged([]const []const u8),
     clone_dir: []const u8,
@@ -121,7 +122,7 @@ fn runChrootBuild(
         try argv.appendSlice(self.allocator, &.{ "--", "--force" });
     }
 
-    return self.auth.?.runInteractive(argv.items, clone_dir);
+    return self.auth.runInteractive(argv.items, clone_dir);
 }
 
 /// True if any of `entry`'s AUR dep pkgbases is in the failed set.
@@ -149,7 +150,7 @@ pub fn anySubsequentEntryNeeds(remaining: []const plan_mod.BuildEntry, pkgbase: 
 /// Propagates failures to downstream entries that depend on a failed pkgbase.
 /// Returns a BuildResult that the caller must deinit.
 pub fn buildLoop(
-    self: *Commands,
+    self: *BuildContext,
     plan: plan_mod.BuildPlan,
     repository: *repo_mod.Repository,
     c_root: []const u8,
@@ -167,7 +168,7 @@ pub fn buildLoop(
     }
 
     if (self.flags.chroot) {
-        if (!try ensureChroot(self.allocator, self.auth.?, self.err_writer, ec)) {
+        if (!try ensureChroot(self.allocator, self.auth, self.err_writer, ec)) {
             return .{
                 .succeeded = try succeeded.toOwnedSlice(self.allocator),
                 .failed = try failed.toOwnedSlice(self.allocator),
@@ -217,9 +218,9 @@ pub fn buildLoop(
             } else (allPackagesBuilt(self.allocator, clone_dir) catch false);
 
         if (already_built) {
-            cmds.getStdout().print("{s}::{s} {s} {s} already built, skipping (use --rebuild to force)\n", .{ sc.yellow, sc.reset, entry.name, ver }) catch {};
+            types.getStdout().print("{s}::{s} {s} {s} already built, skipping (use --rebuild to force)\n", .{ sc.yellow, sc.reset, entry.name, ver }) catch {};
         } else {
-            cmds.getStdout().print("{s}::{s} Building {s} {s}...\n", .{ sc.blue, sc.reset, entry.name, ver }) catch {};
+            types.getStdout().print("{s}::{s} Building {s} {s}...\n", .{ sc.blue, sc.reset, entry.name, ver }) catch {};
 
             const exit_code = if (self.flags.chroot) blk: {
                 break :blk try runChrootBuild(self, entry, &built_pkg_paths, clone_dir);
@@ -295,7 +296,7 @@ pub fn buildLoop(
         // repo-add updated the repo dir DB, but pacman's sync cache
         // (/var/lib/pacman/sync/aurpkgs.db) is root-owned and separate.
         if (anySubsequentEntryNeeds(plan.build_order[i + 1 ..], entry.pkgbase)) {
-            repo_mod.refreshAurpkgsSyncDb(self.allocator, repository, self.auth.?) catch |err| {
+            repo_mod.refreshAurpkgsSyncDb(self.allocator, repository, self.auth) catch |err| {
                 self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err }) catch {};
             };
         }

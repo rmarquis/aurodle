@@ -3,12 +3,13 @@ const registry_mod = @import("../registry.zig");
 const devel = @import("../devel.zig");
 const pacman_mod = @import("../pacman.zig");
 const git = @import("../git.zig");
-const cmds = @import("context.zig");
+const types = @import("types.zig");
+const build_ctx = @import("build_context.zig");
 
-const Commands = cmds.Commands;
-const OutdatedEntry = cmds.OutdatedEntry;
-const OutdatedList = cmds.OutdatedList;
-const printError = cmds.printError;
+const BuildContext = build_ctx.BuildContext;
+const OutdatedEntry = types.OutdatedEntry;
+const OutdatedList = types.OutdatedList;
+const printError = types.printError;
 
 /// Shared core for `outdated` and `upgrade`: find installed AUR packages whose
 /// AUR (or --devel) version is newer than the installed one.
@@ -23,12 +24,9 @@ const printError = cmds.printError;
 /// `OutdatedList` otherwise.  The caller owns the list and must `deinit` it;
 /// if `populate_hint` was true, the caller must also clear `devel_version_hint`
 /// *before* deinit (LIFO defer ordering makes this natural).
-pub fn collectOutdated(self: *Commands, filter: []const []const u8, populate_hint: bool) !?OutdatedList {
+pub fn collectOutdated(self: *BuildContext, filter: []const []const u8, populate_hint: bool) !?OutdatedList {
     const ec = self.stderr_color;
-    const pm = self.pacman orelse {
-        self.err_writer.print("{s}error:{s} pacman not initialized\n", .{ ec.red, ec.reset }) catch {};
-        return null;
-    };
+    const pm = self.pacman;
 
     const foreign = try pm.allForeignPackages();
     defer self.allocator.free(foreign);
@@ -84,7 +82,7 @@ pub fn collectOutdated(self: *Commands, filter: []const []const u8, populate_hin
                     .name = pkg.name,
                     .installed_version = pkg.version,
                     .aur_version = aur_ver,
-                    .ignored = self.isIgnored(pkg.name),
+                    .ignored = types.isIgnored(self.flags, pkg.name),
                 });
                 try already_outdated.put(self.allocator, pkg.name, {});
             }
@@ -115,7 +113,7 @@ pub fn collectOutdated(self: *Commands, filter: []const []const u8, populate_hin
 /// are appended.  When `populate_hint` is true, each computed version is also
 /// stored in `self.devel_version_hint` so the build pipeline can render it.
 pub fn checkDevelPackages(
-    self: *Commands,
+    self: *BuildContext,
     packages: []const pacman_mod.InstalledPackage,
     already_outdated: *std.StringHashMapUnmanaged(void),
     entries: *std.ArrayListUnmanaged(OutdatedEntry),
@@ -163,7 +161,7 @@ pub fn checkDevelPackages(
                 .name = pkg.name,
                 .installed_version = pkg.version,
                 .aur_version = version,
-                .ignored = self.isIgnored(pkg.name),
+                .ignored = types.isIgnored(self.flags, pkg.name),
             });
         }
     }

@@ -8,7 +8,9 @@ const repo_mod = @import("../repo.zig");
 const pacman_mod = @import("../pacman.zig");
 const utils = @import("../utils.zig");
 const color = @import("../color.zig");
-const cmds = @import("context.zig");
+const types = @import("types.zig");
+const query_ctx = @import("query_context.zig");
+const build_ctx = @import("build_context.zig");
 const display_mod = @import("display.zig");
 const outdated_mod = @import("outdated.zig");
 
@@ -16,13 +18,14 @@ const build_phase = @import("build_cmd/build.zig");
 const install_phase = @import("build_cmd/install.zig");
 const review_phase = @import("build_cmd/review.zig");
 
-const Commands = cmds.Commands;
-const ExitCode = cmds.ExitCode;
-const BuildResult = cmds.BuildResult;
-const FailedBuild = cmds.FailedBuild;
-const getStdout = cmds.getStdout;
-const printError = cmds.printError;
-const handleResolveError = cmds.handleResolveError;
+const QueryContext = query_ctx.QueryContext;
+const BuildContext = build_ctx.BuildContext;
+const ExitCode = types.ExitCode;
+const BuildResult = types.BuildResult;
+const FailedBuild = types.FailedBuild;
+const getStdout = types.getStdout;
+const printError = types.printError;
+const handleResolveError = types.handleResolveError;
 const displayPlan = display_mod.displayPlan;
 
 // Re-export for callers that import hasFailedDep directly (e.g. tests, context.zig).
@@ -31,7 +34,7 @@ pub const hasFailedDep = build_phase.hasFailedDep;
 // ── Show Command ─────────────────────────────────────────────────────
 
 /// Display build files for a package clone.
-pub fn show(self: *Commands, target: []const u8) !ExitCode {
+pub fn show(self: *QueryContext, target: []const u8) !ExitCode {
     const ec = self.stderr_color;
     const cache = git.resolveCacheRoot(self.cache_root, self.allocator) catch {
         self.err_writer.print("{s}error:{s} could not determine cache directory (HOME not set)\n", .{ ec.red, ec.reset }) catch {};
@@ -67,7 +70,7 @@ pub fn show(self: *Commands, target: []const u8) !ExitCode {
 // ── Clone Command ────────────────────────────────────────────────────
 
 /// Clone AUR packages to the cache directory (FR-8).
-pub fn clonePackages(self: *Commands, targets: []const []const u8) !ExitCode {
+pub fn clonePackages(self: *QueryContext, targets: []const []const u8) !ExitCode {
     const ec = self.stderr_color;
     const stdout = getStdout();
 
@@ -155,17 +158,17 @@ pub fn clonePackages(self: *Commands, targets: []const []const u8) !ExitCode {
 const BuildMode = enum { sync, build_only };
 
 /// Execute the full sync workflow: resolve -> clone -> review -> build -> install.
-pub fn sync(self: *Commands, targets: []const []const u8) !ExitCode {
+pub fn sync(self: *BuildContext, targets: []const []const u8) !ExitCode {
     var ignore_buf: [256][]const u8 = undefined;
-    const filtered = self.filterIgnored(targets, &ignore_buf);
+    const filtered = types.filterIgnored(self.stdout_color, self.stderr_color, self.err_writer, self.flags, targets, &ignore_buf);
     if (filtered.len == 0) return .success;
     return runBuildPipeline(self, filtered, .sync);
 }
 
 /// Build packages and add to repository without installing.
-pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
+pub fn build(self: *BuildContext, targets: []const []const u8) !ExitCode {
     var ignore_buf: [256][]const u8 = undefined;
-    const filtered = self.filterIgnored(targets, &ignore_buf);
+    const filtered = types.filterIgnored(self.stdout_color, self.stderr_color, self.err_writer, self.flags, targets, &ignore_buf);
     if (filtered.len == 0) return .success;
     return runBuildPipeline(self, filtered, .build_only);
 }
@@ -174,20 +177,11 @@ pub fn build(self: *Commands, targets: []const []const u8) !ExitCode {
 /// targets (ignore prompting handled upstream).
 /// Phases: resolve -> conflicts -> providers -> display -> clone -> review ->
 ///         build -> [install].  The final install phase runs only in .sync mode.
-pub fn runBuildPipeline(self: *Commands, filtered: []const []const u8, mode: BuildMode) !ExitCode {
+pub fn runBuildPipeline(self: *BuildContext, filtered: []const []const u8, mode: BuildMode) !ExitCode {
     const ec = self.stderr_color;
-    const reg = self.registry orelse {
-        self.err_writer.print("{s}error:{s} registry not initialized\n", .{ ec.red, ec.reset }) catch {};
-        return .general_error;
-    };
-    const repository = self.repo orelse {
-        self.err_writer.print("{s}error:{s} repository not initialized\n", .{ ec.red, ec.reset }) catch {};
-        return .general_error;
-    };
-    const c_root = self.cache_root orelse {
-        self.err_writer.print("{s}error:{s} cache root not set\n", .{ ec.red, ec.reset }) catch {};
-        return .general_error;
-    };
+    const reg = self.registry;
+    const repository = self.repository;
+    const c_root = self.cache_root;
 
     // Phase 1: Resolve
     var s = solver_mod.Solver.init(self.allocator, reg);
@@ -221,26 +215,21 @@ pub fn runBuildPipeline(self: *Commands, filtered: []const []const u8, mode: Bui
     var providers_to_install: std.ArrayListUnmanaged([]const u8) = .empty;
     defer providers_to_install.deinit(self.allocator);
 
-    if (self.pacman) |pm| {
-        const choices = try pm.findTransitiveProviderChoices(self.allocator, plan.repo_deps);
-        defer {
-            for (choices) |ch| self.allocator.free(ch.candidates);
-            self.allocator.free(choices);
-        }
-        try install_phase.selectRepoDepsProviders(
-            self.allocator,
-            choices,
-            self.flags.noconfirm,
-            self.stdout_color,
-            &chosen_providers,
-            &providers_to_install,
-        );
+    const choices = try self.pacman.findTransitiveProviderChoices(self.allocator, plan.repo_deps);
+    defer {
+        for (choices) |ch| self.allocator.free(ch.candidates);
+        self.allocator.free(choices);
     }
+    try install_phase.selectRepoDepsProviders(
+        self.allocator,
+        choices,
+        self.flags.noconfirm,
+        self.stdout_color,
+        &chosen_providers,
+        &providers_to_install,
+    );
 
-    const repo_deps_full = if (self.pacman) |pm|
-        try pm.transitiveRepoDeps(self.allocator, plan.repo_deps, chosen_providers)
-    else
-        try self.allocator.dupe([]const u8, plan.repo_deps);
+    const repo_deps_full = try self.pacman.transitiveRepoDeps(self.allocator, plan.repo_deps, chosen_providers);
     defer self.allocator.free(repo_deps_full);
 
     // Phase 2: Display and confirm
@@ -288,7 +277,7 @@ pub fn runBuildPipeline(self: *Commands, filtered: []const []const u8, mode: Bui
     if (build_result.signal_aborted) return .signal_killed;
 
     if (build_result.succeeded.len > 0) {
-        repo_mod.refreshAurpkgsSyncDb(self.allocator, repository, self.auth.?) catch |err| {
+        repo_mod.refreshAurpkgsSyncDb(self.allocator, repository, self.auth) catch |err| {
             self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err }) catch {};
         };
     }
@@ -324,7 +313,7 @@ pub fn runBuildPipeline(self: *Commands, filtered: []const []const u8, mode: Bui
     return .success;
 }
 
-fn handleEmptyBuildOrder(self: *Commands, plan: solver_mod.BuildPlan, mode: BuildMode) !ExitCode {
+fn handleEmptyBuildOrder(self: *BuildContext, plan: solver_mod.BuildPlan, mode: BuildMode) !ExitCode {
     if (mode == .build_only) {
         getStdout().writeAll(" nothing to do -- all targets are up to date\n") catch {};
         return .success;
@@ -337,10 +326,8 @@ fn handleEmptyBuildOrder(self: *Commands, plan: solver_mod.BuildPlan, mode: Buil
         if (dep.source == .repo_aur) {
             try aurpkgs_targets.append(self.allocator, dep.name);
         } else if (dep.source == .satisfied_aur and !self.flags.needed) {
-            if (self.pacman) |pm| {
-                if (pm.isAurRepo(pm.syncDbFor(dep.name) orelse "")) {
-                    try aurpkgs_targets.append(self.allocator, dep.name);
-                }
+            if (self.pacman.isAurRepo(self.pacman.syncDbFor(dep.name) orelse "")) {
+                try aurpkgs_targets.append(self.allocator, dep.name);
             }
         }
     }
@@ -369,14 +356,9 @@ fn handleEmptyBuildOrder(self: *Commands, plan: solver_mod.BuildPlan, mode: Buil
 // ── Upgrade Command ──────────────────────────────────────────────────
 
 /// Upgrade outdated AUR packages via the full sync workflow.
-pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
+pub fn upgrade(self: *BuildContext, targets: []const []const u8) !ExitCode {
     const ec = self.stderr_color;
     const sc = self.stdout_color;
-
-    if (self.pacman == null) {
-        self.err_writer.print("{s}error:{s} pacman not initialized\n", .{ ec.red, ec.reset }) catch {};
-        return .general_error;
-    }
 
     getStdout().print("{s}::{s} Starting AUR upgrade...\n", .{ sc.blue, sc.reset }) catch {};
 
@@ -409,22 +391,14 @@ pub fn upgrade(self: *Commands, targets: []const []const u8) !ExitCode {
 // ── Clean Command ────────────────────────────────────────────────────
 
 /// Remove stale aurpkgs artifacts after user confirmation.
-pub fn clean(self: *Commands) !ExitCode {
+pub fn clean(self: *BuildContext) !ExitCode {
     const ec = self.stderr_color;
-    const repository = self.repo orelse {
-        self.err_writer.print("{s}error:{s} repository not initialized\n", .{ ec.red, ec.reset }) catch {};
-        return .general_error;
-    };
+    const repository = self.repository;
 
     const plan = if (self.flags.all) blk: {
         break :blk try repository.cleanAll();
     } else blk: {
-        const pm = self.pacman orelse {
-            self.err_writer.print("{s}error:{s} pacman not initialized\n", .{ ec.red, ec.reset }) catch {};
-            return .general_error;
-        };
-
-        const uninstalled = pm.uninstalledAurpkgs() catch |err| switch (err) {
+        const uninstalled = self.pacman.uninstalledAurpkgs() catch |err| switch (err) {
             error.AurDbNotConfigured => {
                 self.err_writer.print("{s}error:{s} local AUR repository not configured in pacman.conf\n", .{ ec.red, ec.reset }) catch {};
                 return .general_error;
@@ -465,7 +439,7 @@ pub fn clean(self: *Commands) !ExitCode {
     repository.cleanExecute(plan);
 
     if (plan.removed_packages.len > 0) {
-        repo_mod.refreshAurpkgsSyncDb(self.allocator, repository, self.auth.?) catch |err| {
+        repo_mod.refreshAurpkgsSyncDb(self.allocator, repository, self.auth) catch |err| {
             self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err }) catch {};
         };
     }
@@ -473,7 +447,7 @@ pub fn clean(self: *Commands) !ExitCode {
     return .success;
 }
 
-fn printBuildSummary(result: BuildResult, err_writer: cmds.ErrWriter, ec: color.Style) void {
+fn printBuildSummary(result: BuildResult, err_writer: types.ErrWriter, ec: color.Style) void {
     err_writer.print("\n{s}::{s} Build summary: {d} succeeded, {d} failed\n", .{
         ec.blue, ec.reset, result.succeeded.len, result.failed.len,
     }) catch {};
@@ -544,18 +518,3 @@ test "anySubsequentEntryNeeds returns false when no future entry depends on pkgb
     try testing.expect(!build_phase.anySubsequentEntryNeeds(entries[2..], "A"));
 }
 
-test "upgrade returns general_error when pacman not initialized" {
-    var cmd = Commands.init(testing.allocator, std.testing.io, undefined, .{});
-    cmd.err_writer = cmds.null_err_writer;
-    cmd.stderr_color = color.Style.disabled;
-    const result = try upgrade(&cmd, &.{});
-    try testing.expectEqual(ExitCode.general_error, result);
-}
-
-test "clean returns general_error when pacman not initialized" {
-    var cmd = Commands.init(testing.allocator, std.testing.io, undefined, .{});
-    cmd.err_writer = cmds.null_err_writer;
-    cmd.stderr_color = color.Style.disabled;
-    const result = try clean(&cmd);
-    try testing.expectEqual(ExitCode.general_error, result);
-}
