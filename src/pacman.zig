@@ -2,23 +2,14 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const alpm = @import("alpm.zig");
 const repo_mod = @import("repo.zig");
+const version = @import("version.zig");
+const pacman_conf = @import("pacman_conf.zig");
+
+pub const CmpOp = version.CmpOp;
+pub const VersionConstraint = version.VersionConstraint;
+pub const checkVersion = version.checkVersion;
 
 // ── Public Types ─────────────────────────────────────────────────────────
-
-/// Version constraint operator.
-pub const CmpOp = enum {
-    eq,
-    ge,
-    le,
-    gt,
-    lt,
-};
-
-/// A version constraint: operator + version string.
-pub const VersionConstraint = struct {
-    op: CmpOp,
-    version: []const u8,
-};
 
 /// Result of a provider search.
 pub const ProviderMatch = struct {
@@ -79,7 +70,7 @@ pub const Pacman = struct {
         var handle = try alpm.Handle.init("/", "/var/lib/pacman/");
         errdefer handle.deinit();
 
-        const conf = try registerSyncDbs(allocator, handle);
+        const conf = try pacman_conf.registerSyncDbs(allocator, handle);
         errdefer allocator.free(conf.sync_dbs);
 
         const official_dbs = try buildOfficialDbs(allocator, conf.sync_dbs, aur_repo_name);
@@ -614,25 +605,6 @@ fn buildOfficialDbs(allocator: Allocator, sync_dbs: []alpm.Database, aur_repo_na
     return try list.toOwnedSlice(allocator);
 }
 
-/// Check if `version` satisfies `constraint` using libalpm's vercmp.
-pub fn checkVersion(version: []const u8, constraint: VersionConstraint) bool {
-    const cmp = alpm.vercmp(version, constraint.version);
-    return switch (constraint.op) {
-        .eq => cmp == 0,
-        .ge => cmp >= 0,
-        .le => cmp <= 0,
-        .gt => cmp > 0,
-        .lt => cmp < 0,
-    };
-}
-
-/// Parse a "Key = Value" config line, returning trimmed value if key matches.
-fn parseDirectiveValue(line: []const u8, key: []const u8) ?[]const u8 {
-    if (!std.mem.startsWith(u8, line, key)) return null;
-    const eq_pos = std.mem.indexOfScalar(u8, line, '=') orelse return null;
-    return std.mem.trim(u8, line[eq_pos + 1 ..], " \t");
-}
-
 /// Check if a package matches a dependency by name or provides list.
 fn packageMatchesDep(pkg: alpm.AlpmPackage, dep: []const u8) bool {
     if (std.mem.eql(u8, pkg.getName(), dep)) return true;
@@ -670,149 +642,10 @@ fn findAllProvidersInDb(allocator: Allocator, db: alpm.Database, dep: []const u8
     }
 }
 
-const PacmanConf = struct {
-    sync_dbs: []alpm.Database,
-    verbose_pkg_lists: bool,
-    color: bool,
-    ignore_pkgs: []const []const u8,
-};
-
-/// Parse /etc/pacman.conf and register each [repo] section as a sync database.
-/// Handles Include directives for mirror server lists.
-fn registerSyncDbs(allocator: Allocator, handle: alpm.Handle) !PacmanConf {
-    var dbs: std.ArrayList(alpm.Database) = .empty;
-    defer dbs.deinit(allocator);
-
-    // pacman.conf is small — read entire file
-    var buf: [64 * 1024]u8 = undefined;
-    const content = std.Io.Dir.readFile(std.Io.Dir.cwd(), std.Options.debug_io, "/etc/pacman.conf", &buf) catch
-        return error.PacmanConfNotFound;
-
-    var current_repo: ?alpm.Database = null;
-    var in_options = false;
-    var verbose_pkg_lists = false;
-    var color_opt = false;
-    var ignore_pkgs: std.ArrayListUnmanaged([]const u8) = .empty;
-    var lines = std.mem.splitScalar(u8, content, '\n');
-
-    while (lines.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-
-        // Skip comments and empty lines
-        if (trimmed.len == 0 or trimmed[0] == '#') continue;
-
-        // Section header: [reponame]
-        if (trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']') {
-            const name = trimmed[1 .. trimmed.len - 1];
-            if (std.mem.eql(u8, name, "options")) {
-                current_repo = null;
-                in_options = true;
-                continue;
-            }
-            in_options = false;
-
-            const db = handle.registerSyncDb(name, .use_default) catch {
-                current_repo = null;
-                continue;
-            };
-            try dbs.append(allocator, db);
-            current_repo = db;
-            continue;
-        }
-
-        // Options section directives
-        if (in_options) {
-            if (std.mem.eql(u8, trimmed, "VerbosePkgLists")) verbose_pkg_lists = true;
-            if (std.mem.eql(u8, trimmed, "Color")) color_opt = true;
-            if (parseDirectiveValue(trimmed, "IgnorePkg")) |value| {
-                var it = std.mem.tokenizeAny(u8, value, " \t");
-                while (it.next()) |pkg| {
-                    try ignore_pkgs.append(allocator, try allocator.dupe(u8, pkg));
-                }
-            }
-        }
-
-        if (current_repo) |repo| {
-            if (parseDirectiveValue(trimmed, "Include")) |path| {
-                addServersFromMirrorlist(repo, path);
-            }
-            if (parseDirectiveValue(trimmed, "Server")) |url| {
-                repo.addServer(url) catch {};
-            }
-        }
-    }
-
-    return .{
-        .sync_dbs = try dbs.toOwnedSlice(allocator),
-        .verbose_pkg_lists = verbose_pkg_lists,
-        .color = color_opt,
-        .ignore_pkgs = try ignore_pkgs.toOwnedSlice(allocator),
-    };
-}
-
-/// Read a mirrorlist file and add each Server= URL to the database.
-fn addServersFromMirrorlist(db: alpm.Database, path: []const u8) void {
-    var buf: [256 * 1024]u8 = undefined;
-    const content = std.Io.Dir.readFile(std.Io.Dir.cwd(), std.Options.debug_io, path, &buf) catch return;
-
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    while (lines.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-
-        if (trimmed.len == 0 or trimmed[0] == '#') continue;
-
-        if (parseDirectiveValue(trimmed, "Server")) |url| {
-            db.addServer(url) catch {};
-        }
-    }
-}
-
-// ── Tests ────────────────────────────────────────────────────────────────
-
-fn isArchLinux() bool {
-    std.Io.Dir.accessAbsolute(std.Options.debug_io, "/var/lib/pacman/local", .{}) catch return false;
-    return true;
-}
-
-// ── Pure Logic Tests (no system dependencies) ────────────────────────────
-
-test "checkVersion: eq operator" {
-    try std.testing.expect(checkVersion("1.0.0", .{ .op = .eq, .version = "1.0.0" }));
-    try std.testing.expect(!checkVersion("1.0.0", .{ .op = .eq, .version = "2.0.0" }));
-}
-
-test "checkVersion: ge operator" {
-    try std.testing.expect(checkVersion("2.0.0", .{ .op = .ge, .version = "1.0.0" }));
-    try std.testing.expect(checkVersion("1.0.0", .{ .op = .ge, .version = "1.0.0" }));
-    try std.testing.expect(!checkVersion("0.9.0", .{ .op = .ge, .version = "1.0.0" }));
-}
-
-test "checkVersion: le operator" {
-    try std.testing.expect(checkVersion("1.0.0", .{ .op = .le, .version = "2.0.0" }));
-    try std.testing.expect(checkVersion("1.0.0", .{ .op = .le, .version = "1.0.0" }));
-    try std.testing.expect(!checkVersion("2.0.0", .{ .op = .le, .version = "1.0.0" }));
-}
-
-test "checkVersion: gt operator" {
-    try std.testing.expect(checkVersion("2.0.0", .{ .op = .gt, .version = "1.0.0" }));
-    try std.testing.expect(!checkVersion("1.0.0", .{ .op = .gt, .version = "1.0.0" }));
-}
-
-test "checkVersion: lt operator" {
-    try std.testing.expect(checkVersion("1.0.0", .{ .op = .lt, .version = "2.0.0" }));
-    try std.testing.expect(!checkVersion("1.0.0", .{ .op = .lt, .version = "1.0.0" }));
-}
-
-test "checkVersion: with epochs and pkgrel" {
-    try std.testing.expect(checkVersion("1:1.0", .{ .op = .gt, .version = "2.0" }));
-    try std.testing.expect(checkVersion("1.0-2", .{ .op = .gt, .version = "1.0-1" }));
-    try std.testing.expect(!checkVersion("1.0-1", .{ .op = .ge, .version = "2.0-1" }));
-}
-
 // ── Integration Tests (require real pacman database) ─────────────────────
 
 test "Pacman.init and deinit on Arch system" {
-    if (!isArchLinux()) return error.SkipZigTest;
+    if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
     var pm = try Pacman.init(std.testing.allocator, repo_mod.DEFAULT_REPO_NAME);
     defer pm.deinit();
@@ -822,7 +655,7 @@ test "Pacman.init and deinit on Arch system" {
 }
 
 test "isInstalled returns true for pacman itself" {
-    if (!isArchLinux()) return error.SkipZigTest;
+    if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
     var pm = try Pacman.init(std.testing.allocator, repo_mod.DEFAULT_REPO_NAME);
     defer pm.deinit();
@@ -832,20 +665,20 @@ test "isInstalled returns true for pacman itself" {
 }
 
 test "installedVersion returns version for installed package" {
-    if (!isArchLinux()) return error.SkipZigTest;
+    if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
     var pm = try Pacman.init(std.testing.allocator, repo_mod.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
-    const version = pm.installedVersion("pacman");
-    try std.testing.expect(version != null);
-    try std.testing.expect(version.?.len > 0);
+    const ver = pm.installedVersion("pacman");
+    try std.testing.expect(ver != null);
+    try std.testing.expect(ver.?.len > 0);
 
     try std.testing.expect(pm.installedVersion("zzz-not-installed") == null);
 }
 
 test "isInSyncDb finds official packages" {
-    if (!isArchLinux()) return error.SkipZigTest;
+    if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
     var pm = try Pacman.init(std.testing.allocator, repo_mod.DEFAULT_REPO_NAME);
     defer pm.deinit();
@@ -856,7 +689,7 @@ test "isInSyncDb finds official packages" {
 }
 
 test "syncDbFor returns correct repository name" {
-    if (!isArchLinux()) return error.SkipZigTest;
+    if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
     var pm = try Pacman.init(std.testing.allocator, repo_mod.DEFAULT_REPO_NAME);
     defer pm.deinit();
@@ -870,7 +703,7 @@ test "syncDbFor returns correct repository name" {
 }
 
 test "satisfies checks installed version against constraint" {
-    if (!isArchLinux()) return error.SkipZigTest;
+    if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
     var pm = try Pacman.init(std.testing.allocator, repo_mod.DEFAULT_REPO_NAME);
     defer pm.deinit();
@@ -884,7 +717,7 @@ test "satisfies checks installed version against constraint" {
 }
 
 test "satisfiesDep checks dependency string against installed packages" {
-    if (!isArchLinux()) return error.SkipZigTest;
+    if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
     var pm = try Pacman.init(std.testing.allocator, repo_mod.DEFAULT_REPO_NAME);
     defer pm.deinit();
@@ -894,7 +727,7 @@ test "satisfiesDep checks dependency string against installed packages" {
 }
 
 test "findProvider finds package providing dependency" {
-    if (!isArchLinux()) return error.SkipZigTest;
+    if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
     var pm = try Pacman.init(std.testing.allocator, repo_mod.DEFAULT_REPO_NAME);
     defer pm.deinit();
@@ -909,7 +742,7 @@ test "findProvider finds package providing dependency" {
 }
 
 test "allForeignPackages returns packages not in official repos" {
-    if (!isArchLinux()) return error.SkipZigTest;
+    if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
     var pm = try Pacman.init(std.testing.allocator, repo_mod.DEFAULT_REPO_NAME);
     defer pm.deinit();
@@ -934,7 +767,7 @@ test "allForeignPackages returns packages not in official repos" {
 }
 
 test "repoDepSizes returns nonzero sizes for real packages" {
-    if (!isArchLinux()) return error.SkipZigTest;
+    if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
     var pm = try Pacman.init(std.testing.allocator, repo_mod.DEFAULT_REPO_NAME);
     defer pm.deinit();
@@ -948,7 +781,7 @@ test "repoDepSizes returns nonzero sizes for real packages" {
 }
 
 test "repoDepSizes returns zeros for unknown packages" {
-    if (!isArchLinux()) return error.SkipZigTest;
+    if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
     var pm = try Pacman.init(std.testing.allocator, repo_mod.DEFAULT_REPO_NAME);
     defer pm.deinit();
@@ -961,7 +794,7 @@ test "repoDepSizes returns zeros for unknown packages" {
 }
 
 test "refreshAurDb errors when aurpkgs not configured" {
-    if (!isArchLinux()) return error.SkipZigTest;
+    if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
     // Create a handle without aurpkgs
     const handle = try alpm.Handle.init("/", "/var/lib/pacman/");
