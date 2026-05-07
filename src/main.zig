@@ -1,13 +1,13 @@
 const std = @import("std");
-const aurodle = @import("aurodle");
-const aur = aurodle.aur;
-const commands = aurodle.commands;
-const git = aurodle.git;
-const pacman_mod = aurodle.pacman;
-const registry_mod = aurodle.registry;
-const repo_mod = aurodle.repo;
-const auth_mod = aurodle.auth;
-const utils = aurodle.utils;
+const aur = @import("aur.zig");
+const commands = @import("commands.zig");
+const git = @import("git.zig");
+const pacman_mod = @import("pacman.zig");
+const registry_mod = @import("registry.zig");
+const repo_mod = @import("repo.zig");
+const auth_mod = @import("auth.zig");
+const utils = @import("utils.zig");
+const color = @import("color.zig");
 const Allocator = std.mem.Allocator;
 
 const ExitCode = commands.ExitCode;
@@ -365,7 +365,7 @@ fn runWithFullStack(
     if (!parsed.flags.noconfirm) {
         reg.provider_chooser = &utils.promptProviderChoice;
     }
-    reg.stderr_color = aurodle.color.Style.detect(std.posix.STDERR_FILENO, pm.color);
+    reg.stderr_color = color.Style.detect(std.posix.STDERR_FILENO, pm.color);
 
     // Initialize privilege escalation (PACMAN_AUTH → sudo → su)
     var auth = auth_mod.Auth.init(allocator, repository.makepkg_conf.pacman_auth) catch |err| {
