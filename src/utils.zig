@@ -2,6 +2,15 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const color = @import("color.zig");
 
+/// Runtime I/O implementation. Set from `init.io` in `main` so that process
+/// spawning (which is incompatible with `std.Options.debug_io` in Zig 0.16.0)
+/// uses the correct backend.
+pub var global_io: std.Io = std.Options.debug_io;
+
+fn currentIo() std.Io {
+    return if (@import("builtin").is_test) std.testing.io else global_io;
+}
+
 /// Max output size we'll capture from a child process.
 const MAX_OUTPUT = 10 * 1024 * 1024;
 
@@ -47,7 +56,7 @@ pub fn runCommandIn(
 ) !ProcessResult {
     if (argv.len == 0) return error.SpawnFailed;
 
-    const io = if (@import("builtin").is_test) std.testing.io else std.Options.debug_io;
+    const io = currentIo();
     const result = try std.process.run(allocator, io, .{
         .argv = argv,
         .cwd = if (cwd) |p| .{ .path = p } else .inherit,
@@ -71,7 +80,7 @@ pub fn runInteractive(
     if (argv.len == 0) return error.SpawnFailed;
     _ = allocator;
 
-    const io = if (@import("builtin").is_test) std.testing.io else std.Options.debug_io;
+    const io = currentIo();
     var child = try std.process.spawn(io, .{
         .argv = argv,
         .cwd = if (cwd) |p| .{ .path = p } else .inherit,

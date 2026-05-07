@@ -17,6 +17,7 @@ const version_string = build_options.version;
 
 pub fn main(init: std.process.Init) u8 {
     const allocator = init.gpa;
+    utils.global_io = init.io;
 
     const result = run(allocator, init.io, init.minimal.args) catch |err| {
         std.debug.print("error: unexpected failure: {}\n", .{err});
