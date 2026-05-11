@@ -1,6 +1,9 @@
 const std = @import("std");
 const aur = @import("aur.zig");
 const commands = @import("commands.zig");
+const cmd_types = @import("commands/types.zig");
+const query_context = @import("commands/query_context.zig");
+const build_context = @import("commands/build_context.zig");
 const git = @import("git.zig");
 const pacman_mod = @import("pacman.zig");
 const registry_mod = @import("registry.zig");
@@ -10,7 +13,7 @@ const utils = @import("utils.zig");
 const color = @import("color.zig");
 const Allocator = std.mem.Allocator;
 
-const ExitCode = commands.ExitCode;
+const ExitCode = cmd_types.ExitCode;
 
 const build_options = @import("build_options");
 const version_string = build_options.version;
@@ -87,7 +90,7 @@ fn run(allocator: Allocator, io: std.Io, raw_args: std.process.Args) !ExitCode {
     }
 
     // Simple commands that only need the AUR client
-    var qctx = commands.QueryContext.init(allocator, io, &aur_client, cache_root, parsed.flags);
+    var qctx = query_context.QueryContext.init(allocator, io, &aur_client, cache_root, parsed.flags);
 
     return switch (parsed.operation) {
         .info => try commands.query.info(&qctx, parsed.targets),
@@ -180,7 +183,7 @@ const Operation = enum {
 const ParsedCommand = struct {
     operation: Operation,
     targets: []const []const u8,
-    flags: commands.Flags,
+    flags: cmd_types.Flags,
 };
 
 const ParseError = error{
@@ -208,7 +211,7 @@ fn parseArgs(args: []const []const u8, target_buf: [][]const u8) ParseError!Pars
 
     // First non-flag argument is the command.
     // Check pacman-style short aliases (-S, -Ss, -Si, etc.) then full names.
-    var flags = commands.Flags{};
+    var flags = cmd_types.Flags{};
     const operation = if (args[0].len >= 2 and args[0][0] == '-' and args[0][1] != '-') blk: {
         const alias = args[0][1..];
         // -Scc is special: maps to clean --all
@@ -271,12 +274,12 @@ fn parseArgs(args: []const []const u8, target_buf: [][]const u8) ParseError!Pars
             } else if (std.mem.eql(u8, arg, "--sort")) {
                 i += 1;
                 if (i >= args.len) return ParseError.MissingArgument;
-                flags.sort = commands.SortField.fromString(args[i]) orelse
+                flags.sort = cmd_types.SortField.fromString(args[i]) orelse
                     return ParseError.UnknownFlag;
             } else if (std.mem.eql(u8, arg, "--rsort")) {
                 i += 1;
                 if (i >= args.len) return ParseError.MissingArgument;
-                flags.rsort = commands.SortField.fromString(args[i]) orelse
+                flags.rsort = cmd_types.SortField.fromString(args[i]) orelse
                     return ParseError.UnknownFlag;
             } else {
                 return ParseError.UnknownFlag;
@@ -393,7 +396,7 @@ fn runWithFullStack(
     // here so the struct is available; acquireCredentials()+startKeepalive() are
     // called just before the build loop begins.
 
-    var bctx = commands.BuildContext.init(
+    var bctx = build_context.BuildContext.init(
         allocator,
         io,
         aur_client,
@@ -414,7 +417,7 @@ fn runWithFullStack(
         .upgrade => try commands.build_cmd.upgrade(&bctx, parsed.targets),
         .clean => try commands.build_cmd.clean(&bctx),
         .clone => blk: {
-            var qctx = commands.QueryContext{
+            var qctx = query_context.QueryContext{
                 .allocator = bctx.allocator,
                 .io = bctx.io,
                 .aur_client = bctx.aur_client,
@@ -433,7 +436,7 @@ fn runWithFullStack(
 }
 
 fn printHelp() void {
-    commands.getStdout().writeAll(
+    cmd_types.getStdout().writeAll(
         \\aurodle — newt your average AUR helper
         \\
         \\Usage: aurodle <command> [options] [targets...]
@@ -483,7 +486,7 @@ fn printHelp() void {
 }
 
 fn printVersion() void {
-    commands.getStdout().writeAll("aurodle " ++ version_string ++ "\n") catch {};
+    cmd_types.getStdout().writeAll("aurodle " ++ version_string ++ "\n") catch {};
 }
 
 fn printUsageError(message: []const u8) void {
@@ -617,11 +620,11 @@ test "parseArgs: combined short flags" {
 test "parseArgs: sort and rsort flags" {
     var buf1: [256][]const u8 = undefined;
     const parsed = try parseArgs(&.{ "search", "--sort", "votes", "foo" }, &buf1);
-    try std.testing.expectEqual(commands.SortField.votes, parsed.flags.sort.?);
+    try std.testing.expectEqual(cmd_types.SortField.votes, parsed.flags.sort.?);
 
     var buf2: [256][]const u8 = undefined;
     const parsed2 = try parseArgs(&.{ "search", "--rsort", "name", "foo" }, &buf2);
-    try std.testing.expectEqual(commands.SortField.name, parsed2.flags.rsort.?);
+    try std.testing.expectEqual(cmd_types.SortField.name, parsed2.flags.rsort.?);
 }
 
 test "parseArgs: --noconfirm flag" {
