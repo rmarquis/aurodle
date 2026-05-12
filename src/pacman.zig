@@ -642,3 +642,6 @@ fn findAllProvidersInDb(allocator: Allocator, db: alpm.Database, dep: []const u8
     }
 }
 
+test {
+    _ = @import("pacman/tests.zig");
+}

@@ -268,7 +268,7 @@ pub const Repository = struct {
 
     /// Copy-pasteable pacman.conf configuration for the local AUR repository.
     pub fn configInstructions() []const u8 {
-        return 
+        return
         \\Add the following to /etc/pacman.conf (name can be customized):
         \\
         \\[aur]
@@ -461,9 +461,7 @@ pub fn parsePackageFilename(filename: []const u8) ?struct { name: []const u8, ve
 }
 
 /// Check if [repo_name] is configured in a pacman.conf file.
-
 /// Check if [name] is configured in a pacman.conf file.
-
 /// Derive the local AUR repository name from pacman.conf by finding a section
 /// whose `Server = file://` URL matches the given PKGDEST path.
 ///
@@ -472,23 +470,15 @@ pub fn parsePackageFilename(filename: []const u8) ?struct { name: []const u8, ve
 ///   Server = file:///var/lib/aurodle/mypkgs
 ///
 /// This returns "mypkgs".
-
-
 /// Parse PKGDEST and PKGEXT from makepkg.conf files.
 /// Reads /etc/makepkg.conf first, then ~/.makepkg.conf (user overrides).
 /// Environment variables override config files.
-
 /// Parse a single makepkg.conf file for PKGDEST and PKGEXT.
-
-
 /// Parse "KEY=value" and return value if key matches.
-
 /// Strip surrounding single or double quotes from a value.
-
 /// Strip bash array syntax: "(content)" → "content".
 /// Also strips quotes from the inner content.
 /// Handles: (sudo), ("doas"), ('doas -s'), (sudo --askpass)
-
 const dirExists = utils.dirExists;
 
 /// Copy the local AUR repo DB to pacman's sync cache so that subsequent
@@ -500,4 +490,8 @@ pub fn refreshAurpkgsSyncDb(allocator: std.mem.Allocator, repository: *Repositor
     const result = try auth.runCaptured(&.{ "cp", repository.db_path, sync_db_path });
     defer result.deinit(allocator);
     if (!result.success()) return error.SyncDbRefreshFailed;
+}
+
+test {
+    _ = @import("repo/tests.zig");
 }

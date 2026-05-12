@@ -420,7 +420,6 @@ pub fn SolverImpl(comptime RegistryT: type) type {
     };
 }
 
-
 test {
     _ = @import("solver/tests.zig");
 }

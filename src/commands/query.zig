@@ -435,7 +435,6 @@ test "SortField.fromString returns null for unknown" {
     try testing.expect(SortField.fromString("invalid") == null);
 }
 
-
 test "OutdatedEntry struct has required fields" {
     const entry = OutdatedEntry{
         .name = "foo",

@@ -212,9 +212,6 @@ pub fn readFile(allocator: Allocator, cache_root: []const u8, pkgbase: []const u
     defer allocator.free(full_path);
 
     return std.Io.Dir.readFileAlloc(std.Io.Dir.cwd(), std.Options.debug_io, full_path, allocator, .limited(1024 * 1024)) catch error.InvalidFilePath;
-    
-
-    
 }
 
 /// Show the diff between the previous HEAD and current HEAD.
@@ -309,4 +306,8 @@ pub fn createTestGitRepo(allocator: Allocator, base_dir: []const u8, name: []con
     commit_result.deinit(allocator);
 
     return repo_dir;
+}
+
+test {
+    _ = @import("git/tests.zig");
 }

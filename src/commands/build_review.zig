@@ -78,11 +78,8 @@ pub fn reviewPackages(
 /// Prompt the user to resolve each detected conflict.
 /// Returns the list of packages accepted for removal, or null if any conflict was rejected.
 pub fn resolveConflicts(allocator: Allocator, conflicts: []const plan_mod.Conflict, c: color.Style) !?[]const []const u8 {
-    
-    
     if (std.c.isatty(std.posix.STDIN_FILENO) == 0) return null;
 
-    
     var removals: std.ArrayListUnmanaged([]const u8) = .empty;
     defer removals.deinit(allocator);
 

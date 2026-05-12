@@ -517,4 +517,3 @@ test "anySubsequentEntryNeeds returns false when no future entry depends on pkgb
     try testing.expect(!build_phase.anySubsequentEntryNeeds(&entries, "B"));
     try testing.expect(!build_phase.anySubsequentEntryNeeds(entries[2..], "A"));
 }
-
