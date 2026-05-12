@@ -30,4 +30,10 @@ test {
     _ = _solver;
     _ = _color;
     _ = _auth;
+    _ = @import("aur/tests.zig");
+    _ = @import("git/tests.zig");
+    _ = @import("pacman/tests.zig");
+    _ = @import("registry/tests.zig");
+    _ = @import("repo/tests.zig");
+    _ = @import("solver/tests.zig");
 }

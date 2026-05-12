@@ -386,7 +386,3 @@ pub fn appendUrlEncoded(buf: *std.ArrayList(u8), allocator: Allocator, input: []
 fn hexDigit(v: u4) u8 {
     return "0123456789ABCDEF"[v];
 }
-
-test {
-    _ = @import("aur/tests.zig");
-}

@@ -307,7 +307,3 @@ pub fn createTestGitRepo(allocator: Allocator, base_dir: []const u8, name: []con
 
     return repo_dir;
 }
-
-test {
-    _ = @import("git/tests.zig");
-}

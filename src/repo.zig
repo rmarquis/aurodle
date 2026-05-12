@@ -491,7 +491,3 @@ pub fn refreshAurpkgsSyncDb(allocator: std.mem.Allocator, repository: *Repositor
     defer result.deinit(allocator);
     if (!result.success()) return error.SyncDbRefreshFailed;
 }
-
-test {
-    _ = @import("repo/tests.zig");
-}

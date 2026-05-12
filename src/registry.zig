@@ -436,9 +436,3 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
 }
 
 // ── Pure Functions ───────────────────────────────────────────────────────
-
-// ── Tests ────────────────────────────────────────────────────────────────
-
-test {
-    _ = @import("registry/tests.zig");
-}
