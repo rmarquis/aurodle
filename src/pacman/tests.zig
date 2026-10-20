@@ -173,3 +173,66 @@ test "refreshAurDb errors when aurpkgs not configured" {
     try testing.expect(pm.aurpkgs_db == null);
     try testing.expectError(error.AurDbNotConfigured, pm.refreshAurDb());
 }
+
+// ── Transitive dep BFS (mock pacman, no libalpm handle) ────────────────────
+
+const mocks_mod = @import("mocks.zig");
+const MockPacman = mocks_mod.MockPacman;
+const MockPackage = mocks_mod.MockPackage;
+
+// Regression: nodejs-lts-krypton (installed, provides nodejs=24.22.0) vs
+// uninstalled repo providers nodejs/nodejs-lts-iron/nodejs-lts-jod. The dep
+// is already satisfied — the BFS must neither prompt nor schedule a
+// conflicting provider for installation.
+const nodejs_world = MockPacman{
+    .sync_pkgs = &.{
+        .{ .name = "npm", .depends = &.{"nodejs"} },
+        .{ .name = "nodejs" },
+        .{ .name = "nodejs-lts-iron", .provides = &.{"nodejs"} },
+        .{ .name = "nodejs-lts-jod", .provides = &.{"nodejs"} },
+        .{ .name = "nodejs-lts-krypton", .provides = &.{ "nodejs=24.22.0", "nodejs-lts" } },
+    },
+    .local_pkgs = &.{
+        .{ .name = "nodejs-lts-krypton", .provides = &.{ "nodejs=24.22.0", "nodejs-lts" } },
+    },
+};
+
+test "findTransitiveProviderChoices: installed provides-satisfier suppresses provider choice" {
+    const choices = try Pacman.findTransitiveProviderChoices(&nodejs_world, testing.allocator, &.{"npm"});
+    defer {
+        for (choices) |ch| testing.allocator.free(ch.candidates);
+        testing.allocator.free(choices);
+    }
+
+    try testing.expectEqual(@as(usize, 0), choices.len);
+}
+
+test "findTransitiveProviderChoices: unsatisfied virtual dep still offers a choice" {
+    const world = MockPacman{ .sync_pkgs = nodejs_world.sync_pkgs };
+
+    const choices = try Pacman.findTransitiveProviderChoices(&world, testing.allocator, &.{"npm"});
+    defer {
+        for (choices) |ch| testing.allocator.free(ch.candidates);
+        testing.allocator.free(choices);
+    }
+
+    try testing.expectEqual(@as(usize, 1), choices.len);
+    try testing.expectEqualStrings("nodejs", choices[0].dep_name);
+    try testing.expectEqual(@as(usize, 4), choices[0].candidates.len);
+}
+
+test "transitiveRepoDeps: installed provides-satisfier excludes conflicting provider" {
+    const deps = try Pacman.transitiveRepoDeps(&nodejs_world, testing.allocator, &.{"npm"}, .empty);
+    defer testing.allocator.free(deps);
+
+    try testing.expectEqualSlices([]const u8, &.{"npm"}, deps);
+}
+
+test "transitiveRepoDeps: unsatisfied virtual dep resolves to first-satisfier" {
+    const world = MockPacman{ .sync_pkgs = nodejs_world.sync_pkgs };
+
+    const deps = try Pacman.transitiveRepoDeps(&world, testing.allocator, &.{"npm"}, .empty);
+    defer testing.allocator.free(deps);
+
+    try testing.expectEqualSlices([]const u8, &.{ "npm", "nodejs" }, deps);
+}

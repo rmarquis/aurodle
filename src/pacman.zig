@@ -386,10 +386,14 @@ pub const Pacman = struct {
     /// provider package name (e.g. "pipewire-jack"). When a dep is present in
     /// the map the chosen package is used; otherwise first-satisfier wins.
     ///
+    /// Deps already satisfied by an installed package (by name or provides)
+    /// are excluded — installing a repo provider would conflict with the
+    /// installed satisfier (e.g. nodejs-lts-jod vs nodejs-lts-krypton).
+    ///
     /// Caller owns the returned slice (strings themselves are borrowed from
     /// libalpm memory and remain valid until Pacman.deinit).
     pub fn transitiveRepoDeps(
-        self: Pacman,
+        self: anytype,
         allocator: Allocator,
         root_names: []const []const u8,
         provider_choices: std.StringHashMapUnmanaged([]const u8),
@@ -414,6 +418,10 @@ pub const Pacman = struct {
         while (head < queue.items.len) {
             const dep_str = queue.items[head];
             head += 1;
+
+            // Satisfied by an installed package (by name or via provides) —
+            // do not pull in a repo provider that would conflict with it.
+            if (self.satisfiesDep(dep_str)) continue;
 
             const pkg = (if (provider_choices.get(dep_str)) |chosen_name|
                 self.findInOfficialDbs(chosen_name)
@@ -447,11 +455,15 @@ pub const Pacman = struct {
     /// `SyncProviderChoice` for each virtual dep that has more than one
     /// uninstalled provider in official repos.
     ///
+    /// Deps already satisfied by an installed package (by name or provides)
+    /// are skipped — no choice is needed and offering one would propose
+    /// providers that conflict with the installed satisfier.
+    ///
     /// BFS uses first-satisfier order; the returned choices are in BFS
     /// encounter order.  Caller owns the slice and each `candidates` slice
     /// inside it.
     pub fn findTransitiveProviderChoices(
-        self: Pacman,
+        self: anytype,
         allocator: Allocator,
         root_names: []const []const u8,
     ) ![]SyncProviderChoice {
@@ -477,6 +489,11 @@ pub const Pacman = struct {
         while (head < queue.items.len) {
             const dep_str = queue.items[head];
             head += 1;
+
+            // Already satisfied by an installed package (by name or via
+            // provides, e.g. nodejs-lts-krypton provides nodejs) — nothing
+            // to choose or install.
+            if (self.satisfiesDep(dep_str)) continue;
 
             const all = try self.findAllOfficialProviders(allocator, dep_str);
             defer allocator.free(all);
