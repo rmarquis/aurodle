@@ -76,8 +76,8 @@ pub fn search(self: *QueryContext, terms: []const []const u8) !ExitCode {
     defer filtered.deinit(self.allocator);
     outer: for (packages) |pkg| {
         for (terms[1..]) |term| {
-            const in_name = std.ascii.indexOfIgnoreCase(pkg.name, term) != null;
-            const in_desc = if (pkg.description) |d| std.ascii.indexOfIgnoreCase(d, term) != null else false;
+            const in_name = std.ascii.findIgnoreCase(pkg.name, term) != null;
+            const in_desc = if (pkg.description) |d| std.ascii.findIgnoreCase(d, term) != null else false;
             if (!in_name and !in_desc) continue :outer;
         }
         try filtered.append(self.allocator, pkg);

@@ -19,6 +19,15 @@ pub fn build(b: *std.Build) void {
 
     mod.linkSystemLibrary("alpm", .{});
 
+    const alpm_translate_c = b.addTranslateC(.{
+        .root_source_file = b.path("src/alpm_c.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    alpm_translate_c.linkSystemLibrary("alpm", .{});
+    const alpm_c_module = alpm_translate_c.createModule();
+    mod.addImport("alpm_c", alpm_c_module);
+
     const exe = b.addExecutable(.{
         .name = "aurodle",
         .root_module = b.createModule(.{
@@ -28,6 +37,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "aurodle", .module = mod },
                 .{ .name = "build_options", .module = opts.createModule() },
+                .{ .name = "alpm_c", .module = alpm_c_module },
             },
         }),
     });
@@ -41,9 +51,7 @@ pub fn build(b: *std.Build) void {
 
     run_cmd.step.dependOn(b.getInstallStep());
 
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
 
     const mod_tests = b.addTest(.{
         .root_module = mod,

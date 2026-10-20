@@ -1,10 +1,7 @@
 const std = @import("std");
 
 /// Raw C bindings for libalpm. Never exposed outside this module.
-const c = @cImport({
-    @cInclude("alpm.h");
-    @cInclude("alpm_list.h");
-});
+const c = @import("alpm_c");
 
 // ── Public Types ─────────────────────────────────────────────────────────
 
@@ -259,7 +256,7 @@ pub fn findSatisfier(pkgcache: PackageIterator, depstring: []const u8) ?AlpmPack
 /// Null-terminated stack buffer for Zig slice → C string conversion.
 /// Package names and paths in the alpm API are always short (< 256 bytes).
 const CStringBuf = struct {
-    buf: [256]u8 = .{0} ** 256,
+    buf: [256]u8 = @splat(0),
     len: usize = 0,
 
     fn init(s: []const u8) CStringBuf {
