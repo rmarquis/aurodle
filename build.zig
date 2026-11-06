@@ -4,12 +4,30 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const git_version = std.mem.trimEnd(u8, b.run(&.{
+    // Version is derived from git at build time as `r<count>.<hash>`, where
+    // `<count>` is the commit count and `<hash>` the abbreviated commit hash.
+    // There is no version literal in src/.
+    //
+    // A config-time `b.run` is only re-evaluated when a build-graph input
+    // changes, and `.git` is not one. Building after a commit that touched no
+    // compile input — docs, empty commits, or a `git pull` of such history —
+    // stamped the *previous* commit into `--version`; editing a source file
+    // happened to mask it. This `Run` step re-runs git every build instead
+    // (~10 ms), and downstream steps stay cached when the emitted text is
+    // unchanged.
+    const version_gen = b.addSystemCommand(&.{
         "sh", "-c",
-        "printf 'r%s.%s' \"$(git rev-list --count HEAD)\" \"$(git rev-parse --short HEAD)\"",
-    }), "\n");
-    const opts = b.addOptions();
-    opts.addOption([]const u8, "version", git_version);
+        \\v="$(printf 'r%s.%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)")"
+        \\printf 'pub const version = "%s";\n' "$v" > "$1"
+        ,
+        "aurodle-version", // $0; $1 becomes the generated file path
+    });
+    version_gen.has_side_effects = true;
+    const version_file = version_gen.addOutputFileArg("version.zig");
+    const version_mod = b.createModule(.{
+        .root_source_file = version_file,
+        .target = target,
+    });
 
     const mod = b.addModule("aurodle", .{
         .root_source_file = b.path("src/root.zig"),
@@ -36,7 +54,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "aurodle", .module = mod },
-                .{ .name = "build_options", .module = opts.createModule() },
+                .{ .name = "build_options", .module = version_mod },
                 .{ .name = "alpm_c", .module = alpm_c_module },
             },
         }),
