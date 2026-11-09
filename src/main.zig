@@ -437,7 +437,7 @@ fn runWithFullStack(
 
 fn printHelp() void {
     cmd_types.getStdout().writeAll(
-        \\aurodle — newt your average AUR helper
+        \\aurodle: the newts and bolts between the AUR and pacman
         \\
         \\Usage: aurodle <command> [options] [targets...]
         \\
