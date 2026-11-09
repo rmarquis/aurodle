@@ -83,8 +83,7 @@ pub fn parseSrcinfoVersion(allocator: Allocator, srcinfo: []const u8) ![]const u
             epoch = val;
         }
 
-        // Stop once required fields found, or at first pkgname section
-        if (pkgver != null and pkgrel != null) break;
+        // epoch follows pkgver and pkgrel, so read the whole pkgbase section.
         if (std.mem.startsWith(u8, trimmed, "pkgname")) break;
     }
 
@@ -150,6 +149,20 @@ test "parseSrcinfoVersion with epoch" {
         "\tepoch = 2\n" ++
         "\tpkgver = 24.1.0.r1234.g1a2b3c4\n" ++
         "\tpkgrel = 1\n" ++
+        "pkgname = mesa-git\n";
+
+    const version = try parseSrcinfoVersion(testing.allocator, srcinfo);
+    defer testing.allocator.free(version);
+    try testing.expectEqualStrings("2:24.1.0.r1234.g1a2b3c4-1", version);
+}
+
+test "parseSrcinfoVersion reads epoch written after pkgrel" {
+    // makepkg --printsrcinfo emits pkgver, pkgrel, epoch in that order.
+    const srcinfo =
+        "pkgbase = mesa-git\n" ++
+        "\tpkgver = 24.1.0.r1234.g1a2b3c4\n" ++
+        "\tpkgrel = 1\n" ++
+        "\tepoch = 2\n" ++
         "pkgname = mesa-git\n";
 
     const version = try parseSrcinfoVersion(testing.allocator, srcinfo);
