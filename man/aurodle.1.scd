@@ -67,8 +67,9 @@ a local pacman repository to be configured in _pacman.conf_ before first use.
 	Display the PKGBUILD and install scripts for _target_.
 
 *clean*, *-Sc*
-	Remove stale built packages from the local repository (packages no
-	longer installed) and offer to clean the source cache.
+	Remove built packages and clones of packages no longer installed, old
+	package files the repository database no longer references, and
+	database entries of uninstalled packages whose file is missing.
 
 *clean --all*, *-Scc*
 	Remove all built packages and sources from the local repository and

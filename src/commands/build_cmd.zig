@@ -411,7 +411,9 @@ pub fn clean(self: *BuildContext) !ExitCode {
     };
     defer repository.freeCleanResult(plan);
 
-    if (plan.removed_clones.len == 0 and plan.removed_packages.len == 0) {
+    if (plan.removed_clones.len == 0 and plan.removed_packages.len == 0 and
+        plan.unreferenced_packages.len == 0 and plan.dangling_entries.len == 0)
+    {
         if (!self.flags.quiet) getStdout().writeAll(" nothing to clean\n") catch {};
         return .success;
     }
@@ -427,6 +429,16 @@ pub fn clean(self: *BuildContext) !ExitCode {
         for (plan.removed_packages) |filename| stdout.print("  {s}\n", .{filename}) catch {};
     }
 
+    if (plan.unreferenced_packages.len > 0) {
+        stdout.print("{s}::{s} Old package files ({d}):\n", .{ c.blue, c.reset, plan.unreferenced_packages.len }) catch {};
+        for (plan.unreferenced_packages) |filename| stdout.print("  {s}\n", .{filename}) catch {};
+    }
+
+    if (plan.dangling_entries.len > 0) {
+        stdout.print("{s}::{s} Database entries with no package file ({d}):\n", .{ c.blue, c.reset, plan.dangling_entries.len }) catch {};
+        for (plan.dangling_entries) |name| stdout.print("  {s}\n", .{name}) catch {};
+    }
+
     if (plan.removed_clones.len > 0) {
         stdout.print("{s}::{s} {s} ({d}):\n", .{ c.blue, c.reset, clone_label, plan.removed_clones.len }) catch {};
         for (plan.removed_clones) |name| stdout.print("  {s}/\n", .{name}) catch {};
@@ -438,7 +450,7 @@ pub fn clean(self: *BuildContext) !ExitCode {
 
     repository.cleanExecute(plan);
 
-    if (plan.removed_packages.len > 0) {
+    if (plan.removed_packages.len > 0 or plan.dangling_entries.len > 0) {
         repo_mod.refreshAurpkgsSyncDb(self.allocator, repository, self.auth) catch |err| {
             self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err }) catch {};
         };

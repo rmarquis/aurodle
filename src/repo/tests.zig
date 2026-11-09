@@ -423,6 +423,205 @@ test "cleanAll with empty repo finds nothing" {
     try testing.expectEqual(@as(usize, 0), result.removed_packages.len);
 }
 
+// ── Repository database cleanup ──────────────────────────────────────────
+
+const TestDbPackage = struct { name: []const u8, ver: []const u8 };
+
+/// Skip the current test when an external tool isn't installed.
+fn requireTool(tool: []const u8) !void {
+    const result = utils.runCommand(testing.allocator, &.{ tool, "--version" }) catch return error.SkipZigTest;
+    result.deinit(testing.allocator);
+}
+
+/// Write a real compressed repository database listing `packages`.
+fn writeTestDb(r: *const Repository, tmp_path: []const u8, packages: []const TestDbPackage) !void {
+    try requireTool("bsdtar");
+
+    const src_dir = try std.fs.path.join(testing.allocator, &.{ tmp_path, "dbsrc" });
+    defer testing.allocator.free(src_dir);
+    try std.Io.Dir.createDirPath(std.Io.Dir.cwd(), testing.io, src_dir);
+
+    for (packages) |pkg| {
+        const entry_name = try std.fmt.allocPrint(testing.allocator, "{s}-{s}", .{ pkg.name, pkg.ver });
+        defer testing.allocator.free(entry_name);
+        const entry_dir = try std.fs.path.join(testing.allocator, &.{ src_dir, entry_name });
+        defer testing.allocator.free(entry_dir);
+        try std.Io.Dir.createDirPath(std.Io.Dir.cwd(), testing.io, entry_dir);
+
+        const desc = try std.fmt.allocPrint(
+            testing.allocator,
+            "%FILENAME%\n{s}-{s}-any.pkg.tar.zst\n\n%NAME%\n{s}\n\n%VERSION%\n{s}\n\n",
+            .{ pkg.name, pkg.ver, pkg.name, pkg.ver },
+        );
+        defer testing.allocator.free(desc);
+
+        var dir = try std.Io.Dir.openDir(std.Io.Dir.cwd(), testing.io, entry_dir, .{});
+        defer dir.close(testing.io);
+        try std.Io.Dir.writeFile(dir, testing.io, .{ .sub_path = "desc", .data = desc });
+    }
+
+    const result = try utils.runCommand(testing.allocator, &.{ "bsdtar", "-c", "--xz", "-f", r.db_path, "-C", src_dir, "." });
+    defer result.deinit(testing.allocator);
+    try testing.expect(result.success());
+}
+
+fn writeTestPackage(r: *const Repository, filename: []const u8) !void {
+    var dir = try std.Io.Dir.openDir(std.Io.Dir.cwd(), testing.io, r.repo_dir, .{});
+    defer dir.close(testing.io);
+    try std.Io.Dir.writeFile(dir, testing.io, .{ .sub_path = filename, .data = "pkg" });
+}
+
+fn testPackageExists(r: *const Repository, filename: []const u8) !bool {
+    const path = try std.fs.path.join(testing.allocator, &.{ r.repo_dir, filename });
+    defer testing.allocator.free(path);
+    std.Io.Dir.access(std.Io.Dir.cwd(), testing.io, path, .{}) catch return false;
+    return true;
+}
+
+test "parseDbDescs reads consecutive entries" {
+    const text =
+        "%FILENAME%\nfoo-1-1-any.pkg.tar.zst\n\n%NAME%\nfoo\n\n%VERSION%\n1-1\n\n" ++
+        "%FILENAME%\nbar-2-1-any.pkg.tar.zst\n\n%NAME%\nbar\n\n";
+    const entries = try repo.parseDbDescs(testing.allocator, text);
+    defer testing.allocator.free(entries);
+
+    try testing.expectEqual(@as(usize, 2), entries.len);
+    try testing.expectEqualStrings("foo-1-1-any.pkg.tar.zst", entries[0].filename);
+    try testing.expectEqualStrings("foo", entries[0].name);
+    try testing.expectEqualStrings("bar-2-1-any.pkg.tar.zst", entries[1].filename);
+    try testing.expectEqualStrings("bar", entries[1].name);
+}
+
+test "parseDbDescs ignores field names used as values" {
+    const text = "%FILENAME%\nfoo-1-1-any.pkg.tar.zst\n\n%DESC%\n%FILENAME%\n\n%NAME%\nfoo\n\n";
+    const entries = try repo.parseDbDescs(testing.allocator, text);
+    defer testing.allocator.free(entries);
+
+    try testing.expectEqual(@as(usize, 1), entries.len);
+    try testing.expectEqualStrings("foo-1-1-any.pkg.tar.zst", entries[0].filename);
+}
+
+test "clean removes old version of installed package but keeps current one" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_path = try getTmpPath(tmp);
+    defer testing.allocator.free(tmp_path);
+
+    var r = try Repository.initWithRoot(testing.allocator, testing.io, tmp_path);
+    defer r.deinit();
+    try r.ensureExists();
+
+    try writeTestDb(&r, tmp_path, &.{.{ .name = "foo", .ver = "2.0-1" }});
+    try writeTestPackage(&r, "foo-1.0-1-any.pkg.tar.zst");
+    try writeTestPackage(&r, "foo-1.0-1-any.pkg.tar.zst.sig");
+    try writeTestPackage(&r, "foo-2.0-1-any.pkg.tar.zst");
+    try writeTestPackage(&r, "foo-2.0-1-any.pkg.tar.zst.sig");
+
+    // Nothing is uninstalled. repo-remove must not run here: it would
+    // drop the live foo-2.0-1 entry, which the second clean would expose.
+    const result = try r.clean(&.{});
+    defer r.freeCleanResult(result);
+
+    try testing.expectEqual(@as(usize, 0), result.removed_packages.len);
+    try testing.expectEqual(@as(usize, 0), result.dangling_entries.len);
+    try testing.expectEqual(@as(usize, 2), result.unreferenced_packages.len);
+
+    r.cleanExecute(result);
+
+    try testing.expect(!try testPackageExists(&r, "foo-1.0-1-any.pkg.tar.zst"));
+    try testing.expect(!try testPackageExists(&r, "foo-1.0-1-any.pkg.tar.zst.sig"));
+    try testing.expect(try testPackageExists(&r, "foo-2.0-1-any.pkg.tar.zst"));
+    try testing.expect(try testPackageExists(&r, "foo-2.0-1-any.pkg.tar.zst.sig"));
+
+    const second = try r.clean(&.{"foo"});
+    defer r.freeCleanResult(second);
+    try testing.expectEqual(@as(usize, 2), second.removed_packages.len);
+    try testing.expectEqual(@as(usize, 0), second.unreferenced_packages.len);
+}
+
+test "clean finds files unreferenced by an empty database" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_path = try getTmpPath(tmp);
+    defer testing.allocator.free(tmp_path);
+
+    var r = try Repository.initWithRoot(testing.allocator, testing.io, tmp_path);
+    defer r.deinit();
+    try r.ensureExists();
+
+    try writeTestDb(&r, tmp_path, &.{});
+    try writeTestPackage(&r, "foo-1.0-1-any.pkg.tar.zst");
+
+    const result = try r.clean(&.{});
+    defer r.freeCleanResult(result);
+
+    try testing.expectEqual(@as(usize, 1), result.unreferenced_packages.len);
+}
+
+test "clean keeps all files when the database can't be read" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_path = try getTmpPath(tmp);
+    defer testing.allocator.free(tmp_path);
+
+    var r = try Repository.initWithRoot(testing.allocator, testing.io, tmp_path);
+    defer r.deinit();
+    try r.ensureExists();
+
+    try writeTestPackage(&r, "foo-1.0-1-any.pkg.tar.zst");
+
+    const result = try r.clean(&.{});
+    defer r.freeCleanResult(result);
+
+    try testing.expectEqual(@as(usize, 0), result.unreferenced_packages.len);
+}
+
+test "clean flags missing files only for uninstalled packages" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_path = try getTmpPath(tmp);
+    defer testing.allocator.free(tmp_path);
+
+    var r = try Repository.initWithRoot(testing.allocator, testing.io, tmp_path);
+    defer r.deinit();
+    try r.ensureExists();
+
+    try writeTestDb(&r, tmp_path, &.{
+        .{ .name = "gone", .ver = "1.0-1" },
+        .{ .name = "kept", .ver = "1.0-1" },
+    });
+
+    const result = try r.clean(&.{"gone"});
+    defer r.freeCleanResult(result);
+
+    try testing.expectEqual(@as(usize, 1), result.dangling_entries.len);
+    try testing.expectEqualStrings("gone", result.dangling_entries[0]);
+}
+
+test "cleanAll flags every missing file and removes its database entry" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_path = try getTmpPath(tmp);
+    defer testing.allocator.free(tmp_path);
+
+    var r = try Repository.initWithRoot(testing.allocator, testing.io, tmp_path);
+    defer r.deinit();
+    try r.ensureExists();
+
+    try requireTool("repo-remove");
+    try writeTestDb(&r, tmp_path, &.{.{ .name = "gone", .ver = "1.0-1" }});
+
+    const result = try r.cleanAll();
+    defer r.freeCleanResult(result);
+    try testing.expectEqual(@as(usize, 1), result.dangling_entries.len);
+
+    r.cleanExecute(result);
+
+    const after = try r.cleanAll();
+    defer r.freeCleanResult(after);
+    try testing.expectEqual(@as(usize, 0), after.dangling_entries.len);
+}
+
 test "Repository paths are correct" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

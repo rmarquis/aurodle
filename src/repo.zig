@@ -18,7 +18,42 @@ pub const RepoPackage = struct {
 pub const CleanResult = struct {
     removed_clones: []const []const u8,
     removed_packages: []const []const u8,
+    /// Package files on disk that the repository database doesn't reference.
+    /// Only the files are deleted: their package name may still have a live
+    /// database entry for a newer version.
+    unreferenced_packages: []const []const u8,
+    /// Package names whose database entry points at a file that no longer exists.
+    dangling_entries: []const []const u8,
     bytes_freed: u64,
+};
+
+/// One package entry from the repository database.
+/// Slices point into the text given to parseDbDescs().
+pub const DbEntry = struct {
+    filename: []const u8,
+    name: []const u8,
+};
+
+/// Contents of the repository database, read at the start of a clean.
+const DbSnapshot = struct {
+    output: utils.ProcessResult,
+    entries: []const DbEntry,
+    filenames: std.StringHashMapUnmanaged(void),
+
+    fn deinit(self: *DbSnapshot, allocator: Allocator) void {
+        self.filenames.deinit(allocator);
+        allocator.free(self.entries);
+        self.output.deinit(allocator);
+    }
+
+    /// A detached signature counts as referenced when its package is.
+    fn references(self: *const DbSnapshot, filename: []const u8) bool {
+        const package_file = if (std.mem.endsWith(u8, filename, ".sig"))
+            filename[0 .. filename.len - ".sig".len]
+        else
+            filename;
+        return self.filenames.contains(package_file);
+    }
 };
 
 // ── Repository ───────────────────────────────────────────────────────────
@@ -288,7 +323,8 @@ pub const Repository = struct {
     // ── Clean ────────────────────────────────────────────────────────────
 
     /// Identify stale artifacts for removal given package names from the
-    /// aurpkgs database that are no longer installed locally.
+    /// aurpkgs database that are no longer installed locally, plus package
+    /// files the repository database doesn't reference (e.g. old versions).
     /// Returns a plan — actual deletion is done by cleanExecute().
     pub fn clean(self: *const Repository, uninstalled_names: []const []const u8) !CleanResult {
         // Build set of uninstalled names for O(1) lookup
@@ -308,7 +344,9 @@ pub const Repository = struct {
     }
 
     /// Shared implementation for clean/cleanAll. When `filter` is non-null,
-    /// only collects entries whose names are in the set; otherwise collects all.
+    /// only collects entries whose names are in the set, plus unreferenced
+    /// package files; otherwise collects all. If the database can't be read,
+    /// nothing is treated as unreferenced or dangling.
     fn collectCleanResult(self: *const Repository, filter: ?*const std.StringHashMapUnmanaged(void)) !CleanResult {
         var clones: std.ArrayList([]const u8) = .empty;
         errdefer {
@@ -331,10 +369,19 @@ pub const Repository = struct {
             }
         } else |_| {}
 
+        var db = try self.readDb();
+        defer if (db) |*snapshot| snapshot.deinit(self.allocator);
+
         var packages: std.ArrayList([]const u8) = .empty;
         errdefer {
             for (packages.items) |s| self.allocator.free(s);
             packages.deinit(self.allocator);
+        }
+
+        var unreferenced: std.ArrayList([]const u8) = .empty;
+        errdefer {
+            for (unreferenced.items) |s| self.allocator.free(s);
+            unreferenced.deinit(self.allocator);
         }
 
         if (std.Io.Dir.openDir(std.Io.Dir.cwd(), self.io, self.repo_dir, .{ .iterate = true })) |dir_handle| {
@@ -348,17 +395,69 @@ pub const Repository = struct {
                 if (self.isDbFile(entry.name)) continue;
                 if (filter) |f| {
                     const parsed = parsePackageFilename(entry.name) orelse continue;
-                    if (!f.contains(parsed.name)) continue;
+                    if (!f.contains(parsed.name)) {
+                        if (db) |*snapshot| {
+                            if (!snapshot.references(entry.name)) {
+                                try unreferenced.append(self.allocator, try self.allocator.dupe(u8, entry.name));
+                            }
+                        }
+                        continue;
+                    }
                 }
                 try packages.append(self.allocator, try self.allocator.dupe(u8, entry.name));
             }
         } else |_| {}
 
+        var dangling: std.ArrayList([]const u8) = .empty;
+        errdefer {
+            for (dangling.items) |s| self.allocator.free(s);
+            dangling.deinit(self.allocator);
+        }
+
+        if (db) |*snapshot| {
+            for (snapshot.entries) |entry| {
+                if (filter) |f| {
+                    if (!f.contains(entry.name)) continue;
+                }
+                const path = try std.fs.path.join(self.allocator, &.{ self.repo_dir, entry.filename });
+                defer self.allocator.free(path);
+                std.Io.Dir.access(std.Io.Dir.cwd(), self.io, path, .{}) catch |err| switch (err) {
+                    error.FileNotFound => try dangling.append(self.allocator, try self.allocator.dupe(u8, entry.name)),
+                    else => {},
+                };
+            }
+        }
+
         return .{
             .removed_clones = try clones.toOwnedSlice(self.allocator),
             .removed_packages = try packages.toOwnedSlice(self.allocator),
+            .unreferenced_packages = try unreferenced.toOwnedSlice(self.allocator),
+            .dangling_entries = try dangling.toOwnedSlice(self.allocator),
             .bytes_freed = 0,
         };
+    }
+
+    /// Read the repository database. Returns null if it is missing or
+    /// unreadable, so callers can avoid acting on an unknown file list.
+    fn readDb(self: *const Repository) !?DbSnapshot {
+        var output = utils.runCommand(self.allocator, &.{ "bsdtar", "-xOf", self.db_path }) catch return null;
+        errdefer output.deinit(self.allocator);
+
+        if (!output.success()) {
+            output.deinit(self.allocator);
+            return null;
+        }
+
+        const entries = try parseDbDescs(self.allocator, output.stdout);
+        errdefer self.allocator.free(entries);
+
+        var filenames: std.StringHashMapUnmanaged(void) = .empty;
+        errdefer filenames.deinit(self.allocator);
+        for (entries) |entry| {
+            try filenames.put(self.allocator, entry.filename, {});
+        }
+
+        return .{ .output = output, .entries = entries, .filenames = filenames };
     }
 
     /// Execute the actual deletion after user confirmation.
@@ -370,11 +469,22 @@ pub const Repository = struct {
             std.Io.Dir.deleteTree(std.Io.Dir.cwd(), self.io, path) catch {};
         }
 
+        // Unreferenced files have no database entry of their own to remove.
+        for (plan.unreferenced_packages) |filename| {
+            const path = std.fs.path.join(self.allocator, &.{ self.repo_dir, filename }) catch continue;
+            defer self.allocator.free(path);
+            std.Io.Dir.deleteFile(std.Io.Dir.cwd(), self.io, path) catch {};
+        }
+
         // Remove stale package files and their database entries
-        if (plan.removed_packages.len > 0) {
+        if (plan.removed_packages.len > 0 or plan.dangling_entries.len > 0) {
             // Collect unique package names for repo-remove
             var pkg_names: std.StringHashMapUnmanaged(void) = .empty;
             defer pkg_names.deinit(self.allocator);
+
+            for (plan.dangling_entries) |name| {
+                pkg_names.put(self.allocator, name, {}) catch {};
+            }
 
             for (plan.removed_packages) |filename| {
                 // Delete the package file from disk
@@ -428,10 +538,47 @@ pub const Repository = struct {
         self.allocator.free(result.removed_clones);
         for (result.removed_packages) |s| self.allocator.free(s);
         self.allocator.free(result.removed_packages);
+        for (result.unreferenced_packages) |s| self.allocator.free(s);
+        self.allocator.free(result.unreferenced_packages);
+        for (result.dangling_entries) |s| self.allocator.free(s);
+        self.allocator.free(result.dangling_entries);
     }
 };
 
 // ── Standalone Functions ─────────────────────────────────────────────────
+
+/// Extract package entries from concatenated `desc` files of a repository
+/// database. Field names are only recognized after a blank line, so a field
+/// value such as a package description can't be mistaken for one.
+/// Caller owns the returned slice; its strings point into `text`.
+pub fn parseDbDescs(allocator: Allocator, text: []const u8) ![]const DbEntry {
+    var entries: std.ArrayList(DbEntry) = .empty;
+    errdefer entries.deinit(allocator);
+
+    var filename: ?[]const u8 = null;
+    var at_field = true;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) {
+            at_field = true;
+            continue;
+        }
+        if (!at_field) continue;
+        at_field = false;
+
+        const value = lines.peek() orelse break;
+        if (std.mem.eql(u8, line, "%FILENAME%")) {
+            filename = value;
+        } else if (std.mem.eql(u8, line, "%NAME%")) {
+            if (filename) |f| {
+                try entries.append(allocator, .{ .filename = f, .name = value });
+                filename = null;
+            }
+        }
+    }
+
+    return entries.toOwnedSlice(allocator);
+}
 
 /// Parse "pkgname-pkgver-pkgrel-arch.pkg.tar.ext" into name and version.
 ///
