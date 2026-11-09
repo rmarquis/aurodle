@@ -126,7 +126,7 @@ use.
 *-h*, *--help*
 	Show help and exit.
 
-*-v*, *--version*
+*-V*, *--version*
 	Show version and exit.
 
 *-q*, *--quiet*

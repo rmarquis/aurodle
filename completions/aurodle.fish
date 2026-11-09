@@ -29,7 +29,7 @@ end
 
 # Global options
 complete -c aurodle -s h -l help -d 'Show help'
-complete -c aurodle -s v -l version -d 'Show version'
+complete -c aurodle -s V -l version -d 'Show version'
 complete -c aurodle -s q -l quiet -d 'Reduce output verbosity'
 
 # Commands

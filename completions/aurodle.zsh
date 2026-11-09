@@ -63,7 +63,7 @@ _aurodle() {
 
     local -a global_options=(
         '(-h --help)'{-h,--help}'[Show help]'
-        '(-v --version)'{-v,--version}'[Show version]'
+        '(-V --version)'{-V,--version}'[Show version]'
         '(-q --quiet)'{-q,--quiet}'[Reduce output verbosity]'
     )
 

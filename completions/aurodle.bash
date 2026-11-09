@@ -6,7 +6,7 @@ _aurodle() {
 
     local commands="sync build clone info search show resolve buildorder outdated upgrade clean status"
     local short_aliases="-S -Sw -Si -Ss -Qu -Su -Sc -Scc"
-    local global_opts="-h --help -v --version -q --quiet"
+    local global_opts="-h --help -V --version -q --quiet"
     local build_opts="--noconfirm --noshow --needed --rebuild --asdeps --asexplicit --devel --chroot --ignore"
     local clone_opts="--recurse"
     local clean_opts="--all"

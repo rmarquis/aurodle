@@ -205,7 +205,7 @@ fn parseArgs(args: []const []const u8, target_buf: [][]const u8) ParseError!Pars
     if (std.mem.eql(u8, args[0], "--help") or std.mem.eql(u8, args[0], "-h")) {
         return ParseError.HelpRequested;
     }
-    if (std.mem.eql(u8, args[0], "--version") or std.mem.eql(u8, args[0], "-v")) {
+    if (std.mem.eql(u8, args[0], "--version") or std.mem.eql(u8, args[0], "-V")) {
         return ParseError.VersionRequested;
     }
 
@@ -457,7 +457,7 @@ fn printHelp() void {
         \\
         \\Global options:
         \\  -h, --help             Show this help
-        \\  -v, --version          Show version
+        \\  -V, --version          Show version
         \\  -q, --quiet            Reduce output verbosity
         \\
         \\Build options:
@@ -538,6 +538,11 @@ test "parseArgs: --help before command" {
 
 test "parseArgs: --version flag" {
     try std.testing.expectError(ParseError.VersionRequested, testParse(&.{"--version"}));
+    try std.testing.expectError(ParseError.VersionRequested, testParse(&.{"-V"}));
+}
+
+test "parseArgs: -v is not the version flag" {
+    try std.testing.expectError(ParseError.UnknownCommand, testParse(&.{"-v"}));
 }
 
 test "parseArgs: unknown command" {
