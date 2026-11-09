@@ -200,16 +200,20 @@ use.
 	_$XDG\_CACHE\_HOME/aurodle_ (falling back to _~/.cache/aurodle_).
 
 *PKGDEST*
-	Directory where built packages are stored. Must be set in
-	_/etc/makepkg.conf_ and match the *Server = file://* path of a
-	repository configured in _pacman.conf_. This is the primary mandatory
-	configuration item for aurodle.
+	Directory where built packages are stored. Must be set here or in a
+	_makepkg.conf_ file (see *CONFIGURATION*) and match the
+	*Server = file://* path of a repository configured in _pacman.conf_.
+	This is the primary mandatory configuration item for aurodle.
 
 *PACMAN_AUTH*
-	Command used to elevate privileges when invoking pacman. Parsed from
-	_makepkg.conf_. Supports *sudo*(8), *run0*(1), *doas*(1), *su*(1),
-	or any compatible tool. The placeholder *%c* is substituted with the
-	command to run. Defaults to *sudo* if unset, falling back to *su*.
+	Command used to elevate privileges when invoking pacman. Read from
+	here or a _makepkg.conf_ file. Supports *sudo*(8), *run0*(1), *doas*(1),
+	*su*(1), or any compatible tool. The placeholder *%c* is substituted
+	with the command to run. Defaults to *sudo* if unset, falling back to
+	*su*.
+
+*XDG\_CONFIG\_HOME*, *HOME*
+	Used to locate the user's _makepkg.conf_.
 
 *PAGER*, *VISUAL*, *EDITOR*
 	Selects the program used to review PKGBUILD and install scripts before
@@ -232,6 +236,17 @@ packages:
 ```
 PKGDEST=/var/lib/aurodle/aur
 ```
+
+Aurodle reads these files in makepkg's order, and the last assignment wins:
+
+. _/etc/makepkg.conf_
+. _/etc/makepkg.conf.d/\*.conf_, in sorted order
+. _$XDG\_CONFIG\_HOME/pacman/makepkg.conf_ (by default
+  _~/.config/pacman/makepkg.conf_), or _~/.makepkg.conf_ if that file is
+  missing
+
+The files are parsed, never executed, so shell expansions such as _$HOME_
+are taken literally.
 
 ## /etc/pacman.conf
 

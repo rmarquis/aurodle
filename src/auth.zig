@@ -29,11 +29,11 @@ pub const Auth = struct {
         substitute,
     };
 
-    /// Resolve from PACMAN_AUTH config value (already parsed from makepkg.conf).
-    /// Falls back to detecting sudo/su on PATH.
-    pub fn init(allocator: Allocator, pacman_auth: ?[]const u8) !Auth {
-        if (pacman_auth) |raw| {
-            return initFromConfig(allocator, raw);
+    /// Resolve from PACMAN_AUTH's words (already parsed from makepkg.conf or
+    /// the environment). Falls back to detecting sudo/su on PATH.
+    pub fn init(allocator: Allocator, pacman_auth: ?[]const []const u8) !Auth {
+        if (pacman_auth) |words| {
+            return initFromConfig(allocator, words);
         }
         return initFromPath(allocator);
     }
@@ -132,21 +132,21 @@ pub const Auth = struct {
 
     // ── Internal ─────────────────────────────────────────────────────
 
-    fn initFromConfig(allocator: Allocator, raw: []const u8) !Auth {
-        // Tokenize the raw PACMAN_AUTH value on whitespace.
-        var tokens_list: std.ArrayListUnmanaged([]const u8) = .empty;
-        defer tokens_list.deinit(allocator);
-
-        var iter = std.mem.tokenizeAny(u8, raw, " \t");
-        while (iter.next()) |tok| {
-            try tokens_list.append(allocator, try allocator.dupe(u8, tok));
-        }
-
-        if (tokens_list.items.len == 0) {
+    fn initFromConfig(allocator: Allocator, words: []const []const u8) !Auth {
+        if (words.len == 0) {
             return error.EmptyPacmanAuth;
         }
 
-        const tokens = try tokens_list.toOwnedSlice(allocator);
+        const tokens = try allocator.alloc([]const u8, words.len);
+        var copied: usize = 0;
+        errdefer {
+            for (tokens[0..copied]) |tok| allocator.free(tok);
+            allocator.free(tokens);
+        }
+        for (words) |word| {
+            tokens[copied] = try allocator.dupe(u8, word);
+            copied += 1;
+        }
 
         // Check if any token contains %c → substitute mode.
         var subst_idx: ?usize = null;
@@ -311,7 +311,7 @@ test "shellJoin no-quote for safe characters" {
 test "Auth.init prepend mode from config" {
     const alloc = std.testing.allocator;
 
-    var auth = try Auth.init(alloc, "sudo");
+    var auth = try Auth.init(alloc, &.{"sudo"});
     defer auth.deinit();
 
     try std.testing.expectEqual(Auth.Kind.prepend, auth.kind);
@@ -322,7 +322,7 @@ test "Auth.init prepend mode from config" {
 test "Auth.init prepend mode with args" {
     const alloc = std.testing.allocator;
 
-    var auth = try Auth.init(alloc, "sudo --askpass");
+    var auth = try Auth.init(alloc, &.{ "sudo", "--askpass" });
     defer auth.deinit();
 
     try std.testing.expectEqual(Auth.Kind.prepend, auth.kind);
@@ -334,7 +334,7 @@ test "Auth.init prepend mode with args" {
 test "Auth.init substitute mode with %c" {
     const alloc = std.testing.allocator;
 
-    var auth = try Auth.init(alloc, "su -c %c");
+    var auth = try Auth.init(alloc, &.{ "su", "-c", "%c" });
     defer auth.deinit();
 
     try std.testing.expectEqual(Auth.Kind.substitute, auth.kind);
@@ -357,7 +357,7 @@ test "Auth.init detects sudo on PATH" {
 test "Auth.wrap prepend mode builds correct argv" {
     const alloc = std.testing.allocator;
 
-    var auth = try Auth.init(alloc, "sudo");
+    var auth = try Auth.init(alloc, &.{"sudo"});
     defer auth.deinit();
 
     const wrapped = try auth.wrap(&.{ "pacman", "-S", "pkg" });
@@ -373,7 +373,7 @@ test "Auth.wrap prepend mode builds correct argv" {
 test "Auth.wrap prepend with multiple prefix tokens" {
     const alloc = std.testing.allocator;
 
-    var auth = try Auth.init(alloc, "doas -s");
+    var auth = try Auth.init(alloc, &.{ "doas", "-s" });
     defer auth.deinit();
 
     const wrapped = try auth.wrap(&.{ "pacman", "-S" });
@@ -389,7 +389,7 @@ test "Auth.wrap prepend with multiple prefix tokens" {
 test "Auth.wrap substitute mode replaces %c" {
     const alloc = std.testing.allocator;
 
-    var auth = try Auth.init(alloc, "su -c %c");
+    var auth = try Auth.init(alloc, &.{ "su", "-c", "%c" });
     defer auth.deinit();
 
     const wrapped = try auth.wrap(&.{ "pacman", "-S", "pkg" });
@@ -404,7 +404,7 @@ test "Auth.wrap substitute mode replaces %c" {
 test "Auth.wrap substitute with quoted args" {
     const alloc = std.testing.allocator;
 
-    var auth = try Auth.init(alloc, "su -c %c");
+    var auth = try Auth.init(alloc, &.{ "su", "-c", "%c" });
     defer auth.deinit();
 
     const wrapped = try auth.wrap(&.{ "cp", "file with spaces", "/dest" });
@@ -418,17 +418,20 @@ test "Auth.wrap substitute with quoted args" {
 
 test "Auth.init empty config returns error" {
     const alloc = std.testing.allocator;
-    try std.testing.expectError(error.EmptyPacmanAuth, Auth.init(alloc, ""));
+    try std.testing.expectError(error.EmptyPacmanAuth, Auth.init(alloc, &.{}));
 }
 
-test "Auth.init whitespace-only config returns error" {
+test "Auth.init keeps a word containing spaces intact" {
     const alloc = std.testing.allocator;
-    try std.testing.expectError(error.EmptyPacmanAuth, Auth.init(alloc, "   "));
+    var auth = try Auth.init(alloc, &.{ "su", "-c", "exec %c" });
+    defer auth.deinit();
+    try std.testing.expectEqual(@as(usize, 3), auth.prefix.len);
+    try std.testing.expectEqualStrings("exec %c", auth.prefix[2]);
 }
 
 test "validationArgv returns sudo -v for sudo" {
     const alloc = std.testing.allocator;
-    var auth = try Auth.init(alloc, "sudo");
+    var auth = try Auth.init(alloc, &.{"sudo"});
     defer auth.deinit();
     const argv = auth.validationArgv().?;
     try std.testing.expectEqual(@as(usize, 2), argv.len);
@@ -438,7 +441,7 @@ test "validationArgv returns sudo -v for sudo" {
 
 test "validationArgv returns doas true for doas" {
     const alloc = std.testing.allocator;
-    var auth = try Auth.init(alloc, "doas");
+    var auth = try Auth.init(alloc, &.{"doas"});
     defer auth.deinit();
     const argv = auth.validationArgv().?;
     try std.testing.expectEqual(@as(usize, 2), argv.len);
@@ -448,14 +451,14 @@ test "validationArgv returns doas true for doas" {
 
 test "validationArgv returns null for su" {
     const alloc = std.testing.allocator;
-    var auth = try Auth.init(alloc, "su -c %c");
+    var auth = try Auth.init(alloc, &.{ "su", "-c", "%c" });
     defer auth.deinit();
     try std.testing.expectEqual(@as(?[]const []const u8, null), auth.validationArgv());
 }
 
 test "stopKeepalive is safe when no thread started" {
     const alloc = std.testing.allocator;
-    var auth = try Auth.init(alloc, "su -c %c");
+    var auth = try Auth.init(alloc, &.{ "su", "-c", "%c" });
     defer auth.deinit();
     auth.stopKeepalive(); // should not crash
     try std.testing.expectEqual(@as(?std.Thread, null), auth.keepalive_thread);

@@ -80,6 +80,7 @@ pub const Repository = struct {
         errdefer allocator.free(cache_dir);
 
         const conf = makepkg.parseMakepkgConf(allocator) catch MakepkgConfig{};
+        errdefer conf.deinit(allocator);
 
         const repo_dir = try allocator.dupe(u8, conf.pkgdest orelse return error.PkgdestNotSet);
         errdefer allocator.free(repo_dir);
@@ -617,15 +618,6 @@ pub fn parsePackageFilename(filename: []const u8) ?struct { name: []const u8, ve
 ///   Server = file:///var/lib/aurodle/mypkgs
 ///
 /// This returns "mypkgs".
-/// Parse PKGDEST and PKGEXT from makepkg.conf files.
-/// Reads /etc/makepkg.conf first, then ~/.makepkg.conf (user overrides).
-/// Environment variables override config files.
-/// Parse a single makepkg.conf file for PKGDEST and PKGEXT.
-/// Parse "KEY=value" and return value if key matches.
-/// Strip surrounding single or double quotes from a value.
-/// Strip bash array syntax: "(content)" → "content".
-/// Also strips quotes from the inner content.
-/// Handles: (sudo), ("doas"), ('doas -s'), (sudo --askpass)
 const dirExists = utils.dirExists;
 
 /// Copy the local AUR repo DB to pacman's sync cache so that subsequent

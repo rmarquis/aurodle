@@ -98,7 +98,7 @@ After setup, packages built with `aurodle sync <package>` will be added to the l
 | Variable | Default | Description |
 |---|---|---|
 | `AURDEST` | `~/.cache/aurodle` | Directory where AUR package sources are cloned. |
-| `PKGDEST` | from `makepkg.conf` | Directory where built packages are placed. Overrides the value in `/etc/makepkg.conf` and `~/.makepkg.conf`. |
+| `PKGDEST` | from `makepkg.conf` | Directory where built packages are placed. Overrides the value in the `makepkg.conf` files, which aurodle reads in makepkg's order: `/etc/makepkg.conf`, `/etc/makepkg.conf.d/*.conf`, then `$XDG_CONFIG_HOME/pacman/makepkg.conf` or, if that file is missing, `~/.makepkg.conf`. |
 | `PKGEXT` | `.pkg.tar.zst` | Package file extension. Overrides the value in `makepkg.conf`. |
 | `PACMAN_AUTH` | from `makepkg.conf` | Privilege escalation command passed to pacman (e.g. `sudo`). Overrides the value in `makepkg.conf`. |
 | `CHROOT_DIR` | `/var/lib/aurodle/chroot` | Chroot root directory used with the `--chroot` flag. |
