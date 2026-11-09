@@ -445,7 +445,11 @@ pub fn clean(self: *BuildContext) !ExitCode {
     }
 
     if (!self.flags.noconfirm) {
-        if (!try utils.promptYesNoStyled(self.stdout_color, "Proceed with cleanup?")) return .success;
+        const proceed = if (self.flags.all)
+            try utils.promptNoYesStyled(self.stdout_color, "Proceed with cleanup?")
+        else
+            try utils.promptYesNoStyled(self.stdout_color, "Proceed with cleanup?");
+        if (!proceed) return .success;
     }
 
     repository.cleanExecute(plan);

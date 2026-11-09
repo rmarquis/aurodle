@@ -98,18 +98,30 @@ pub fn promptYesNo(message: []const u8) !bool {
 }
 
 pub fn promptYesNoStyled(c: color.Style, message: []const u8) !bool {
+    return promptConfirm(c, message, true);
+}
+
+/// Like promptYesNoStyled, but pressing Enter declines. Use for destructive
+/// actions, where only an explicit 'y' or 'Y' should confirm.
+pub fn promptNoYesStyled(c: color.Style, message: []const u8) !bool {
+    return promptConfirm(c, message, false);
+}
+
+fn promptConfirm(c: color.Style, message: []const u8, default: bool) !bool {
     if (!isTerminalFd(std.posix.STDIN_FILENO)) return false;
+    const hint = if (default) "[Y/n]" else "[y/N]";
     var prompt_buf: [256]u8 = undefined;
-    const prompt = std.fmt.bufPrint(&prompt_buf, "{s}::{s} {s} [Y/n] ", .{ c.blue, c.reset, message }) catch "";
+    const prompt = std.fmt.bufPrint(&prompt_buf, "{s}::{s} {s} {s} ", .{ c.blue, c.reset, message, hint }) catch "";
     _ = std.os.linux.write(std.posix.STDOUT_FILENO, prompt.ptr, prompt.len);
 
     var buf: [16]u8 = undefined;
-    const n = std.posix.read(std.posix.STDIN_FILENO, &buf) catch return true;
-    if (n == 0) return true;
+    const n = std.posix.read(std.posix.STDIN_FILENO, &buf) catch return default;
+    if (n == 0) return default;
 
     const response = std.mem.trim(u8, buf[0..n], " \t\n\r");
-    if (response.len == 0) return true;
-    return response[0] != 'n' and response[0] != 'N';
+    if (response.len == 0) return default;
+    if (default) return response[0] != 'n' and response[0] != 'N';
+    return response[0] == 'y' or response[0] == 'Y';
 }
 
 fn isTerminalFd(fd: std.posix.fd_t) bool {
@@ -265,6 +277,10 @@ test "runCommand maps signal termination to 128+signal" {
 test "runCommand empty argv returns SpawnFailed" {
     const empty: []const []const u8 = &.{};
     try std.testing.expectError(error.SpawnFailed, runCommand(std.testing.allocator, empty));
+}
+
+test "promptNoYesStyled returns false for non-terminal stdin" {
+    try std.testing.expect(!try promptNoYesStyled(color.Style.disabled, "Continue?"));
 }
 
 test "promptYesNo returns false for non-terminal stdin" {
