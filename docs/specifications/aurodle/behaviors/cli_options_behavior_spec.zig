@@ -25,9 +25,9 @@ test "given --help flag when running then displays help" {
     // Then: Same behavior as -h
 }
 
-test "given -v flag when running then displays version" {
+test "given -V flag when running then displays version" {
     // Given: Any context
-    // When: `aurodle -v` or `aurodle --version` is executed
+    // When: `aurodle -V` or `aurodle --version` is executed
     // Then: Version information is displayed
     //       Exit code is 0
 }

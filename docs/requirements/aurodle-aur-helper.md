@@ -274,7 +274,7 @@ Aurodle is a minimalist AUR helper written in Zig that builds AUR packages into 
 
 **Acceptance Criteria**:
 - `-h, --help` displays help for the tool or specific command
-- `-v, --version` displays version information
+- `-V, --version` displays version information
 - Unknown commands or flags produce clear usage errors (exit code 2)
 - *[Should Have]* `-q, --quiet` reduces output verbosity across all commands
 

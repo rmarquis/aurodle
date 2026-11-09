@@ -237,7 +237,7 @@ const ParseError = error{
 ///   aurodle --help | --version
 ///
 /// Flags can appear anywhere after the command (mixed with targets).
-/// Single-dash short flags: -s, -q, -h, -v
+/// Single-dash short flags: -s, -q, -h, -V
 /// Double-dash long flags: --noconfirm, --needed, --quiet, --help
 /// Flag with value: --by <field>, --sort <field>, --format <string>
 fn parseArgs(args: []const []const u8) ParseError!ParsedCommand {
@@ -249,7 +249,7 @@ fn parseArgs(args: []const []const u8) ParseError!ParsedCommand {
     if (std.mem.eql(u8, args[0], "--help") or std.mem.eql(u8, args[0], "-h")) {
         return ParseError.HelpRequested;
     }
-    if (std.mem.eql(u8, args[0], "--version") or std.mem.eql(u8, args[0], "-v")) {
+    if (std.mem.eql(u8, args[0], "--version") or std.mem.eql(u8, args[0], "-V")) {
         return ParseError.VersionRequested;
     }
 
@@ -510,7 +510,7 @@ fn printHelp(command: ?[]const u8) void {
         \\
         \\Global options:
         \\  -h, --help             Show this help (or command help)
-        \\  -v, --version          Show version
+        \\  -V, --version          Show version
         \\  -q, --quiet            Reduce output verbosity
         \\
         \\Build options:

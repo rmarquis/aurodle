@@ -77,8 +77,8 @@ test "parse recognizes --help and -h" {
     // When present, help text is displayed and exit code is 0.
 }
 
-test "parse recognizes --version and -v" {
-    // Contract: --version and -v display version info and exit 0.
+test "parse recognizes --version and -V" {
+    // Contract: --version and -V display version info and exit 0.
 }
 
 test "parse recognizes --noconfirm flag" {
