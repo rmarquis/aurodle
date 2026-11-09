@@ -1,9 +1,10 @@
 # aurodle
 
-An AUR helper that builds packages into a local repository.
-Named after Urodela — the salamander order — as a nod to Zig's mascot Suzie.
+The newts and bolts between the AUR and pacman.
 
-Packages are built with makepkg and added to a local pacman repo, so pacman handles installs and upgrades natively.
+aurodle builds AUR packages with makepkg into a local pacman repository, so pacman handles installs and upgrades natively.
+
+Named after Urodela, the salamander order, as a nod to Zig's mascot Suzie.
 
 ## Dependencies
 

@@ -10,18 +10,15 @@ aurodle - a minimal AUR helper with a local package repository
 
 # DESCRIPTION
 
-Aurodle is an Arch User Repository (AUR) helper where *pacman*(8) handles
-all installation and dependency management natively, keeping user interaction
-to a minimum. Rather than installing
-packages directly, aurodle builds them into a local pacman repository via
-*repo-add*(8), after which pacman installs them as if they were official
-packages. This means AUR packages participate in normal pacman operations:
-they appear in `pacman -Q`, are removed with `pacman -R`, and satisfy
-dependencies for other packages.
+The newts and bolts between the AUR and pacman.
 
-To achieve this, aurodle resolves dependency trees through the AUR RPC
-interface, clones build files, and builds packages with makepkg. It requires
-a local pacman repository to be configured in _pacman.conf_ before first use.
+Aurodle builds Arch User Repository (AUR) packages with *makepkg*(8) into a
+local pacman repository via *repo-add*(8), after which *pacman*(8) installs
+them as if they were official packages. They appear in *pacman -Q*, are
+removed with *pacman -R*, and satisfy dependencies for other packages.
+
+A local pacman repository must be configured in _pacman.conf_ before first
+use.
 
 # COMMANDS
 
