@@ -61,10 +61,15 @@ pub fn collectOutdated(self: *BuildContext, filter: []const []const u8, populate
     };
     defer self.allocator.free(aur_pkgs);
 
-    // Build lookup map
+    // Build lookup maps: name -> AUR version, name -> pkgbase
     var aur_map: std.StringHashMapUnmanaged([]const u8) = .empty;
     defer aur_map.deinit(self.allocator);
-    for (aur_pkgs) |pkg| try aur_map.put(self.allocator, pkg.name, pkg.version);
+    var pkgbase_map: std.StringHashMapUnmanaged([]const u8) = .empty;
+    defer pkgbase_map.deinit(self.allocator);
+    for (aur_pkgs) |pkg| {
+        try aur_map.put(self.allocator, pkg.name, pkg.version);
+        try pkgbase_map.put(self.allocator, pkg.name, pkg.pkgbase);
+    }
 
     // Compare versions
     var entries: std.ArrayListUnmanaged(OutdatedEntry) = .empty;
@@ -98,7 +103,7 @@ pub fn collectOutdated(self: *BuildContext, filter: []const []const u8, populate
         devel_versions.deinit(self.allocator);
     }
     if (self.flags.devel) {
-        try checkDevelPackages(self, to_check, &already_outdated, &entries, &devel_versions, populate_hint);
+        try checkDevelPackages(self, to_check, &pkgbase_map, &already_outdated, &entries, &devel_versions, populate_hint);
     }
 
     return .{
@@ -112,9 +117,15 @@ pub fn collectOutdated(self: *BuildContext, filter: []const []const u8, populate
 /// Entries already flagged via AUR RPC are refined in place; pure-VCS updates
 /// are appended.  When `populate_hint` is true, each computed version is also
 /// stored in `self.devel_version_hint` so the build pipeline can render it.
+///
+/// `pkgbase_map` maps package names to their AUR pkgbase. The clone and
+/// makepkg run happen once per pkgbase, so split VCS packages use the
+/// right clone directory and are not re-checked for each package name.
+/// Names missing from the map are assumed to be their own pkgbase.
 pub fn checkDevelPackages(
     self: *BuildContext,
     packages: []const pacman_mod.InstalledPackage,
+    pkgbase_map: *const std.StringHashMapUnmanaged([]const u8),
     already_outdated: *std.StringHashMapUnmanaged(void),
     entries: *std.ArrayListUnmanaged(OutdatedEntry),
     devel_versions: *std.ArrayListUnmanaged([]const u8),
@@ -135,16 +146,33 @@ pub fn checkDevelPackages(
         self.err_writer.print("{s}::{s} checking VCS package(s)...\n", .{ ec2.blue, ec2.reset }) catch {};
     }
 
+    // pkgbase -> computed version (null when the check failed), so split
+    // packages sharing a pkgbase run the check only once. Versions are owned
+    // by `devel_versions`.
+    var checked: std.StringHashMapUnmanaged(?[]const u8) = .empty;
+    defer checked.deinit(self.allocator);
+
     for (packages) |pkg| {
         if (!devel.isVcsPackage(pkg.name)) continue;
 
-        const vcs_result = devel.checkVersion(self.allocator, c_root, pkg.name) catch {
-            self.err_writer.print("{s}warning:{s} failed to check VCS version for {s}\n", .{ ec2.yellow, ec2.reset, pkg.name }) catch {};
-            continue;
-        };
+        const pkgbase = pkgbase_map.get(pkg.name) orelse pkg.name;
+        const gop = try checked.getOrPut(self.allocator, pkgbase);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = null;
+            const vcs_result = devel.checkVersion(self.allocator, c_root, pkgbase) catch {
+                self.err_writer.print("{s}warning:{s} failed to check VCS version for {s}\n", .{ ec2.yellow, ec2.reset, pkgbase }) catch {};
+                continue;
+            };
+            if (vcs_result) |v| {
+                devel_versions.append(self.allocator, v) catch |err| {
+                    self.allocator.free(v);
+                    return err;
+                };
+                gop.value_ptr.* = v;
+            }
+        }
 
-        const version = vcs_result orelse continue;
-        try devel_versions.append(self.allocator, version);
+        const version = gop.value_ptr.* orelse continue;
         if (populate_hint) {
             try self.devel_version_hint.put(self.allocator, pkg.name, version);
         }
