@@ -11,12 +11,42 @@ test "cloneDir returns correct path" {
     try testing.expectEqualStrings("/tmp/cache/yay", dir);
 }
 
-test "defaultCacheRoot uses HOME" {
-    const root = try git.defaultCacheRoot(testing.allocator);
+test "cacheRootFrom prefers AURDEST" {
+    const root = try git.cacheRootFrom(testing.allocator, .{
+        .aurdest = "/srv/aur",
+        .xdg_cache_home = "/home/u/.xdg-cache",
+        .home = "/home/u",
+    });
     defer testing.allocator.free(root);
-    const home = std.mem.span(std.c.getenv("HOME").?);
-    try testing.expect(std.mem.startsWith(u8, root, home));
-    try testing.expect(std.mem.endsWith(u8, root, "/.cache/aurodle"));
+    try testing.expectEqualStrings("/srv/aur", root);
+}
+
+test "cacheRootFrom uses XDG_CACHE_HOME when AURDEST is unset" {
+    const root = try git.cacheRootFrom(testing.allocator, .{
+        .xdg_cache_home = "/home/u/.xdg-cache",
+        .home = "/home/u",
+    });
+    defer testing.allocator.free(root);
+    try testing.expectEqualStrings("/home/u/.xdg-cache/aurodle", root);
+}
+
+test "cacheRootFrom ignores a relative XDG_CACHE_HOME" {
+    const root = try git.cacheRootFrom(testing.allocator, .{
+        .xdg_cache_home = "relative/cache",
+        .home = "/home/u",
+    });
+    defer testing.allocator.free(root);
+    try testing.expectEqualStrings("/home/u/.cache/aurodle", root);
+}
+
+test "cacheRootFrom falls back to ~/.cache/aurodle" {
+    const root = try git.cacheRootFrom(testing.allocator, .{ .home = "/home/u" });
+    defer testing.allocator.free(root);
+    try testing.expectEqualStrings("/home/u/.cache/aurodle", root);
+}
+
+test "cacheRootFrom errors without any location" {
+    try testing.expectError(error.NoHomeDirectory, git.cacheRootFrom(testing.allocator, .{}));
 }
 
 test "isCloned returns false for non-existent directory" {

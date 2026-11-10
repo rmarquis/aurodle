@@ -34,8 +34,8 @@ pub const GitError = error{
 
 pub const CacheRoot = struct { path: []const u8, owned: bool };
 
-/// Resolve cache root: use the configured value, or fall back to $AURDEST /
-/// ~/.cache/aurodle. Caller must pass the result to freeCacheRoot when done.
+/// Resolve cache root: use the configured value, or fall back to
+/// defaultCacheRoot(). Caller must pass the result to freeCacheRoot when done.
 pub fn resolveCacheRoot(cache_root: ?[]const u8, allocator: Allocator) !CacheRoot {
     if (cache_root) |c| return .{ .path = c, .owned = false };
     return .{ .path = try defaultCacheRoot(allocator), .owned = true };
@@ -45,13 +45,39 @@ pub fn freeCacheRoot(root: CacheRoot, allocator: Allocator) void {
     if (root.owned) allocator.free(root.path);
 }
 
-/// Resolve the cache root: $AURDEST if set, otherwise ~/.cache/aurodle
+/// Environment values that decide where clones live.
+pub const CacheEnv = struct {
+    aurdest: ?[]const u8 = null,
+    xdg_cache_home: ?[]const u8 = null,
+    home: ?[]const u8 = null,
+};
+
+/// Resolve the cache root from the process environment.
+/// See cacheRootFrom for the lookup order. Caller owns the result.
 pub fn defaultCacheRoot(allocator: Allocator) ![]u8 {
-    if (std.c.getenv("AURDEST")) |ptr| {
-        return allocator.dupe(u8, std.mem.span(ptr));
+    return cacheRootFrom(allocator, .{
+        .aurdest = nonEmptyEnv("AURDEST"),
+        .xdg_cache_home = nonEmptyEnv("XDG_CACHE_HOME"),
+        .home = nonEmptyEnv("HOME"),
+    });
+}
+
+/// Resolve the cache root: $AURDEST if set, otherwise
+/// $XDG_CACHE_HOME/aurodle, otherwise ~/.cache/aurodle. Empty values count
+/// as unset, and a relative XDG_CACHE_HOME is ignored as the XDG Base
+/// Directory spec requires. Caller owns the result.
+pub fn cacheRootFrom(allocator: Allocator, env: CacheEnv) ![]u8 {
+    if (env.aurdest) |dir| return allocator.dupe(u8, dir);
+    if (env.xdg_cache_home) |dir| {
+        if (std.fs.path.isAbsolute(dir)) return std.fs.path.join(allocator, &.{ dir, "aurodle" });
     }
-    const home = if (std.c.getenv("HOME")) |p| std.mem.span(p) else return error.NoHomeDirectory;
+    const home = env.home orelse return error.NoHomeDirectory;
     return std.fs.path.join(allocator, &.{ home, DEFAULT_CACHE_SUBDIR });
+}
+
+fn nonEmptyEnv(name: [*:0]const u8) ?[]const u8 {
+    const value = std.mem.span(std.c.getenv(name) orelse return null);
+    return if (value.len > 0) value else null;
 }
 
 /// Get the full clone directory path for a pkgbase.
