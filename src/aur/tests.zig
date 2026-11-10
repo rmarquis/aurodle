@@ -218,3 +218,31 @@ test "checkError passes for successful response" {
     // Should not return an error
     try Client.checkError(response);
 }
+
+test "names the AUR did not return are not requested again" {
+    const fixture =
+        \\{"version":5,"type":"multiinfo","resultcount":1,"results":[{"ID":1,"Name":"paru","PackageBase":"paru","PackageBaseID":1,"Version":"2.0-1","NumVotes":0,"Popularity":0,"FirstSubmitted":0,"LastModified":0}]}
+    ;
+    var client = Client.init(testing.allocator);
+    defer client.deinit();
+
+    const response = try client.parseResponse(fixture);
+    const pkg = try client.mapPackage(response.results[0]);
+    try client.cache.put(testing.allocator, pkg.name, pkg);
+    // As after a multiInfo batch for these three names.
+    try client.recordMisses(&.{ "paru", "PARU", "no-such-pkg" }, &.{pkg});
+
+    try testing.expect(client.misses.contains("no-such-pkg"));
+    // Found, and found case-insensitively: neither is a miss.
+    try testing.expect(!client.misses.contains("paru"));
+    try testing.expect(!client.misses.contains("PARU"));
+
+    // A recorded miss is answered without the network. `yay` exists in
+    // the AUR, so a request would return it (or fail offline).
+    try client.recordMisses(&.{"yay"}, &.{});
+    try testing.expect(try client.info("yay") == null);
+    const batch = try client.multiInfo(&.{ "no-such-pkg", "yay", "paru" });
+    defer testing.allocator.free(batch);
+    try testing.expectEqual(@as(usize, 1), batch.len);
+    try testing.expectEqualStrings("paru", batch[0].name);
+}

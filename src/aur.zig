@@ -146,6 +146,10 @@ pub const Client = struct {
     arena: std.heap.ArenaAllocator,
     http_client: std.http.Client,
     cache: std.StringHashMapUnmanaged(*Package),
+    /// Names the AUR has answered "not found" for, so that later lookups
+    /// (e.g. the registry's single-package fallback after a batch miss)
+    /// don't ask again. Keys live in the arena.
+    misses: std.StringHashMapUnmanaged(void) = .empty,
 
     pub fn init(allocator: Allocator) Client {
         return .{
@@ -159,6 +163,7 @@ pub const Client = struct {
     pub fn deinit(self: *Client) void {
         self.http_client.deinit();
         self.cache.deinit(self.allocator);
+        self.misses.deinit(self.allocator);
         self.arena.deinit();
     }
 
@@ -166,6 +171,7 @@ pub const Client = struct {
     pub fn info(self: *Client, name: []const u8) !?*Package {
         // Cache hit
         if (self.cache.get(name)) |pkg| return pkg;
+        if (self.misses.contains(name)) return null;
 
         // HTTP request
         const url = try std.fmt.allocPrint(
@@ -181,7 +187,10 @@ pub const Client = struct {
         const response = try self.parseResponse(response_body);
         try Client.checkError(response);
 
-        if (response.resultcount == 0) return null;
+        if (response.resultcount == 0) {
+            try self.recordMisses(&.{name}, &.{});
+            return null;
+        }
 
         const pkg = try self.mapPackage(response.results[0]);
         try self.cache.put(self.allocator, pkg.name, pkg);
@@ -199,6 +208,8 @@ pub const Client = struct {
         for (names) |name| {
             if (self.cache.get(name)) |pkg| {
                 try results.append(self.allocator, pkg);
+            } else if (self.misses.contains(name)) {
+                continue;
             } else {
                 try uncached.append(self.allocator, name);
             }
@@ -216,11 +227,27 @@ pub const Client = struct {
                 try self.cache.put(self.allocator, pkg.name, pkg);
                 try results.append(self.allocator, pkg);
             }
+            try self.recordMisses(batch, batch_results);
 
             i = end;
         }
 
         return try results.toOwnedSlice(self.allocator);
+    }
+
+    /// Remember each name in `requested` that no package in `found`
+    /// answers. The AUR matches names case-insensitively (`PARU` returns
+    /// `paru`), so a name only counts as missing if no result matches it
+    /// that way; info() keeps resolving such spellings over the network.
+    pub fn recordMisses(self: *Client, requested: []const []const u8, found: []const *Package) !void {
+        next: for (requested) |name| {
+            for (found) |pkg| {
+                if (std.ascii.eqlIgnoreCase(pkg.name, name)) continue :next;
+            }
+            if (self.misses.contains(name)) continue;
+            const key = try self.arena.allocator().dupe(u8, name);
+            try self.misses.put(self.allocator, key, {});
+        }
     }
 
     /// Search AUR packages. NOT cached (search results lack dependency arrays).
