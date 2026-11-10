@@ -7,7 +7,23 @@ pub const PacmanConf = struct {
     verbose_pkg_lists: bool,
     color: bool,
     ignore_pkgs: []const []const u8,
+    /// CacheDir values, in order. Empty when pacman.conf sets none (pacman
+    /// then uses default_cache_dir).
+    cache_dirs: []const []const u8,
 };
+
+/// pacman's package cache when pacman.conf has no CacheDir.
+pub const default_cache_dir = "/var/cache/pacman/pkg/";
+
+/// Append the space-separated paths of a CacheDir value to `list`.
+pub fn appendCacheDirs(allocator: std.mem.Allocator, list: *std.ArrayListUnmanaged([]const u8), value: []const u8) !void {
+    var it = std.mem.tokenizeAny(u8, value, " \t");
+    while (it.next()) |dir| {
+        const owned = try allocator.dupe(u8, dir);
+        errdefer allocator.free(owned);
+        try list.append(allocator, owned);
+    }
+}
 
 /// Parse a "Key = Value" config line, returning trimmed value if key matches.
 fn parseDirectiveValue(line: []const u8, key: []const u8) ?[]const u8 {
@@ -32,6 +48,7 @@ pub fn registerSyncDbs(allocator: std.mem.Allocator, handle: alpm.Handle) !Pacma
     var verbose_pkg_lists = false;
     var color_opt = false;
     var ignore_pkgs: std.ArrayListUnmanaged([]const u8) = .empty;
+    var cache_dirs: std.ArrayListUnmanaged([]const u8) = .empty;
     var lines = std.mem.splitScalar(u8, content, '\n');
 
     while (lines.next()) |line| {
@@ -69,6 +86,9 @@ pub fn registerSyncDbs(allocator: std.mem.Allocator, handle: alpm.Handle) !Pacma
                     try ignore_pkgs.append(allocator, try allocator.dupe(u8, pkg));
                 }
             }
+            if (parseDirectiveValue(trimmed, "CacheDir")) |value| {
+                try appendCacheDirs(allocator, &cache_dirs, value);
+            }
         }
 
         if (current_repo) |repo| {
@@ -86,6 +106,7 @@ pub fn registerSyncDbs(allocator: std.mem.Allocator, handle: alpm.Handle) !Pacma
         .verbose_pkg_lists = verbose_pkg_lists,
         .color = color_opt,
         .ignore_pkgs = try ignore_pkgs.toOwnedSlice(allocator),
+        .cache_dirs = try cache_dirs.toOwnedSlice(allocator),
     };
 }
 
@@ -110,6 +131,21 @@ fn addServersFromMirrorlist(db: alpm.Database, path: []const u8) void {
 pub fn isArchLinux() bool {
     std.Io.Dir.accessAbsolute(std.Options.debug_io, "/var/lib/pacman/local", .{}) catch return false;
     return true;
+}
+
+test "appendCacheDirs splits a CacheDir value into paths" {
+    const a = std.testing.allocator;
+    var list: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer {
+        for (list.items) |d| a.free(d);
+        list.deinit(a);
+    }
+    try appendCacheDirs(a, &list, "/var/cache/pacman/pkg/  /mnt/cache/");
+    try appendCacheDirs(a, &list, "/srv/pkg");
+    try std.testing.expectEqual(@as(usize, 3), list.items.len);
+    try std.testing.expectEqualStrings("/var/cache/pacman/pkg/", list.items[0]);
+    try std.testing.expectEqualStrings("/mnt/cache/", list.items[1]);
+    try std.testing.expectEqualStrings("/srv/pkg", list.items[2]);
 }
 
 test {

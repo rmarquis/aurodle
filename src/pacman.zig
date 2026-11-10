@@ -62,6 +62,8 @@ pub const Pacman = struct {
     verbose_pkg_lists: bool = false,
     color: bool = false,
     ignore_pkgs: []const []const u8 = &.{},
+    /// pacman.conf CacheDir values (owned); see cacheDirs().
+    cache_dirs: []const []const u8 = &.{},
     /// Name/provision → provider lookup table, built on first use. Null
     /// only if allocating it failed; lookups then scan the databases.
     provides_index: ?*ProvidesIndex = null,
@@ -94,6 +96,7 @@ pub const Pacman = struct {
             .verbose_pkg_lists = conf.verbose_pkg_lists,
             .color = conf.color,
             .ignore_pkgs = conf.ignore_pkgs,
+            .cache_dirs = conf.cache_dirs,
             .provides_index = index,
         };
     }
@@ -140,7 +143,16 @@ pub const Pacman = struct {
         if (self.owns_sync_dbs) self.allocator.free(self.sync_dbs);
         for (self.ignore_pkgs) |pkg| self.allocator.free(pkg);
         self.allocator.free(self.ignore_pkgs);
+        for (self.cache_dirs) |dir| self.allocator.free(dir);
+        self.allocator.free(self.cache_dirs);
         self.handle.deinit();
+    }
+
+    /// pacman's package cache directories, as pacman uses them: the
+    /// pacman.conf CacheDir values, or its default when there are none.
+    pub fn cacheDirs(self: Pacman) []const []const u8 {
+        if (self.cache_dirs.len > 0) return self.cache_dirs;
+        return &.{pacman_conf.default_cache_dir};
     }
 
     /// Is this the name of the local AUR repository?

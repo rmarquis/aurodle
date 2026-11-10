@@ -175,12 +175,82 @@ pub fn filterInstallable(allocator: Allocator, build_order: []const plan_mod.Bui
 
 /// Delete package files from pacman's pkg cache so a rebuild with the same
 /// version doesn't trigger a checksum mismatch on the stale cached copy.
+/// Every configured CacheDir is checked; the files found are removed with
+/// a single privileged `rm`.
 pub fn purgePacmanCache(self: *BuildContext, basenames: []const []const u8) void {
-    for (basenames) |basename| {
-        const cache_path = std.fmt.allocPrint(self.allocator, "/var/cache/pacman/pkg/{s}", .{basename}) catch continue;
-        defer self.allocator.free(cache_path);
-        std.Io.Dir.accessAbsolute(std.Options.debug_io, cache_path, .{}) catch continue;
-        const result = self.auth.runCaptured(&.{ "rm", "-f", cache_path }) catch continue;
-        result.deinit(self.allocator);
+    const paths = cachedPackagePaths(self.allocator, self.pacman.cacheDirs(), basenames) catch return;
+    defer {
+        for (paths) |p| self.allocator.free(p);
+        self.allocator.free(paths);
     }
+    if (paths.len == 0) return;
+
+    var argv: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer argv.deinit(self.allocator);
+    argv.appendSlice(self.allocator, &.{ "rm", "-f", "--" }) catch return;
+    argv.appendSlice(self.allocator, paths) catch return;
+    const result = self.auth.runCaptured(argv.items) catch return;
+    result.deinit(self.allocator);
+}
+
+/// The files named `basenames` that exist in any of `cache_dirs`.
+/// Caller owns the slice and its strings.
+pub fn cachedPackagePaths(
+    allocator: Allocator,
+    cache_dirs: []const []const u8,
+    basenames: []const []const u8,
+) ![]const []const u8 {
+    var paths: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer {
+        for (paths.items) |p| allocator.free(p);
+        paths.deinit(allocator);
+    }
+    for (cache_dirs) |dir| {
+        for (basenames) |basename| {
+            const path = try std.fs.path.join(allocator, &.{ dir, basename });
+            std.Io.Dir.accessAbsolute(std.Options.debug_io, path, .{}) catch {
+                allocator.free(path);
+                continue;
+            };
+            paths.append(allocator, path) catch |err| {
+                allocator.free(path);
+                return err;
+            };
+        }
+    }
+    return try paths.toOwnedSlice(allocator);
+}
+
+test "cachedPackagePaths finds built files in every cache directory" {
+    const testing = std.testing;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try std.Io.Dir.realPathFileAlloc(tmp.dir, testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+
+    try tmp.dir.createDirPath(testing.io, "a");
+    try tmp.dir.createDirPath(testing.io, "b");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "a/foo-1-1-any.pkg.tar.zst", .data = "" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "b/foo-1-1-any.pkg.tar.zst", .data = "" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "b/bar-2-1-any.pkg.tar.zst", .data = "" });
+
+    const dir_a = try std.fs.path.join(testing.allocator, &.{ root, "a" });
+    defer testing.allocator.free(dir_a);
+    const dir_b = try std.fs.path.join(testing.allocator, &.{ root, "b/" });
+    defer testing.allocator.free(dir_b);
+
+    const paths = try cachedPackagePaths(
+        testing.allocator,
+        &.{ dir_a, dir_b },
+        &.{ "foo-1-1-any.pkg.tar.zst", "bar-2-1-any.pkg.tar.zst", "baz-3-1-any.pkg.tar.zst" },
+    );
+    defer {
+        for (paths) |p| testing.allocator.free(p);
+        testing.allocator.free(paths);
+    }
+
+    try testing.expectEqual(@as(usize, 3), paths.len);
+    try testing.expect(std.mem.endsWith(u8, paths[0], "/a/foo-1-1-any.pkg.tar.zst"));
+    try testing.expect(std.mem.endsWith(u8, paths[1], "/b/foo-1-1-any.pkg.tar.zst"));
+    try testing.expect(std.mem.endsWith(u8, paths[2], "/b/bar-2-1-any.pkg.tar.zst"));
 }
