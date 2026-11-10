@@ -7,7 +7,7 @@ const color = @import("color.zig");
 /// uses the correct backend.
 pub var global_io: std.Io = std.Options.debug_io;
 
-fn currentIo() std.Io {
+pub fn currentIo() std.Io {
     return if (@import("builtin").is_test) std.testing.io else global_io;
 }
 

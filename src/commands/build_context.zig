@@ -23,6 +23,11 @@ pub const BuildContext = struct {
     err_writer: types.ErrWriter,
     /// Populated by --devel upgrade check; used by displayPlan to show real versions.
     devel_version_hint: std.StringHashMapUnmanaged([]const u8) = .empty,
+    /// Populated alongside devel_version_hint, for packages whose version
+    /// check left fully prepared sources in src/. Maps the package name to
+    /// devel.sourceStamp() at that time; the build reuses the sources if
+    /// the stamp still matches.
+    devel_prepared: std.StringHashMapUnmanaged(i96) = .empty,
 
     pub fn init(
         allocator: Allocator,

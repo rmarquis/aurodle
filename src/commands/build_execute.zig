@@ -135,26 +135,42 @@ fn runChrootBuild(
 ///      `makepkg -s --noextract --holdver` builds the prepared tree:
 ///      --noextract skips download, extraction and prepare(); --holdver is
 ///      redundant with it but guards against VCS sources moving between passes.
+/// With `prepared` set, the `upgrade --devel` version check already did
+/// pass 1 and the already-built check (see sourcesStillPrepared), so only
+/// pass 2 runs.
 /// Returns the makepkg exit code (0 when skipped as already built).
-fn runVcsBuild(self: *const BuildContext, entry: plan_mod.BuildEntry, clone_dir: []const u8) !u8 {
+fn runVcsBuild(self: *const BuildContext, entry: plan_mod.BuildEntry, clone_dir: []const u8, prepared: bool) !u8 {
     const sc = self.stdout_color;
     const stdout = types.getStdout();
 
-    stdout.print("{s}::{s} Preparing {s} sources...\n", .{ sc.blue, sc.reset, entry.name }) catch {};
-    const prep_code = try utils.runInteractive(self.allocator, &.{ "makepkg", "-s", "--nobuild", "--noconfirm" }, clone_dir);
-    if (prep_code != 0) return prep_code;
+    if (!prepared) {
+        stdout.print("{s}::{s} Preparing {s} sources...\n", .{ sc.blue, sc.reset, entry.name }) catch {};
+        const prep_code = try utils.runInteractive(self.allocator, &.{ "makepkg", "-s", "--nobuild", "--noconfirm" }, clone_dir);
+        if (prep_code != 0) return prep_code;
+    }
 
     const version = devel.srcinfoVersion(self.allocator, clone_dir) catch null;
     defer if (version) |v| self.allocator.free(v);
     const ver = version orelse "latest";
 
-    if (allPackagesBuilt(self.allocator, clone_dir) catch false) {
+    if (!prepared and (allPackagesBuilt(self.allocator, clone_dir) catch false)) {
         stdout.print("{s}::{s} {s} {s} already built, skipping (use --rebuild to force)\n", .{ sc.yellow, sc.reset, entry.name, ver }) catch {};
         return 0;
     }
 
     stdout.print("{s}::{s} Building {s} {s}...\n", .{ sc.blue, sc.reset, entry.name, ver }) catch {};
     return utils.runInteractive(self.allocator, &.{ "makepkg", "-s", "--noextract", "--holdver", "--noconfirm" }, clone_dir);
+}
+
+/// True if the `upgrade --devel` version check left prepared sources for
+/// `name` in clone_dir and no tracked build file changed since (no AUR
+/// pull, no edit during review). The check ran `makepkg --nobuild`, which
+/// is the first pass of runVcsBuild, so the build can skip it instead of
+/// fetching, extracting and running prepare() a second time.
+fn sourcesStillPrepared(self: *const BuildContext, name: []const u8, clone_dir: []const u8) bool {
+    const stamp = self.devel_prepared.get(name) orelse return false;
+    const now = devel.sourceStamp(self.allocator, clone_dir) catch return false;
+    return now == stamp;
 }
 
 /// True if any of `entry`'s AUR dep pkgbases is in the failed set.
@@ -262,7 +278,7 @@ pub fn buildLoop(
             const exit_code = if (self.flags.chroot) blk: {
                 break :blk try runChrootBuild(self, entry, &built_pkg_paths, clone_dir);
             } else if (split_vcs) blk: {
-                break :blk try runVcsBuild(self, entry, clone_dir);
+                break :blk try runVcsBuild(self, entry, clone_dir, sourcesStillPrepared(self, entry.name, clone_dir));
             } else blk: {
                 const args: []const []const u8 = if (self.flags.rebuild)
                     &.{ "makepkg", "-sf", "--noconfirm" }

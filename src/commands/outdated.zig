@@ -133,8 +133,8 @@ const DevelJob = struct {
     const Outcome = union(enum) {
         failed,
         no_version,
-        /// Owned; the caller moves it into devel_versions.
-        version: []const u8,
+        /// `version` is owned; the caller moves it into devel_versions.
+        version: devel.VersionCheck,
     };
 
     fn run(job: *const DevelJob, i: usize) void {
@@ -193,25 +193,29 @@ pub fn checkDevelPackages(
     // Hand every computed version to `devel_versions` (which owns them)
     // before anything below can fail, so none leak.
     devel_versions.ensureUnusedCapacity(self.allocator, pkgbases.len) catch |err| {
-        for (outcomes) |o| if (o == .version) self.allocator.free(o.version);
+        for (outcomes) |o| if (o == .version) self.allocator.free(o.version.version);
         return err;
     };
     for (pkgbases, outcomes) |pkgbase, outcome| switch (outcome) {
         .failed => self.err_writer.print("{s}warning:{s} failed to check VCS version for {s}\n", .{ ec2.yellow, ec2.reset, pkgbase }) catch {},
         .no_version => {},
-        .version => |v| devel_versions.appendAssumeCapacity(v),
+        .version => |v| devel_versions.appendAssumeCapacity(v.version),
     };
 
     for (packages) |pkg| {
         if (!devel.isVcsPackage(pkg.name)) continue;
 
         const pkgbase = pkgbase_map.get(pkg.name) orelse pkg.name;
-        const version = switch (outcomes[pkgbase_index.getIndex(pkgbase).?]) {
+        const check = switch (outcomes[pkgbase_index.getIndex(pkgbase).?]) {
             .version => |v| v,
             else => continue,
         };
+        const version = check.version;
         if (populate_hint) {
             try self.devel_version_hint.put(self.allocator, pkg.name, version);
+            if (check.prepared_stamp) |stamp| {
+                try self.devel_prepared.put(self.allocator, pkg.name, stamp);
+            }
         }
 
         if (already_outdated.contains(pkg.name)) {

@@ -14,16 +14,26 @@ pub fn isVcsPackage(name: []const u8) bool {
     return false;
 }
 
+/// Result of a VCS version check.
+pub const VersionCheck = struct {
+    /// Full version string (epoch:pkgver-pkgrel). Owned by the caller.
+    version: []const u8,
+    /// Set when `makepkg --nobuild` completed: src/ then holds fetched,
+    /// extracted and prepared sources for `version`, so a build can reuse
+    /// them with `--noextract`. The value is sourceStamp() taken right
+    /// after; a different stamp later means the build files changed.
+    prepared_stamp: ?i96,
+};
+
 /// Clone/update an AUR package, run `makepkg --nobuild` to execute pkgver(),
 /// then run `makepkg --printsrcinfo` to get the resulting version string.
 ///
-/// Returns the full version string (epoch:pkgver-pkgrel) or null on failure.
-/// Caller owns the returned string.
+/// Returns null on failure. Caller owns the returned version string.
 pub fn checkVersion(
     allocator: Allocator,
     cache_root: []const u8,
     pkgbase: []const u8,
-) !?[]const u8 {
+) !?VersionCheck {
     // Ensure clone exists and is up to date
     _ = git.cloneOrUpdate(allocator, cache_root, pkgbase) catch {
         return null;
@@ -46,7 +56,37 @@ pub fn checkVersion(
     );
     defer nobuild_result.deinit(allocator);
 
-    return srcinfoVersion(allocator, clone_dir);
+    const version = try srcinfoVersion(allocator, clone_dir) orelse return null;
+    const stamp: ?i96 = if (nobuild_result.success())
+        sourceStamp(allocator, clone_dir) catch null
+    else
+        null;
+    return .{ .version = version, .prepared_stamp = stamp };
+}
+
+/// Fingerprint of the build files in clone_dir: the newest modification
+/// time among the files git tracks there (PKGBUILD, patches, install
+/// scripts). It changes when a pull or an edit during review touches any
+/// of them. Sources fetched or extracted by makepkg are untracked and
+/// ignored.
+pub fn sourceStamp(allocator: Allocator, clone_dir: []const u8) !i96 {
+    const result = try utils.runCommandIn(allocator, &.{ "git", "ls-files", "-z" }, clone_dir);
+    defer result.deinit(allocator);
+    if (!result.success()) return error.InvalidRepository;
+
+    const io = utils.currentIo();
+    const dir = try std.Io.Dir.cwd().openDir(io, clone_dir, .{});
+    defer dir.close(io);
+
+    var newest: ?i96 = null;
+    var names = std.mem.splitScalar(u8, result.stdout, 0);
+    while (names.next()) |name| {
+        if (name.len == 0) continue;
+        const stat = try dir.statFile(io, name, .{});
+        const mtime = stat.mtime.nanoseconds;
+        if (newest == null or mtime > newest.?) newest = mtime;
+    }
+    return newest orelse error.NoTrackedFiles;
 }
 
 /// Run `makepkg --printsrcinfo` in clone_dir and return the full version
@@ -212,4 +252,35 @@ test "parseField matches key-value pairs" {
     try testing.expectEqualStrings("2", parseField("epoch = 2", "epoch").?);
     try testing.expect(parseField("pkgver = 1.0", "pkgrel") == null);
     try testing.expect(parseField("pkgversion = 1.0", "pkgver") == null);
+}
+
+fn setMtime(dir: std.Io.Dir, name: []const u8, ns: i96) !void {
+    const file = try dir.openFile(testing.io, name, .{ .mode = .read_write });
+    defer file.close(testing.io);
+    try file.setTimestamps(testing.io, .{ .modify_timestamp = .{ .new = .{ .nanoseconds = ns } } });
+}
+
+test "sourceStamp tracks changes to tracked build files only" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_path = try std.Io.Dir.realPathFileAlloc(tmp.dir, testing.io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_path);
+    const repo_dir = try git.createTestGitRepo(testing.allocator, tmp_path, "pkg-git");
+    defer testing.allocator.free(repo_dir);
+
+    const dir = try std.Io.Dir.cwd().openDir(testing.io, repo_dir, .{});
+    defer dir.close(testing.io);
+
+    const before = try sourceStamp(testing.allocator, repo_dir);
+    try testing.expectEqual(before, try sourceStamp(testing.allocator, repo_dir));
+
+    // Downloaded sources are untracked and must not change the stamp.
+    try dir.writeFile(testing.io, .{ .sub_path = "source.tar.gz", .data = "x" });
+    try setMtime(dir, "source.tar.gz", before + 60 * std.time.ns_per_s);
+    try testing.expectEqual(before, try sourceStamp(testing.allocator, repo_dir));
+
+    // An edit to the PKGBUILD (pull or review) changes it.
+    const later = before + 10 * std.time.ns_per_s;
+    try setMtime(dir, "PKGBUILD", later);
+    try testing.expectEqual(later, try sourceStamp(testing.allocator, repo_dir));
 }

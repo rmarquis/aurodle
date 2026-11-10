@@ -429,6 +429,7 @@ pub fn upgrade(self: *BuildContext, targets: []const []const u8) !ExitCode {
     const result = (try outdated_mod.collectOutdated(self, targets, true)) orelse return .general_error;
     defer result.deinit(self.allocator);
     defer self.devel_version_hint.clearAndFree(self.allocator);
+    defer self.devel_prepared.clearAndFree(self.allocator);
 
     var to_upgrade: std.ArrayListUnmanaged([]const u8) = .empty;
     defer to_upgrade.deinit(self.allocator);
