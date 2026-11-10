@@ -62,6 +62,9 @@ pub const Pacman = struct {
     verbose_pkg_lists: bool = false,
     color: bool = false,
     ignore_pkgs: []const []const u8 = &.{},
+    /// Name/provision → provider lookup table, built on first use. Null
+    /// only if allocating it failed; lookups then scan the databases.
+    provides_index: ?*ProvidesIndex = null,
 
     /// Initialize by parsing /etc/pacman.conf and registering all
     /// discovered sync databases.
@@ -76,6 +79,9 @@ pub const Pacman = struct {
         const official_dbs = try buildOfficialDbs(allocator, conf.sync_dbs, aur_repo_name);
         errdefer allocator.free(official_dbs);
 
+        const index = try ProvidesIndex.create(allocator);
+        errdefer index.destroy();
+
         return .{
             .allocator = allocator,
             .handle = handle,
@@ -88,6 +94,7 @@ pub const Pacman = struct {
             .verbose_pkg_lists = conf.verbose_pkg_lists,
             .color = conf.color,
             .ignore_pkgs = conf.ignore_pkgs,
+            .provides_index = index,
         };
     }
 
@@ -111,6 +118,9 @@ pub const Pacman = struct {
         const official_dbs = try buildOfficialDbs(allocator, sync_dbs, aur_repo_name);
         errdefer allocator.free(official_dbs);
 
+        const index = try ProvidesIndex.create(allocator);
+        errdefer index.destroy();
+
         return .{
             .allocator = allocator,
             .handle = handle,
@@ -120,10 +130,12 @@ pub const Pacman = struct {
             .aurpkgs_db = findAurpkgsDb(sync_dbs, aur_repo_name),
             .aur_repo_name = aur_repo_name,
             .owns_sync_dbs = false,
+            .provides_index = index,
         };
     }
 
     pub fn deinit(self: *Pacman) void {
+        if (self.provides_index) |index| index.destroy();
         self.allocator.free(self.official_dbs);
         if (self.owns_sync_dbs) self.allocator.free(self.sync_dbs);
         for (self.ignore_pkgs) |pkg| self.allocator.free(pkg);
@@ -305,6 +317,11 @@ pub const Pacman = struct {
     /// Checks official repos first (priority), then aurpkgs.
     /// Returns null if no provider found.
     pub fn findProvider(self: Pacman, dep: []const u8) ?ProviderMatch {
+        if (self.readyIndex()) |index| {
+            const entries = index.get(dep);
+            return if (entries.len > 0) entries[0].match else null;
+        }
+
         // Check official repos first
         for (self.official_dbs) |db| {
             if (findProviderInDb(db, dep)) |match| return match;
@@ -322,6 +339,8 @@ pub const Pacman = struct {
     /// Official repos are listed first, then aurpkgs.
     /// Returns empty slice if none found. Caller owns the returned slice.
     pub fn findAllProviders(self: Pacman, allocator: Allocator, dep: []const u8) ![]ProviderMatch {
+        if (self.readyIndex()) |index| return index.collect(allocator, dep, false);
+
         var matches: std.ArrayList(ProviderMatch) = .empty;
         errdefer matches.deinit(allocator);
 
@@ -336,6 +355,26 @@ pub const Pacman = struct {
         }
 
         return try matches.toOwnedSlice(allocator);
+    }
+
+    /// The provides index, built now if it has become worth it. Null while
+    /// the caller should scan the databases instead: during the first few
+    /// lookups, or if the index can't be built (out of memory).
+    fn readyIndex(self: Pacman) ?*ProvidesIndex {
+        const index = self.provides_index orelse return null;
+        if (!index.built) {
+            // Building costs about as much as `scan_lookups` scans, so a
+            // short resolution never pays for it and a long one pays once.
+            if (index.lookups < ProvidesIndex.scan_lookups) {
+                index.lookups += 1;
+                return null;
+            }
+            index.build(self.official_dbs, self.aurpkgs_db) catch {
+                index.reset();
+                return null;
+            };
+        }
+        return index;
     }
 
     /// Find a package satisfying a dependency string in the given database set.
@@ -374,6 +413,8 @@ pub const Pacman = struct {
     /// Find ALL packages in official sync dbs (no aurpkgs) that satisfy `dep`.
     /// Caller owns the returned slice.
     fn findAllOfficialProviders(self: Pacman, allocator: Allocator, dep: []const u8) ![]ProviderMatch {
+        if (self.readyIndex()) |index| return index.collect(allocator, dep, true);
+
         var matches: std.ArrayList(ProviderMatch) = .empty;
         errdefer matches.deinit(allocator);
         for (self.official_dbs) |db| {
@@ -547,6 +588,9 @@ pub const Pacman = struct {
     /// cannot cause a partial system update.
     pub fn refreshAurDb(self: Pacman) !void {
         const db = self.aurpkgs_db orelse return error.AurDbNotConfigured;
+        // The update frees the database's package cache, which the
+        // provides index points into.
+        if (self.provides_index) |index| index.reset();
         try self.handle.dbUpdate(&.{db}, false);
     }
 
@@ -673,6 +717,94 @@ fn providerMatchFromPkg(pkg: alpm.AlpmPackage, db: alpm.Database) ProviderMatch 
     };
 }
 
+/// Every sync package indexed under its own name and each name it
+/// provides, so provider lookups cost a hash lookup instead of a walk over
+/// all ~15k packages and their provides lists. Entries for a name keep the
+/// scan order: official databases in pacman.conf order, then the AUR repo,
+/// each in package cache order. Strings are borrowed from libalpm and stay
+/// valid until its package cache is freed (Pacman.deinit, refreshAurDb).
+/// Not thread-safe.
+const ProvidesIndex = struct {
+    allocator: Allocator,
+    arena: std.heap.ArenaAllocator,
+    map: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(Entry)) = .empty,
+    built: bool = false,
+    /// Lookups answered by scanning while the index was not built.
+    lookups: u32 = 0,
+
+    /// One scan of every sync package takes about 1 ms; building the
+    /// index about 8 ms.
+    const scan_lookups = 8;
+
+    const Entry = struct {
+        match: ProviderMatch,
+        /// False for the local AUR repository.
+        official: bool,
+    };
+
+    fn create(allocator: Allocator) !*ProvidesIndex {
+        const index = try allocator.create(ProvidesIndex);
+        index.* = .{ .allocator = allocator, .arena = .init(allocator) };
+        return index;
+    }
+
+    fn destroy(self: *ProvidesIndex) void {
+        self.arena.deinit();
+        self.allocator.destroy(self);
+    }
+
+    fn reset(self: *ProvidesIndex) void {
+        _ = self.arena.reset(.free_all);
+        self.map = .empty;
+        self.built = false;
+        self.lookups = 0;
+    }
+
+    fn build(self: *ProvidesIndex, official_dbs: []const alpm.Database, aurpkgs_db: ?alpm.Database) !void {
+        for (official_dbs) |db| try self.addDb(db, true);
+        if (aurpkgs_db) |db| try self.addDb(db, false);
+        self.built = true;
+    }
+
+    fn addDb(self: *ProvidesIndex, db: alpm.Database, official: bool) !void {
+        var it = db.getPkgcache();
+        while (it.next()) |pkg| {
+            const entry: Entry = .{ .match = providerMatchFromPkg(pkg, db), .official = official };
+            try self.add(pkg.getName(), entry);
+            var prov_it = pkg.getProvides();
+            while (prov_it.next()) |prov| try self.add(prov.name, entry);
+        }
+    }
+
+    fn add(self: *ProvidesIndex, name: []const u8, entry: Entry) !void {
+        const arena = self.arena.allocator();
+        const gop = try self.map.getOrPut(arena, name);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        const list = gop.value_ptr;
+        // A package listing a name twice (or providing its own name)
+        // is still one provider.
+        if (list.items.len > 0 and list.items[list.items.len - 1].match.provider_name.ptr == entry.match.provider_name.ptr) return;
+        try list.append(arena, entry);
+    }
+
+    fn get(self: *const ProvidesIndex, name: []const u8) []const Entry {
+        const list = self.map.get(name) orelse return &.{};
+        return list.items;
+    }
+
+    /// Providers of `name`, optionally official ones only. Caller owns
+    /// the slice.
+    fn collect(self: *const ProvidesIndex, allocator: Allocator, name: []const u8, official_only: bool) ![]ProviderMatch {
+        var matches: std.ArrayList(ProviderMatch) = .empty;
+        errdefer matches.deinit(allocator);
+        for (self.get(name)) |entry| {
+            if (official_only and !entry.official) continue;
+            try matches.append(allocator, entry.match);
+        }
+        return try matches.toOwnedSlice(allocator);
+    }
+};
+
 /// Search a single database for a package that provides `dep`.
 fn findProviderInDb(db: alpm.Database, dep: []const u8) ?ProviderMatch {
     var it = db.getPkgcache();
@@ -714,4 +846,70 @@ test "depMatches: versioned dep honours the constraint" {
 test "depMatches: versioned dep is not satisfied by an unversioned provision" {
     const dep = testDep("foo", .ge, "1");
     try std.testing.expect(!depMatches(dep, "foo", null));
+}
+
+const testing = std.testing;
+
+/// The scan the provides index replaces, kept as the reference for tests.
+fn scanAllProviders(pm: Pacman, allocator: Allocator, dep: []const u8, official_only: bool) ![]ProviderMatch {
+    var matches: std.ArrayList(ProviderMatch) = .empty;
+    errdefer matches.deinit(allocator);
+    for (pm.official_dbs) |db| try findAllProvidersInDb(allocator, db, dep, &matches);
+    if (!official_only) {
+        if (pm.aurpkgs_db) |aurdb| try findAllProvidersInDb(allocator, aurdb, dep, &matches);
+    }
+    return try matches.toOwnedSlice(allocator);
+}
+
+fn expectSameProviders(pm: Pacman, name: []const u8) !void {
+    const a = testing.allocator;
+    inline for (.{ false, true }) |official_only| {
+        const want = try scanAllProviders(pm, a, name, official_only);
+        defer a.free(want);
+        const got = if (official_only) try pm.findAllOfficialProviders(a, name) else try pm.findAllProviders(a, name);
+        defer a.free(got);
+        try testing.expectEqual(want.len, got.len);
+        for (want, got) |w, g| {
+            try testing.expectEqualStrings(w.provider_name, g.provider_name);
+            try testing.expectEqualStrings(w.db_name, g.db_name);
+        }
+    }
+    const first = pm.findProvider(name);
+    const all = try scanAllProviders(pm, a, name, false);
+    defer a.free(all);
+    if (all.len == 0) {
+        try testing.expect(first == null);
+    } else {
+        try testing.expectEqualStrings(all[0].provider_name, first.?.provider_name);
+    }
+}
+
+test "provides index answers like a database scan" {
+    if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
+
+    var pm = try Pacman.init(testing.allocator, repo_mod.DEFAULT_REPO_NAME);
+    defer pm.deinit();
+
+    for ([_][]const u8{ "sh", "java-runtime", "jack", "nodejs", "libgl", "glibc", "zzz-not-a-package" }) |name| {
+        try expectSameProviders(pm, name);
+    }
+    // A sample of real names and provisions from every official database.
+    var n: usize = 0;
+    for (pm.official_dbs) |db| {
+        var it = db.getPkgcache();
+        while (it.next()) |pkg| : (n += 1) {
+            if (n % 400 != 0) continue;
+            try expectSameProviders(pm, pkg.getName());
+            var prov_it = pkg.getProvides();
+            while (prov_it.next()) |prov| try expectSameProviders(pm, prov.name);
+        }
+    }
+    try testing.expect(pm.provides_index.?.built);
+
+    // Dropping the index (as refreshAurDb does) falls back to scanning,
+    // then rebuilds it once lookups pile up again.
+    pm.provides_index.?.reset();
+    try testing.expect(!pm.provides_index.?.built);
+    for (0..ProvidesIndex.scan_lookups + 1) |_| try expectSameProviders(pm, "sh");
+    try testing.expect(pm.provides_index.?.built);
 }
