@@ -137,6 +137,123 @@ test "resolve re-checks constraint on cache hit" {
     try testing.expectEqual(Source.unknown, second.source);
 }
 
+test "resolve upgrades an outdated installed package from the AUR" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+    pm.addInstalled("foo", "1.0");
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+    ac.addPackage("foo", "2.0");
+
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+
+    const res = try reg.resolve("foo>=2.0");
+    try testing.expectEqual(Source.aur, res.source);
+    try testing.expectEqualStrings("2.0", res.version.?);
+}
+
+test "resolve rejects an AUR package that fails the constraint" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+    ac.addPackage("foo", "1.0");
+
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+
+    const res = try reg.resolve("foo>=2.0");
+    try testing.expectEqual(Source.unknown, res.source);
+}
+
+test "resolve re-resolves a cached result that fails a later constraint" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+    pm.addInstalled("foo", "1.0");
+    pm.addSync("foo", "2.0", "extra");
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+
+    const first = try reg.resolve("foo");
+    try testing.expectEqual(Source.satisfied_repos, first.source);
+
+    const second = try reg.resolve("foo>=2.0");
+    try testing.expectEqual(Source.repos, second.source);
+    try testing.expectEqualStrings("2.0", second.version.?);
+}
+
+test "an unsatisfiable constraint does not poison the plain name" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+    pm.addInstalled("foo", "1.0");
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+
+    try testing.expectEqual(Source.unknown, (try reg.resolve("foo>=2.0")).source);
+    try testing.expectEqual(Source.satisfied_aur, (try reg.resolve("foo")).source);
+}
+
+test "provider tier does not bring back the rejected package itself" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+    pm.addInstalled("foo", "1.0");
+    // libalpm's provider search also matches a package by its own name.
+    pm.addProvider("foo", .{ .provider_name = "foo", .provider_version = "1.0", .db_name = "extra" });
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+
+    try testing.expectEqual(Source.unknown, (try reg.resolve("foo>=2.0")).source);
+}
+
+test "provider tier still accepts another package providing the name" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+    pm.addProvider("foo", .{ .provider_name = "foo-ng", .provider_version = "1.0", .db_name = "extra" });
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+
+    const res = try reg.resolve("foo>=2.0");
+    try testing.expectEqual(Source.repos, res.source);
+    try testing.expectEqualStrings("foo-ng", res.provider.?);
+}
+
+test "resolveMany leaves an AUR result that fails the constraint unknown" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+    ac.addPackage("foo", "1.0");
+    ac.addPackage("bar", "1.0");
+
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+
+    const results = try reg.resolveMany(&.{ "foo>=2.0", "bar>=1.0" });
+    defer testing.allocator.free(results);
+    try testing.expectEqual(Source.unknown, results[0].source);
+    try testing.expectEqual(Source.aur, results[1].source);
+}
+
 // ── Cascade Priority Tests ──────────────────────────────────────────────
 
 test "installed packages take priority over sync databases" {

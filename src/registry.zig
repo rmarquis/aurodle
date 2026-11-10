@@ -67,26 +67,20 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
 
         /// Resolve a single dependency string through the cascade:
         /// cache → installed → sync → pacman provider → AUR → AUR provider → unknown
+        ///
+        /// A version constraint (`foo>=2`) must be met by exact-name matches
+        /// (installed, sync, AUR); a failing match falls through to the next
+        /// tier, so an outdated installed package resolves to a newer sync or
+        /// AUR one. Provider matches are not version-checked (provision
+        /// versions are not tracked), but a constrained dep never resolves to
+        /// a package of its own name through a provider tier.
         pub fn resolve(self: *Self, dep_string: []const u8) !Resolution {
             const spec = dep_spec.parseDep(dep_string);
 
-            // Cache check (by name, not dep string)
+            // Cache check (by name, not dep string). A cached result that
+            // fails this constraint is re-resolved below.
             if (self.cache.get(spec.name)) |cached| {
-                // Re-verify constraint for cached result
-                if (spec.constraint) |c| {
-                    if (cached.version) |v| {
-                        if (!pacman_mod.checkVersion(v, c)) {
-                            // Cached version doesn't satisfy this constraint
-                            return .{
-                                .name = spec.name,
-                                .source = .unknown,
-                                .version = cached.version,
-                                .aur_pkg = cached.aur_pkg,
-                            };
-                        }
-                    }
-                }
-                return cached;
+                if (satisfiesSpec(cached, spec)) return cached;
             }
 
             // Tier 1: Installed locally?
@@ -102,26 +96,27 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
             }
 
             // Tier 3: Provided by installed/sync package?
-            if (try self.resolveProvider(spec.name)) |res| {
+            if (try self.resolveProvider(spec)) |res| {
                 try self.cacheResult(spec.name, res);
                 return res;
             }
 
             // Tier 4: In AUR by exact name?
-            if (try self.resolveAur(spec.name)) |res| {
+            if (try self.resolveAur(spec)) |res| {
                 try self.cacheResult(spec.name, res);
                 return res;
             }
 
             // Tier 5: Provided by an AUR package?
-            if (try self.resolveAurProvider(spec.name)) |res| {
+            if (try self.resolveAurProvider(spec)) |res| {
                 try self.cacheResult(spec.name, res);
                 return res;
             }
 
-            // Not found anywhere
+            // Not found anywhere. Only cache the miss for an unconstrained
+            // dep: "nothing satisfies foo>=2" says nothing about plain "foo".
             const res: Resolution = .{ .name = spec.name, .source = .unknown };
-            try self.cacheResult(spec.name, res);
+            if (spec.constraint == null) try self.cacheResult(spec.name, res);
             return res;
         }
 
@@ -138,7 +133,13 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
                 const spec = dep_spec.parseDep(dep_str);
 
                 if (self.cache.get(spec.name)) |cached| {
-                    results.appendAssumeCapacity(cached);
+                    if (satisfiesSpec(cached, spec)) {
+                        results.appendAssumeCapacity(cached);
+                    } else {
+                        // Rare: a cached result fails a later constraint.
+                        // Take the full cascade for this one dep.
+                        results.appendAssumeCapacity(try self.resolve(dep_str));
+                    }
                     continue;
                 }
 
@@ -154,7 +155,7 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
                     continue;
                 }
 
-                if (try self.resolveProvider(spec.name)) |res| {
+                if (try self.resolveProvider(spec)) |res| {
                     try self.cacheResult(spec.name, res);
                     results.appendAssumeCapacity(res);
                     continue;
@@ -169,11 +170,14 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
             if (self.pending_aur.count() > 0) {
                 try self.flushPendingAur();
 
-                // Pass 3: fill in placeholders from cache (now populated by flush)
-                for (results.items) |*res| {
+                // Pass 3: fill in placeholders from cache (now populated by
+                // flush). An AUR package that fails the dep's constraint
+                // stays .unknown; callers fall back to resolve(), which
+                // tries the remaining tiers.
+                for (dep_strings, results.items) |dep_str, *res| {
                     if (res.source == .unknown) {
                         if (self.cache.get(res.name)) |cached| {
-                            res.* = cached;
+                            if (satisfiesSpec(cached, dep_spec.parseDep(dep_str))) res.* = cached;
                         }
                     }
                 }
@@ -204,8 +208,8 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
         /// Used by the solver for target packages that need dependency info
         /// even when the package is already installed or in sync repos.
         pub fn resolveFromAur(self: *Self, name: []const u8) !?Resolution {
-            if (try self.resolveAur(name)) |res| return res;
-            if (try self.resolveAurProvider(name)) |res| return res;
+            if (try self.resolveAur(.{ .name = name })) |res| return res;
+            if (try self.resolveAurProvider(.{ .name = name })) |res| return res;
             return null;
         }
 
@@ -266,19 +270,29 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
             };
         }
 
-        fn resolveAur(self: *Self, name: []const u8) !?Resolution {
-            const pkg = try self.aur_client.info(name) orelse return null;
+        fn resolveAur(self: *Self, spec: DepSpec) !?Resolution {
+            const pkg = try self.aur_client.info(spec.name) orelse return null;
+            if (spec.constraint) |c| {
+                if (!pacman_mod.checkVersion(pkg.version, c)) return null;
+            }
             return makeAurResolution(pkg, null);
         }
 
-        fn resolveProvider(self: *Self, name: []const u8) !?Resolution {
+        fn resolveProvider(self: *Self, spec: DepSpec) !?Resolution {
+            const name = spec.name;
+            // A constrained dep already had its exact-name candidates
+            // version-checked by tiers 1 and 2; don't let them back in here.
+            const exclude_self = spec.constraint != null;
+
             // Check cached provider choice
             if (self.provider_choices.get(name)) |chosen_name| {
+                if (exclude_self and std.mem.eql(u8, chosen_name, name)) return null;
                 return self.resolveProviderByName(name, chosen_name);
             }
 
-            const all = try self.pacman.findAllProviders(self.allocator, name);
-            defer self.allocator.free(all);
+            const found = try self.pacman.findAllProviders(self.allocator, name);
+            defer self.allocator.free(found);
+            const all = if (exclude_self) removeSelf(found, name) else found;
 
             if (all.len == 0) return null;
 
@@ -366,16 +380,20 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
             });
         }
 
-        fn resolveAurProvider(self: *Self, name: []const u8) !?Resolution {
+        fn resolveAurProvider(self: *Self, spec: DepSpec) !?Resolution {
+            const name = spec.name;
+            const exclude_self = spec.constraint != null;
+
             // Check cached provider choice
             if (self.provider_choices.get(name)) |chosen_name| {
+                if (exclude_self and std.mem.eql(u8, chosen_name, name)) return null;
                 // Try to find the chosen package in AUR
                 if (try self.aur_client.info(chosen_name)) |pkg| {
                     return makeAurResolution(pkg, pkg.name);
                 }
             }
 
-            const results = self.aur_client.search(name, .provides) catch |err| switch (err) {
+            const found = self.aur_client.search(name, .provides) catch |err| switch (err) {
                 // The AUR rejects some queries (too short, too many results):
                 // that means no usable provider, not a failure. Network and
                 // rate-limit errors must propagate, or the dependency would be
@@ -383,7 +401,10 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
                 error.ApiError => return null,
                 else => |e| return e,
             };
-            defer self.allocator.free(results);
+            defer self.allocator.free(found);
+            // The provides search also matches the package named `name`,
+            // which tier 4 already version-checked.
+            const results = if (exclude_self) removeSelfAur(found, name) else found;
 
             if (results.len == 0) return null;
 
@@ -424,6 +445,42 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
             }
 
             self.pending_aur.clearRetainingCapacity();
+        }
+
+        /// Does a resolution meet the spec's version constraint? Unknown
+        /// results, results without a version, and provider matches (whose
+        /// provision version is not tracked) are accepted as is.
+        fn satisfiesSpec(res: Resolution, spec: DepSpec) bool {
+            const c = spec.constraint orelse return true;
+            if (res.source == .unknown) return true;
+            if (res.provider) |p| {
+                if (!std.mem.eql(u8, p, spec.name)) return true;
+            }
+            const v = res.version orelse return true;
+            return pacman_mod.checkVersion(v, c);
+        }
+
+        /// Move matches not named `name` to the front of `matches` and
+        /// return that prefix (in original order).
+        fn removeSelf(matches: []pacman_mod.ProviderMatch, name: []const u8) []pacman_mod.ProviderMatch {
+            var n: usize = 0;
+            for (matches) |m| {
+                if (std.mem.eql(u8, m.provider_name, name)) continue;
+                matches[n] = m;
+                n += 1;
+            }
+            return matches[0..n];
+        }
+
+        fn removeSelfAur(pkgs: []const *aur.Package, name: []const u8) []const *aur.Package {
+            const out: []*aur.Package = @constCast(pkgs);
+            var n: usize = 0;
+            for (pkgs) |p| {
+                if (std.mem.eql(u8, p.name, name)) continue;
+                out[n] = p;
+                n += 1;
+            }
+            return out[0..n];
         }
 
         fn makeAurResolution(pkg: *aur.Package, provider_name: ?[]const u8) Resolution {
