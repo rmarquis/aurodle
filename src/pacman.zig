@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const alpm = @import("alpm.zig");
 const repo_mod = @import("repo.zig");
 const version = @import("version.zig");
+const dep_spec = @import("dep_spec.zig");
 const pacman_conf = @import("pacman_conf.zig");
 
 pub const CmpOp = version.CmpOp;
@@ -311,16 +312,28 @@ pub const Pacman = struct {
     /// Handles both direct name matches and versioned constraints.
     /// Uses libalpm's native satisfier which checks provides too.
     pub fn satisfiesDep(self: Pacman, depstring: []const u8) bool {
-        const local_pkgs = self.local_db.getPkgcache();
-        return alpm.findSatisfier(local_pkgs, depstring) != null;
+        return self.findLocalSatisfierPkg(depstring) != null;
     }
 
     /// Find the installed package that satisfies a dependency (by name or provides).
     /// Returns the satisfier's name, or null if nothing installed satisfies it.
     pub fn findLocalSatisfier(self: Pacman, depstring: []const u8) ?[]const u8 {
-        const local_pkgs = self.local_db.getPkgcache();
-        const pkg = alpm.findSatisfier(local_pkgs, depstring) orelse return null;
+        const pkg = self.findLocalSatisfierPkg(depstring) orelse return null;
         return pkg.getName();
+    }
+
+    /// alpm_find_satisfier over the installed packages, with a hashed
+    /// lookup first. libalpm walks every package twice: first for one
+    /// whose own name and version match, then for a provision. Only one
+    /// installed package can have the dep's name, so when it matches it
+    /// is what the walk would return; anything else takes the walk.
+    fn findLocalSatisfierPkg(self: Pacman, depstring: []const u8) ?alpm.AlpmPackage {
+        const spec = dep_spec.parseDep(depstring);
+        if (self.local_db.getPackage(spec.name)) |pkg| {
+            const matches = if (spec.constraint) |c| checkVersion(pkg.getVersion(), c) else true;
+            if (matches) return pkg;
+        }
+        return alpm.findSatisfier(self.local_db.getPkgcache(), depstring);
     }
 
     // ── Provider Resolution ──────────────────────────────────────────────
@@ -924,4 +937,43 @@ test "provides index answers like a database scan" {
     try testing.expect(!pm.provides_index.?.built);
     for (0..ProvidesIndex.scan_lookups + 1) |_| try expectSameProviders(pm, "sh");
     try testing.expect(pm.provides_index.?.built);
+}
+
+test "installed-package fast path agrees with alpm_find_satisfier" {
+    if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
+
+    var pm = try Pacman.init(testing.allocator, repo_mod.DEFAULT_REPO_NAME);
+    defer pm.deinit();
+
+    var checked: usize = 0;
+    var it = pm.local_db.getPkgcache();
+    while (it.next()) |pkg| {
+        const name = pkg.getName();
+        const ver = pkg.getVersion();
+        var buf: [512]u8 = undefined;
+        const deps = [_][]const u8{
+            name,
+            try std.fmt.bufPrint(buf[0..128], "{s}={s}", .{ name, ver }),
+            try std.fmt.bufPrint(buf[128..256], "{s}>={s}", .{ name, ver }),
+            try std.fmt.bufPrint(buf[256..384], "{s}>{s}", .{ name, ver }),
+            try std.fmt.bufPrint(buf[384..512], "{s}<1", .{name}),
+        };
+        for (deps) |dep| {
+            const want = alpm.findSatisfier(pm.local_db.getPkgcache(), dep);
+            const got = pm.findLocalSatisfierPkg(dep);
+            try testing.expectEqual(want == null, got == null);
+            if (want) |w| try testing.expectEqualStrings(w.getName(), got.?.getName());
+        }
+        // Provisions of installed packages (resolved by the walk).
+        var prov_it = pkg.getProvides();
+        while (prov_it.next()) |prov| {
+            const want = alpm.findSatisfier(pm.local_db.getPkgcache(), prov.name);
+            const got = pm.findLocalSatisfierPkg(prov.name);
+            try testing.expectEqual(want == null, got == null);
+            if (want) |w| try testing.expectEqualStrings(w.getName(), got.?.getName());
+        }
+        checked += 1;
+    }
+    try testing.expect(checked > 0);
+    try testing.expect(!pm.satisfiesDep("zzz-not-installed-12345"));
 }
