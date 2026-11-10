@@ -89,19 +89,27 @@ test "update uses --ff-only to prevent merge conflicts" {
 }
 
 // ============================================================================
-// cloneOrUpdate() Contracts
+// cloneOrFetch() / applyUpstream() Contracts
 // ============================================================================
 
-test "cloneOrUpdate clones when not present, updates when present" {
-    // Contract: Convenience function that combines clone and update.
-    // Calls clone first; if already_exists, calls update.
+test "cloneOrFetch clones when not present, fetches when present" {
+    // Contract: Clones a missing package. For an existing clone, fetches
+    // the AUR's state without moving HEAD or touching the working tree,
+    // and reports whether the AUR has commits beyond HEAD.
     //
     // // First call: clones
-    // const r1 = try git.cloneOrUpdate(testing.allocator, "pkg");
-    // try testing.expectEqual(git.CloneOrUpdateResult.cloned, r1);
-    // // Second call: updates
-    // const r2 = try git.cloneOrUpdate(testing.allocator, "pkg");
-    // // r2 is .updated or .up_to_date
+    // const r1 = try git.cloneOrFetch(testing.allocator, cache_root, "pkg");
+    // try testing.expectEqual(git.CloneOrFetchResult.cloned, r1);
+    // // Second call: fetches
+    // const r2 = try git.cloneOrFetch(testing.allocator, cache_root, "pkg");
+    // // r2 is .pending (AUR has new commits) or .unchanged
+}
+
+test "applyUpstream moves to the fetched AUR state" {
+    // Contract: If HEAD differs from @{upstream}, resets the clone to it
+    // (discarding local edits such as makepkg's pkgver rewrite) and
+    // returns true. Otherwise leaves the working tree alone and returns
+    // false.
 }
 
 // ============================================================================

@@ -21,7 +21,7 @@ Executable test specifications defining the formal contracts, expected behaviors
 | [registry_contract_spec.zig](contracts/registry_contract_spec.zig) | `registry.Registry` | resolve, resolveMany, invalidate, cascade priority |
 | [solver_contract_spec.zig](contracts/solver_contract_spec.zig) | `solver.Solver` | resolve → BuildPlan, cycle detection, pkgbase dedup |
 | [repo_contract_spec.zig](contracts/repo_contract_spec.zig) | `repo.Repository` | ensureExists, addBuiltPackages, listPackages, clean, isConfigured |
-| [git_contract_spec.zig](contracts/git_contract_spec.zig) | `git.*` | clone, update, cloneOrUpdate, listFiles, readFile, isCloned |
+| [git_contract_spec.zig](contracts/git_contract_spec.zig) | `git.*` | clone, update, cloneOrFetch, applyUpstream, listFiles, readFile, isCloned |
 | [commands_contract_spec.zig](contracts/commands_contract_spec.zig) | `commands.*` | sync, build, info, search, show, outdated, upgrade, clean, --devel |
 | [devel_contract_spec.zig](contracts/devel_contract_spec.zig) | `devel.*` | isVcsPackage, checkVersion, parseSrcinfoVersion, VcsVersionResult |
 | [main_contract_spec.zig](contracts/main_contract_spec.zig) | `main` | parseArgs, exit codes, preconditions, module init order |
@@ -53,7 +53,7 @@ Executable test specifications defining the formal contracts, expected behaviors
 | [registry_property_spec.zig](properties/registry_property_spec.zig) | `registry.Registry` | Cascade priority, cache idempotency, batch equivalence, invalidation correctness/isolation, constraint re-check, order independence |
 | [aur_property_spec.zig](properties/aur_property_spec.zig) | `aur.Client` | Cache consistency, batch splitting correctness, cache monotonicity, search independence, field completeness, idempotent fetch |
 | [repo_property_spec.zig](properties/repo_property_spec.zig) | `repo.Repository` | ensureExists idempotency, filename parsing roundtrip, add idempotency, clean safety, split package completeness, config instructions stability |
-| [git_property_spec.zig](properties/git_property_spec.zig) | `git.*` | Clone idempotency, cleanup on failure, cloneOrUpdate completeness, path traversal safety, PKGBUILD-first ordering, listFiles completeness, isCloned consistency |
+| [git_property_spec.zig](properties/git_property_spec.zig) | `git.*` | Clone idempotency, cleanup on failure, cloneOrFetch completeness, path traversal safety, PKGBUILD-first ordering, listFiles completeness, isCloned consistency |
 | [devel_property_spec.zig](properties/devel_property_spec.zig) | `devel.*` | Suffix completeness/exclusivity, case sensitivity, version format, epoch inclusion, field order independence, pkgbase isolation, whitespace tolerance |
 
 ## Traceability Matrix

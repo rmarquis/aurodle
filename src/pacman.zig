@@ -21,13 +21,6 @@ pub const InstalledPackage = struct {
     version: []const u8,
 };
 
-/// Which set of sync databases to search.
-pub const DbSet = enum {
-    all_sync,
-    official_only,
-    aurpkgs_only,
-};
-
 /// A virtual dep (e.g. "jack") with multiple uninstalled providers in official repos.
 /// Returned by findTransitiveProviderChoices for interactive selection.
 pub const SyncProviderChoice = struct {
@@ -398,30 +391,6 @@ pub const Pacman = struct {
             };
         }
         return index;
-    }
-
-    /// Find a package satisfying a dependency string in the given database set.
-    pub fn findDbsSatisfier(self: Pacman, db_set: DbSet, depstring: []const u8) ?[]const u8 {
-        return switch (db_set) {
-            .all_sync => self.findSatisfierInDbs(self.sync_dbs, depstring),
-            .official_only => self.findSatisfierInDbs(self.official_dbs, depstring),
-            .aurpkgs_only => blk: {
-                const aurdb = self.aurpkgs_db orelse break :blk null;
-                if (alpm.findSatisfier(aurdb.getPkgcache(), depstring)) |pkg| {
-                    break :blk pkg.getName();
-                }
-                break :blk null;
-            },
-        };
-    }
-
-    fn findSatisfierInDbs(_: Pacman, dbs: []alpm.Database, depstring: []const u8) ?[]const u8 {
-        for (dbs) |db| {
-            if (alpm.findSatisfier(db.getPkgcache(), depstring)) |pkg| {
-                return pkg.getName();
-            }
-        }
-        return null;
     }
 
     /// Find the first sync DB package (as an AlpmPackage) satisfying `dep`.

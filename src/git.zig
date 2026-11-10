@@ -44,19 +44,6 @@ pub const GitError = error{
 
 // ── Public API ──────────────────────────────────────────────────────────
 
-pub const CacheRoot = struct { path: []const u8, owned: bool };
-
-/// Resolve cache root: use the configured value, or fall back to
-/// defaultCacheRoot(). Caller must pass the result to freeCacheRoot when done.
-pub fn resolveCacheRoot(cache_root: ?[]const u8, allocator: Allocator) !CacheRoot {
-    if (cache_root) |c| return .{ .path = c, .owned = false };
-    return .{ .path = try defaultCacheRoot(allocator), .owned = true };
-}
-
-pub fn freeCacheRoot(root: CacheRoot, allocator: Allocator) void {
-    if (root.owned) allocator.free(root.path);
-}
-
 /// Environment values that decide where clones live.
 pub const CacheEnv = struct {
     aurdest: ?[]const u8 = null,
@@ -331,35 +318,3 @@ pub fn validateFilePath(filename: []const u8) !void {
 }
 
 const dirExists = utils.dirExists;
-
-// ── Tests ───────────────────────────────────────────────────────────────
-
-pub fn createTestGitRepo(allocator: Allocator, base_dir: []const u8, name: []const u8) ![]u8 {
-    const repo_dir = try std.fs.path.join(allocator, &.{ base_dir, name });
-    errdefer allocator.free(repo_dir);
-
-    std.Io.Dir.createDirPath(std.Io.Dir.cwd(), std.testing.io, repo_dir) catch {};
-
-    // git init
-    const init_result = try utils.runCommandIn(allocator, &.{ "git", "init" }, repo_dir);
-    init_result.deinit(allocator);
-
-    // Configure git user for commits
-    const cfg1 = try utils.runCommandIn(allocator, &.{ "git", "config", "user.email", "test@test.com" }, repo_dir);
-    cfg1.deinit(allocator);
-    const cfg2 = try utils.runCommandIn(allocator, &.{ "git", "config", "user.name", "Test" }, repo_dir);
-    cfg2.deinit(allocator);
-
-    // Create a PKGBUILD and commit
-    const pkgbuild_path = try std.fs.path.join(allocator, &.{ repo_dir, "PKGBUILD" });
-    defer allocator.free(pkgbuild_path);
-
-    try std.Io.Dir.writeFile(std.Io.Dir.cwd(), std.testing.io, .{ .sub_path = pkgbuild_path, .data = "pkgname=test\npkgver=1.0\npkgrel=1\n" });
-
-    const add_result = try utils.runCommandIn(allocator, &.{ "git", "add", "." }, repo_dir);
-    add_result.deinit(allocator);
-    const commit_result = try utils.runCommandIn(allocator, &.{ "git", "commit", "-m", "initial" }, repo_dir);
-    commit_result.deinit(allocator);
-
-    return repo_dir;
-}

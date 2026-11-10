@@ -156,12 +156,7 @@ pub fn checkDevelPackages(
     populate_hint: bool,
 ) !void {
     const ec2 = self.stderr_color;
-    const cache = git.resolveCacheRoot(self.cache_root, self.allocator) catch {
-        self.err_writer.print("{s}warning:{s} could not determine cache directory for --devel check\n", .{ ec2.yellow, ec2.reset });
-        return;
-    };
-    const c_root = cache.path;
-    defer git.freeCacheRoot(cache, self.allocator);
+    const c_root = self.cache_root;
 
     const has_vcs = for (packages) |pkg| {
         if (devel.isVcsPackage(pkg.name)) break true;

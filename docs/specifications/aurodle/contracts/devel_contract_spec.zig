@@ -98,19 +98,18 @@ test "parseSrcinfoVersion reads only pkgbase section" {
 // checkVersion() Contracts — Require system access (stubs only)
 // ============================================================================
 
-test "checkVersion clones or updates the AUR repository" {
-    // Contract: checkVersion() calls git.cloneOrUpdate() to ensure
-    // the package source is present and up to date before checking
-    // the VCS version.
+test "checkVersion clones the AUR repository if missing" {
+    // Contract: checkVersion() calls git.clone() so the package files
+    // are present. An existing clone is not updated: the check runs
+    // makepkg on the version the user last accepted, and new AUR
+    // commits are only applied after the build's review.
 }
 
 test "checkVersion runs makepkg --nobuild to execute pkgver()" {
-    // Contract: After clone/update, checkVersion() runs
-    // `makepkg --nobuild --noconfirm --noextract` in the clone directory.
-    // This executes pkgver() without re-extracting already-present sources.
-    // If that fails (e.g. sources not yet extracted), it retries with
-    // `makepkg --nobuild --noconfirm` (without --noextract) to allow
-    // full source preparation.
+    // Contract: After the clone check, checkVersion() runs
+    // `makepkg --nobuild --nodeps --noconfirm` in the clone directory.
+    // This fetches the VCS sources and runs pkgver(). --noextract is not
+    // used: it would skip the fetch and report the stale version.
 }
 
 test "checkVersion runs makepkg --printsrcinfo to extract version" {
@@ -120,7 +119,7 @@ test "checkVersion runs makepkg --printsrcinfo to extract version" {
 }
 
 test "checkVersion returns null on clone failure" {
-    // Contract: If git.cloneOrUpdate() fails, checkVersion()
+    // Contract: If git.clone() fails, checkVersion()
     // returns null rather than propagating the error. This allows
     // the caller to skip individual VCS packages gracefully.
 }

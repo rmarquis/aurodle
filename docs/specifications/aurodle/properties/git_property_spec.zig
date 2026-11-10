@@ -55,20 +55,21 @@ test "cleanup on failure: failed clone leaves no directory behind" {
 }
 
 // ============================================================================
-// cloneOrUpdate Completeness Property
+// cloneOrFetch Completeness Property
 // ============================================================================
 
-test "cloneOrUpdate completeness: always results in an up-to-date clone" {
+test "cloneOrFetch completeness: always results in a usable clone" {
     // Property: For all packages P:
-    //   After cloneOrUpdate(P), isCloned(P) == true
-    //   AND the clone is at the latest available state
+    //   After cloneOrFetch(P), isCloned(P) == true
+    //   AND the AUR's latest state is fetched (HEAD..@{upstream})
+    //   AND HEAD is unchanged unless P was just cloned
     //
-    // cloneOrUpdate is the union of clone and update — it must
-    // always leave the clone in a usable state.
+    // cloneOrFetch never applies AUR changes: HEAD stays at the version
+    // last accepted until applyUpstream(P), after the review.
 
-    // For states: {not cloned, cloned but outdated, cloned and current}
-    //   try git.cloneOrUpdate(alloc, "pkg");
-    //   try testing.expect(try git.isCloned(alloc, "pkg"));
+    // For states: {not cloned, cloned with changes pending, cloned and current}
+    //   _ = try git.cloneOrFetch(alloc, cache_root, "pkg");
+    //   try testing.expect(try git.isCloned(alloc, cache_root, "pkg"));
 }
 
 // ============================================================================

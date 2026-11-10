@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const git = @import("../git.zig");
+const test_repo = @import("test_repo.zig");
 const utils = @import("../utils.zig");
 
 const CloneResult = git.CloneResult;
@@ -61,7 +62,7 @@ test "isCloned returns true for valid git repo" {
     const tmp_path = try std.Io.Dir.realPathFileAlloc(tmp.dir, testing.io, ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
-    const repo_dir = try git.createTestGitRepo(testing.allocator, tmp_path, "test-pkg");
+    const repo_dir = try test_repo.createTestGitRepo(testing.allocator, tmp_path, "test-pkg");
     defer testing.allocator.free(repo_dir);
 
     try testing.expect(try git.isCloned(testing.allocator, tmp_path, "test-pkg"));
@@ -90,7 +91,7 @@ test "clone returns already_exists for existing directory" {
     defer testing.allocator.free(tmp_path);
 
     // Pre-create a repo
-    const repo_dir = try git.createTestGitRepo(testing.allocator, tmp_path, "existing-pkg");
+    const repo_dir = try test_repo.createTestGitRepo(testing.allocator, tmp_path, "existing-pkg");
     defer testing.allocator.free(repo_dir);
 
     const result = try git.clone(testing.allocator, tmp_path, "existing-pkg");
@@ -104,7 +105,7 @@ test "update returns up_to_date when no changes" {
     const tmp_path = try std.Io.Dir.realPathFileAlloc(tmp.dir, testing.io, ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
-    const repo_dir = try git.createTestGitRepo(testing.allocator, tmp_path, "uptodate-pkg");
+    const repo_dir = try test_repo.createTestGitRepo(testing.allocator, tmp_path, "uptodate-pkg");
     defer testing.allocator.free(repo_dir);
 
     // update on a local-only repo (no remote) will fail with PullFailed
@@ -125,7 +126,7 @@ test "listFiles returns PKGBUILD first" {
     const tmp_path = try std.Io.Dir.realPathFileAlloc(tmp.dir, testing.io, ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
-    const repo_dir = try git.createTestGitRepo(testing.allocator, tmp_path, "list-pkg");
+    const repo_dir = try test_repo.createTestGitRepo(testing.allocator, tmp_path, "list-pkg");
     defer testing.allocator.free(repo_dir);
 
     // Add extra files
@@ -177,7 +178,7 @@ test "readFile reads file content from clone" {
     const tmp_path = try std.Io.Dir.realPathFileAlloc(tmp.dir, testing.io, ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
-    const repo_dir = try git.createTestGitRepo(testing.allocator, tmp_path, "read-pkg");
+    const repo_dir = try test_repo.createTestGitRepo(testing.allocator, tmp_path, "read-pkg");
     defer testing.allocator.free(repo_dir);
 
     const content = try git.readFile(testing.allocator, tmp_path, "read-pkg", "PKGBUILD");
@@ -193,7 +194,7 @@ test "readFile blocks path traversal with .." {
     const tmp_path = try std.Io.Dir.realPathFileAlloc(tmp.dir, testing.io, ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
-    const repo_dir = try git.createTestGitRepo(testing.allocator, tmp_path, "traversal-pkg");
+    const repo_dir = try test_repo.createTestGitRepo(testing.allocator, tmp_path, "traversal-pkg");
     defer testing.allocator.free(repo_dir);
 
     const attack_vectors = [_][]const u8{
@@ -218,7 +219,7 @@ test "readFile blocks absolute paths" {
     const tmp_path = try std.Io.Dir.realPathFileAlloc(tmp.dir, testing.io, ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
-    const repo_dir = try git.createTestGitRepo(testing.allocator, tmp_path, "abs-pkg");
+    const repo_dir = try test_repo.createTestGitRepo(testing.allocator, tmp_path, "abs-pkg");
     defer testing.allocator.free(repo_dir);
 
     const result = git.readFile(testing.allocator, tmp_path, "abs-pkg", "/etc/passwd");
@@ -232,7 +233,7 @@ test "readFile returns error for non-existent file" {
     const tmp_path = try std.Io.Dir.realPathFileAlloc(tmp.dir, testing.io, ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
-    const repo_dir = try git.createTestGitRepo(testing.allocator, tmp_path, "nofile-pkg");
+    const repo_dir = try test_repo.createTestGitRepo(testing.allocator, tmp_path, "nofile-pkg");
     defer testing.allocator.free(repo_dir);
 
     const result = git.readFile(testing.allocator, tmp_path, "nofile-pkg", "nonexistent.txt");
@@ -270,7 +271,7 @@ test "cloneOrFetch returns NotCloned-free result for existing repo" {
     const tmp_path = try std.Io.Dir.realPathFileAlloc(tmp.dir, testing.io, ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
-    const repo_dir = try git.createTestGitRepo(testing.allocator, tmp_path, "cou-pkg");
+    const repo_dir = try test_repo.createTestGitRepo(testing.allocator, tmp_path, "cou-pkg");
     defer testing.allocator.free(repo_dir);
 
     // cloneOrFetch on existing repo → tries fetch → PullFailed (no remote)
@@ -313,7 +314,7 @@ const Fixture = struct {
         const root = try std.Io.Dir.realPathFileAlloc(tmp.dir, testing.io, ".", testing.allocator);
         const aur = try std.fs.path.join(testing.allocator, &.{ root, "aur" });
         defer testing.allocator.free(aur);
-        const upstream = try git.createTestGitRepo(testing.allocator, aur, "pkg-git");
+        const upstream = try test_repo.createTestGitRepo(testing.allocator, aur, "pkg-git");
         const cache = try std.fs.path.join(testing.allocator, &.{ root, "cache" });
         const clone_dir = try std.fs.path.join(testing.allocator, &.{ cache, "pkg-git" });
         try std.Io.Dir.createDirPath(std.Io.Dir.cwd(), testing.io, cache);

@@ -160,6 +160,7 @@ fn parseField(line: []const u8, key: []const u8) ?[]const u8 {
 // ── Tests ────────────────────────────────────────────────────────────
 
 const testing = std.testing;
+const test_repo = @import("git/test_repo.zig");
 
 test "isVcsPackage detects -git suffix" {
     try testing.expect(isVcsPackage("neovim-git"));
@@ -268,7 +269,7 @@ test "sourceStamp tracks changes to tracked build files only" {
     defer tmp.cleanup();
     const tmp_path = try std.Io.Dir.realPathFileAlloc(tmp.dir, testing.io, ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
-    const repo_dir = try git.createTestGitRepo(testing.allocator, tmp_path, "pkg-git");
+    const repo_dir = try test_repo.createTestGitRepo(testing.allocator, tmp_path, "pkg-git");
     defer testing.allocator.free(repo_dir);
 
     const dir = try std.Io.Dir.cwd().openDir(testing.io, repo_dir, .{});
