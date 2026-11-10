@@ -129,14 +129,24 @@ pub fn clonePackages(self: *QueryContext, targets: []const []const u8) !ExitCode
         }
     }
 
-    var cloned_set: std.StringHashMapUnmanaged(void) = .empty;
-    defer cloned_set.deinit(self.allocator);
+    // Deduplicate (split packages share a pkgbase), keeping first-seen order.
+    var unique: std.StringArrayHashMapUnmanaged(void) = .empty;
+    defer unique.deinit(self.allocator);
+    for (bases_to_clone.items) |pkgbase| try unique.put(self.allocator, pkgbase, {});
+    const pkgbases = unique.keys();
 
-    for (bases_to_clone.items) |pkgbase| {
-        if (cloned_set.contains(pkgbase)) continue;
-        try cloned_set.put(self.allocator, pkgbase, {});
+    const results = try self.allocator.alloc(?git.CloneResult, pkgbases.len);
+    defer self.allocator.free(results);
+    const job: FreshCloneJob = .{
+        .allocator = self.allocator,
+        .cache_root = c_root,
+        .pkgbases = pkgbases,
+        .results = results,
+    };
+    utils.parallelFor(pkgbases.len, utils.max_parallel_jobs, &job, FreshCloneJob.run);
 
-        const result = git.clone(self.allocator, c_root, pkgbase) catch {
+    for (pkgbases, results) |pkgbase, maybe_result| {
+        const result = maybe_result orelse {
             self.err_writer.print("{s}error:{s} failed to clone '{s}'\n", .{ ec.red, ec.reset, pkgbase }) catch {};
             any_error = true;
             continue;
@@ -156,6 +166,35 @@ pub fn clonePackages(self: *QueryContext, targets: []const []const u8) !ExitCode
 // ── Sync / Build Commands ────────────────────────────────────────────
 
 const BuildMode = enum { sync, build_only };
+
+/// One parallelFor job: clone or update `entries[i].pkgbase`.
+const CloneJob = struct {
+    allocator: std.mem.Allocator,
+    cache_root: []const u8,
+    entries: []const solver_mod.BuildEntry,
+    results: []git.CloneOrUpdateResult,
+    errors: []?anyerror,
+
+    fn run(job: *const CloneJob, i: usize) void {
+        job.errors[i] = null;
+        job.results[i] = git.cloneOrUpdate(job.allocator, job.cache_root, job.entries[i].pkgbase) catch |err| {
+            job.errors[i] = err;
+            return;
+        };
+    }
+};
+
+/// One parallelFor job for `clone`: fresh clone of `pkgbases[i]`.
+const FreshCloneJob = struct {
+    allocator: std.mem.Allocator,
+    cache_root: []const u8,
+    pkgbases: []const []const u8,
+    results: []?git.CloneResult,
+
+    fn run(job: *const FreshCloneJob, i: usize) void {
+        job.results[i] = git.clone(job.allocator, job.cache_root, job.pkgbases[i]) catch null;
+    }
+};
 
 /// Execute the full sync workflow: resolve -> clone -> review -> build -> install.
 pub fn sync(self: *BuildContext, targets: []const []const u8) !ExitCode {
@@ -245,19 +284,32 @@ pub fn runBuildPipeline(self: *BuildContext, filtered: []const []const u8, mode:
         }
     }
 
-    // Phase 3: Clone. Keep each result so the review knows which clones
-    // actually changed.
+    // Phase 3: Clone/update every pkgbase in parallel (build_order holds
+    // one entry per pkgbase). Keep each result so the review knows which
+    // clones actually changed.
     const clone_results = try self.allocator.alloc(git.CloneOrUpdateResult, plan.build_order.len);
     defer self.allocator.free(clone_results);
-    for (plan.build_order, clone_results) |entry, *clone_result| {
-        clone_result.* = git.cloneOrUpdate(self.allocator, c_root, entry.pkgbase) catch |err| {
+    const clone_errors = try self.allocator.alloc(?anyerror, plan.build_order.len);
+    defer self.allocator.free(clone_errors);
+    const clone_job: CloneJob = .{
+        .allocator = self.allocator,
+        .cache_root = c_root,
+        .entries = plan.build_order,
+        .results = clone_results,
+        .errors = clone_errors,
+    };
+    utils.parallelFor(plan.build_order.len, utils.max_parallel_jobs, &clone_job, CloneJob.run);
+
+    var clone_failed = false;
+    for (plan.build_order, clone_results, clone_errors) |entry, clone_result, clone_err| {
+        if (clone_err) |err| {
             self.err_writer.print("{s}error:{s} failed to clone/update '{s}': {}\n", .{ ec.red, ec.reset, entry.pkgbase, err }) catch {};
-            return .general_error;
-        };
-        if (clone_result.* == .reCloned) {
+            clone_failed = true;
+        } else if (clone_result == .reCloned) {
             self.err_writer.print("{s}warning:{s} cached repository for '{s}' was invalid and has been re-cloned\n", .{ ec.yellow, ec.reset, entry.pkgbase }) catch {};
         }
     }
+    if (clone_failed) return .general_error;
 
     // Phase 4: Review (unless --noshow)
     if (!self.flags.noshow) {

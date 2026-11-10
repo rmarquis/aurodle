@@ -3,6 +3,7 @@ const registry_mod = @import("../registry.zig");
 const devel = @import("../devel.zig");
 const pacman_mod = @import("../pacman.zig");
 const git = @import("../git.zig");
+const utils = @import("../utils.zig");
 const types = @import("types.zig");
 const build_ctx = @import("build_context.zig");
 
@@ -122,6 +123,29 @@ pub fn collectOutdated(self: *BuildContext, filter: []const []const u8, populate
 /// makepkg run happen once per pkgbase, so split VCS packages use the
 /// right clone directory and are not re-checked for each package name.
 /// Names missing from the map are assumed to be their own pkgbase.
+/// One parallelFor job: run the VCS version check for `pkgbases[i]`.
+const DevelJob = struct {
+    allocator: std.mem.Allocator,
+    cache_root: []const u8,
+    pkgbases: []const []const u8,
+    outcomes: []Outcome,
+
+    const Outcome = union(enum) {
+        failed,
+        no_version,
+        /// Owned; the caller moves it into devel_versions.
+        version: []const u8,
+    };
+
+    fn run(job: *const DevelJob, i: usize) void {
+        const result = devel.checkVersion(job.allocator, job.cache_root, job.pkgbases[i]) catch {
+            job.outcomes[i] = .failed;
+            return;
+        };
+        job.outcomes[i] = if (result) |v| .{ .version = v } else .no_version;
+    }
+};
+
 pub fn checkDevelPackages(
     self: *BuildContext,
     packages: []const pacman_mod.InstalledPackage,
@@ -146,33 +170,46 @@ pub fn checkDevelPackages(
         self.err_writer.print("{s}::{s} checking VCS package(s)...\n", .{ ec2.blue, ec2.reset }) catch {};
     }
 
-    // pkgbase -> computed version (null when the check failed), so split
-    // packages sharing a pkgbase run the check only once. Versions are owned
-    // by `devel_versions`.
-    var checked: std.StringHashMapUnmanaged(?[]const u8) = .empty;
-    defer checked.deinit(self.allocator);
+    // Check each VCS pkgbase once (split packages share one), all in
+    // parallel: every check is a git fetch plus two makepkg runs.
+    var pkgbase_index: std.StringArrayHashMapUnmanaged(void) = .empty;
+    defer pkgbase_index.deinit(self.allocator);
+    for (packages) |pkg| {
+        if (!devel.isVcsPackage(pkg.name)) continue;
+        try pkgbase_index.put(self.allocator, pkgbase_map.get(pkg.name) orelse pkg.name, {});
+    }
+    const pkgbases = pkgbase_index.keys();
+
+    const outcomes = try self.allocator.alloc(DevelJob.Outcome, pkgbases.len);
+    defer self.allocator.free(outcomes);
+    const job: DevelJob = .{
+        .allocator = self.allocator,
+        .cache_root = c_root,
+        .pkgbases = pkgbases,
+        .outcomes = outcomes,
+    };
+    utils.parallelFor(pkgbases.len, utils.max_parallel_jobs, &job, DevelJob.run);
+
+    // Hand every computed version to `devel_versions` (which owns them)
+    // before anything below can fail, so none leak.
+    devel_versions.ensureUnusedCapacity(self.allocator, pkgbases.len) catch |err| {
+        for (outcomes) |o| if (o == .version) self.allocator.free(o.version);
+        return err;
+    };
+    for (pkgbases, outcomes) |pkgbase, outcome| switch (outcome) {
+        .failed => self.err_writer.print("{s}warning:{s} failed to check VCS version for {s}\n", .{ ec2.yellow, ec2.reset, pkgbase }) catch {},
+        .no_version => {},
+        .version => |v| devel_versions.appendAssumeCapacity(v),
+    };
 
     for (packages) |pkg| {
         if (!devel.isVcsPackage(pkg.name)) continue;
 
         const pkgbase = pkgbase_map.get(pkg.name) orelse pkg.name;
-        const gop = try checked.getOrPut(self.allocator, pkgbase);
-        if (!gop.found_existing) {
-            gop.value_ptr.* = null;
-            const vcs_result = devel.checkVersion(self.allocator, c_root, pkgbase) catch {
-                self.err_writer.print("{s}warning:{s} failed to check VCS version for {s}\n", .{ ec2.yellow, ec2.reset, pkgbase }) catch {};
-                continue;
-            };
-            if (vcs_result) |v| {
-                devel_versions.append(self.allocator, v) catch |err| {
-                    self.allocator.free(v);
-                    return err;
-                };
-                gop.value_ptr.* = v;
-            }
-        }
-
-        const version = gop.value_ptr.* orelse continue;
+        const version = switch (outcomes[pkgbase_index.getIndex(pkgbase).?]) {
+            .version => |v| v,
+            else => continue,
+        };
         if (populate_hint) {
             try self.devel_version_hint.put(self.allocator, pkg.name, version);
         }

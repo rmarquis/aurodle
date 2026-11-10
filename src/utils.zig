@@ -29,8 +29,73 @@ pub fn stdout() *std.Io.Writer {
 
 /// Write out anything buffered by stdout(). Errors (e.g. a closed pipe)
 /// are ignored: there is nowhere left to report them.
+///
+/// Returns without touching the writer when nothing is buffered, so worker
+/// tasks in parallelFor (which spawn processes via runCommand) only read it.
 pub fn flushStdout() void {
-    if (stdout_file_writer) |*w| w.interface.flush() catch {};
+    if (stdout_file_writer) |*w| {
+        if (w.interface.end == 0) return;
+        w.interface.flush() catch {};
+    }
+}
+
+// ── Parallel work ───────────────────────────────────────────────────────
+
+/// Upper bound on concurrent jobs for network-bound work (git clone/pull,
+/// makepkg source fetches). High enough to hide latency, low enough to be
+/// polite to the AUR.
+pub const max_parallel_jobs = 8;
+
+/// Call `func(ctx, i)` for every `i` in `0..n`, on up to `max_jobs`
+/// concurrent tasks (the calling thread is one of them). Iterations run in
+/// any order and must only touch their own data; collect results into
+/// per-index slots and report them afterwards. Falls back to running
+/// inline when the Io implementation has no concurrency to offer.
+pub fn parallelFor(n: usize, max_jobs: usize, ctx: anytype, comptime func: fn (@TypeOf(ctx), usize) void) void {
+    if (n == 0) return;
+    const Shared = struct {
+        next: std.atomic.Value(usize) = .init(0),
+        n: usize,
+        ctx: @TypeOf(ctx),
+
+        fn work(shared: *@This()) void {
+            while (true) {
+                const i = shared.next.fetchAdd(1, .monotonic);
+                if (i >= shared.n) return;
+                func(shared.ctx, i);
+            }
+        }
+    };
+    var shared: Shared = .{ .n = n, .ctx = ctx };
+
+    // Workers must not write to stdout; make sure nothing is pending.
+    flushStdout();
+
+    const io = currentIo();
+    var group: std.Io.Group = .init;
+    const helpers = @min(n, @max(max_jobs, 1)) - 1;
+    for (0..helpers) |_| {
+        group.concurrent(io, Shared.work, .{&shared}) catch break;
+    }
+    Shared.work(&shared);
+    group.await(io) catch {};
+}
+
+test "parallelFor visits every index exactly once" {
+    const Ctx = struct {
+        hits: []std.atomic.Value(u32),
+        fn visit(c: *const @This(), i: usize) void {
+            _ = c.hits[i].fetchAdd(1, .monotonic);
+        }
+    };
+    var hits: [50]std.atomic.Value(u32) = @splat(.init(0));
+    const ctx: Ctx = .{ .hits = &hits };
+    parallelFor(hits.len, 4, &ctx, Ctx.visit);
+    for (hits) |h| try std.testing.expectEqual(@as(u32, 1), h.load(.monotonic));
+
+    parallelFor(0, 4, &ctx, Ctx.visit); // no-op
+    parallelFor(3, 0, &ctx, Ctx.visit); // max_jobs 0 still runs inline
+    for (hits[0..3]) |h| try std.testing.expectEqual(@as(u32, 2), h.load(.monotonic));
 }
 
 /// Max output size we'll capture from a child process.
