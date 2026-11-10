@@ -29,7 +29,7 @@ pub const QueryContext = struct {
     ) QueryContext {
         const stdout_color = color.Style.detect(std.posix.STDOUT_FILENO, true);
         const stderr_color = color.Style.detect(std.posix.STDERR_FILENO, true);
-        var ctx = QueryContext{
+        return QueryContext{
             .allocator = allocator,
             .io = io,
             .aur_client = aur_client,
@@ -41,8 +41,6 @@ pub const QueryContext = struct {
             .stderr_color = stderr_color,
             .err_writer = types.defaultErrWriter(),
         };
-        ctx.flags.reanchorIgnore();
-        return ctx;
     }
 };
 

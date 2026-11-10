@@ -41,7 +41,7 @@ pub const BuildContext = struct {
         flags: types.Flags,
     ) BuildContext {
         const use_color = pm.color;
-        var ctx = BuildContext{
+        return BuildContext{
             .allocator = allocator,
             .io = io,
             .aur_client = aur_client,
@@ -55,8 +55,6 @@ pub const BuildContext = struct {
             .stderr_color = color.Style.detect(std.posix.STDERR_FILENO, use_color),
             .err_writer = types.defaultErrWriter(),
         };
-        ctx.flags.reanchorIgnore();
-        return ctx;
     }
 };
 

@@ -38,15 +38,18 @@ fn run(allocator: Allocator, io: std.Io, raw_args: std.process.Args) !ExitCode {
     var args_buf: [256][]const u8 = undefined;
     var args_len: usize = 0;
     while (args_iter.next()) |arg| {
-        if (args_len >= args_buf.len) break;
+        if (args_len >= args_buf.len) {
+            printUsageError("too many arguments");
+            return .usage_error;
+        }
         args_buf[args_len] = arg;
         args_len += 1;
     }
     const user_args = args_buf[0..args_len];
 
     // Parse arguments
-    var target_buf: [256][]const u8 = undefined;
-    const parsed = parseArgs(user_args, &target_buf) catch |err| switch (err) {
+    var arg_storage: ArgStorage = .{};
+    const parsed = parseArgs(user_args, &arg_storage) catch |err| switch (err) {
         error.UnknownCommand => {
             printUsageError("unknown command");
             return .usage_error;
@@ -57,6 +60,10 @@ fn run(allocator: Allocator, io: std.Io, raw_args: std.process.Args) !ExitCode {
         },
         error.MissingArgument => {
             printUsageError("missing required argument");
+            return .usage_error;
+        },
+        error.TooManyArguments => {
+            printUsageError("too many arguments");
             return .usage_error;
         },
         error.HelpRequested => {
@@ -192,13 +199,23 @@ const ParseError = error{
     UnknownCommand,
     UnknownFlag,
     MissingArgument,
+    TooManyArguments,
     HelpRequested,
     VersionRequested,
 };
 
-/// Parse raw argv into a structured command.
-/// `target_buf` is caller-provided storage for target pointers.
-fn parseArgs(args: []const []const u8, target_buf: [][]const u8) ParseError!ParsedCommand {
+/// Storage for the slices in a ParsedCommand. Owned by the caller so that
+/// the parsed targets and ignore list stay valid while the command runs.
+const ArgStorage = struct {
+    targets: [256][]const u8 = undefined,
+    ignore: [256][]const u8 = undefined,
+};
+
+/// Parse raw argv into a structured command. The returned targets and
+/// flags.ignore point into `storage`.
+fn parseArgs(args: []const []const u8, storage: *ArgStorage) ParseError!ParsedCommand {
+    const target_buf = &storage.targets;
+    const ignore_buf = &storage.ignore;
     if (args.len == 0) {
         return ParseError.HelpRequested;
     }
@@ -263,11 +280,11 @@ fn parseArgs(args: []const []const u8, target_buf: [][]const u8) ParseError!Pars
                 while (it.next()) |name| {
                     const trimmed = std.mem.trim(u8, name, " ");
                     if (trimmed.len == 0) continue;
-                    if (count >= flags.ignore_buf.len) return ParseError.MissingArgument;
-                    flags.ignore_buf[count] = trimmed;
+                    if (count >= ignore_buf.len) return ParseError.TooManyArguments;
+                    ignore_buf[count] = trimmed;
                     count += 1;
                 }
-                flags.ignore = flags.ignore_buf[0..count];
+                flags.ignore = ignore_buf[0..count];
             } else if (std.mem.eql(u8, arg, "--by")) {
                 i += 1;
                 if (i >= args.len) return ParseError.MissingArgument;
@@ -297,7 +314,7 @@ fn parseArgs(args: []const []const u8, target_buf: [][]const u8) ParseError!Pars
             }
         } else {
             // Positional argument = target
-            if (target_count >= target_buf.len) return ParseError.MissingArgument;
+            if (target_count >= target_buf.len) return ParseError.TooManyArguments;
             target_buf[target_count] = arg;
             target_count += 1;
         }
@@ -348,30 +365,10 @@ fn runWithFullStack(
     defer pm.deinit();
 
     // Merge IgnorePkg from pacman.conf with --ignore flag.
-    // Re-anchor first: after struct copies through parseArgs → run → here,
-    // flags.ignore points into parseArgs's dead stack frame.
     var flags = parsed.flags;
-    flags.reanchorIgnore();
-
-    if (pm.ignore_pkgs.len > 0) {
-        var count: usize = flags.ignore.len;
-        for (pm.ignore_pkgs) |pkg| {
-            if (count >= flags.ignore_buf.len) break;
-            // Skip duplicates already in CLI --ignore
-            var dup = false;
-            for (flags.ignore) |existing| {
-                if (std.mem.eql(u8, existing, pkg)) {
-                    dup = true;
-                    break;
-                }
-            }
-            if (!dup) {
-                flags.ignore_buf[count] = pkg;
-                count += 1;
-            }
-        }
-        flags.ignore = flags.ignore_buf[0..count];
-    }
+    const merged_ignore = try mergeIgnore(allocator, flags.ignore, pm.ignore_pkgs);
+    defer allocator.free(merged_ignore);
+    flags.ignore = merged_ignore;
 
     // Initialize registry (cascade lookup: installed -> sync -> AUR -> provider)
     var reg = registry_mod.PackageRegistry.init(allocator, &pm, aur_client);
@@ -439,6 +436,21 @@ fn runWithFullStack(
     };
 }
 
+/// `cli` followed by the names in `conf` not already in it.
+/// Caller frees the slice (the names are borrowed).
+fn mergeIgnore(allocator: Allocator, cli: []const []const u8, conf: []const []const u8) ![]const []const u8 {
+    var merged: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer merged.deinit(allocator);
+    try merged.appendSlice(allocator, cli);
+    next: for (conf) |pkg| {
+        for (cli) |existing| {
+            if (std.mem.eql(u8, existing, pkg)) continue :next;
+        }
+        try merged.append(allocator, pkg);
+    }
+    return merged.toOwnedSlice(allocator);
+}
+
 fn printHelp() void {
     cmd_types.getStdout().writeAll(
         \\aurodle: the newts and bolts between the AUR and pacman
@@ -500,13 +512,15 @@ fn printUsageError(message: []const u8) void {
 
 // ── Tests ────────────────────────────────────────────────────────────────
 
+/// For error cases only: a successful result points into this
+/// function's dead stack frame.
 fn testParse(args: []const []const u8) ParseError!ParsedCommand {
-    var buf: [256][]const u8 = undefined;
+    var buf: ArgStorage = .{};
     return parseArgs(args, &buf);
 }
 
 test "parseArgs: basic info command" {
-    var buf: [256][]const u8 = undefined;
+    var buf: ArgStorage = .{};
     const parsed = try parseArgs(&.{ "info", "foo", "bar" }, &buf);
     try std.testing.expectEqual(Operation.info, parsed.operation);
     try std.testing.expectEqual(@as(usize, 2), parsed.targets.len);
@@ -515,7 +529,7 @@ test "parseArgs: basic info command" {
 }
 
 test "parseArgs: flags mixed with targets" {
-    var buf: [256][]const u8 = undefined;
+    var buf: ArgStorage = .{};
     const parsed = try parseArgs(&.{ "sync", "--needed", "foo", "--noconfirm" }, &buf);
     try std.testing.expectEqual(Operation.sync, parsed.operation);
     try std.testing.expectEqual(@as(usize, 1), parsed.targets.len);
@@ -525,7 +539,7 @@ test "parseArgs: flags mixed with targets" {
 }
 
 test "parseArgs: search with --by flag" {
-    var buf: [256][]const u8 = undefined;
+    var buf: ArgStorage = .{};
     const parsed = try parseArgs(&.{ "search", "--by", "maintainer", "foo" }, &buf);
     try std.testing.expectEqual(Operation.search, parsed.operation);
     try std.testing.expect(parsed.flags.by != null);
@@ -562,7 +576,7 @@ test "parseArgs: missing target for sync" {
 }
 
 test "parseArgs: outdated with no targets is valid" {
-    var buf: [256][]const u8 = undefined;
+    var buf: ArgStorage = .{};
     const parsed = try parseArgs(&.{"outdated"}, &buf);
     try std.testing.expectEqual(Operation.outdated, parsed.operation);
     try std.testing.expectEqual(@as(usize, 0), parsed.targets.len);
@@ -578,119 +592,119 @@ test "parseArgs: dashless short aliases are rejected" {
 }
 
 test "parseArgs: dash-prefixed short aliases" {
-    var buf1: [256][]const u8 = undefined;
+    var buf1: ArgStorage = .{};
     const parsed = try parseArgs(&.{ "-S", "foo" }, &buf1);
     try std.testing.expectEqual(Operation.sync, parsed.operation);
 
-    var buf2: [256][]const u8 = undefined;
+    var buf2: ArgStorage = .{};
     const parsed2 = try parseArgs(&.{ "-Si", "foo" }, &buf2);
     try std.testing.expectEqual(Operation.info, parsed2.operation);
 
-    var buf3: [256][]const u8 = undefined;
+    var buf3: ArgStorage = .{};
     const parsed3 = try parseArgs(&.{ "-Ss", "foo" }, &buf3);
     try std.testing.expectEqual(Operation.search, parsed3.operation);
 
-    var buf4: [256][]const u8 = undefined;
+    var buf4: ArgStorage = .{};
     const parsed4 = try parseArgs(&.{"-Qu"}, &buf4);
     try std.testing.expectEqual(Operation.outdated, parsed4.operation);
 
-    var buf5: [256][]const u8 = undefined;
+    var buf5: ArgStorage = .{};
     const parsed5 = try parseArgs(&.{"-Su"}, &buf5);
     try std.testing.expectEqual(Operation.upgrade, parsed5.operation);
 
-    var buf6: [256][]const u8 = undefined;
+    var buf6: ArgStorage = .{};
     const parsed6 = try parseArgs(&.{ "-Sw", "foo" }, &buf6);
     try std.testing.expectEqual(Operation.build, parsed6.operation);
 
-    var buf7: [256][]const u8 = undefined;
+    var buf7: ArgStorage = .{};
     const parsed7 = try parseArgs(&.{"-Sc"}, &buf7);
     try std.testing.expectEqual(Operation.clean, parsed7.operation);
     try std.testing.expect(!parsed7.flags.all);
 
-    var buf8: [256][]const u8 = undefined;
+    var buf8: ArgStorage = .{};
     const parsed8 = try parseArgs(&.{"-Scc"}, &buf8);
     try std.testing.expectEqual(Operation.clean, parsed8.operation);
     try std.testing.expect(parsed8.flags.all);
 }
 
 test "parseArgs: --recurse flag" {
-    var buf: [256][]const u8 = undefined;
+    var buf: ArgStorage = .{};
     const parsed = try parseArgs(&.{ "clone", "--recurse", "foo" }, &buf);
     try std.testing.expectEqual(Operation.clone, parsed.operation);
     try std.testing.expect(parsed.flags.recurse);
 }
 
 test "parseArgs: combined short flags" {
-    var buf: [256][]const u8 = undefined;
+    var buf: ArgStorage = .{};
     const parsed = try parseArgs(&.{ "search", "-q", "foo" }, &buf);
     try std.testing.expect(parsed.flags.quiet);
 }
 
 test "parseArgs: sort and rsort flags" {
-    var buf1: [256][]const u8 = undefined;
+    var buf1: ArgStorage = .{};
     const parsed = try parseArgs(&.{ "search", "--sort", "votes", "foo" }, &buf1);
     try std.testing.expectEqual(cmd_types.SortField.votes, parsed.flags.sort.?);
 
-    var buf2: [256][]const u8 = undefined;
+    var buf2: ArgStorage = .{};
     const parsed2 = try parseArgs(&.{ "search", "--rsort", "name", "foo" }, &buf2);
     try std.testing.expectEqual(cmd_types.SortField.name, parsed2.flags.rsort.?);
 }
 
 test "parseArgs: --noconfirm flag" {
-    var buf: [256][]const u8 = undefined;
+    var buf: ArgStorage = .{};
     const parsed = try parseArgs(&.{ "sync", "--noconfirm", "foo" }, &buf);
     try std.testing.expect(parsed.flags.noconfirm);
 }
 
 test "parseArgs: --needed flag" {
-    var buf: [256][]const u8 = undefined;
+    var buf: ArgStorage = .{};
     const parsed = try parseArgs(&.{ "build", "--needed", "foo" }, &buf);
     try std.testing.expect(parsed.flags.needed);
 }
 
 test "parseArgs: --rebuild flag" {
-    var buf: [256][]const u8 = undefined;
+    var buf: ArgStorage = .{};
     const parsed = try parseArgs(&.{ "build", "--rebuild", "foo" }, &buf);
     try std.testing.expect(parsed.flags.rebuild);
 }
 
 test "parseArgs: --noshow flag" {
-    var buf: [256][]const u8 = undefined;
+    var buf: ArgStorage = .{};
     const parsed = try parseArgs(&.{ "sync", "--noshow", "foo" }, &buf);
     try std.testing.expect(parsed.flags.noshow);
 }
 
 test "parseArgs: --asdeps and --asexplicit flags" {
-    var buf1: [256][]const u8 = undefined;
+    var buf1: ArgStorage = .{};
     const parsed = try parseArgs(&.{ "sync", "--asdeps", "foo" }, &buf1);
     try std.testing.expect(parsed.flags.asdeps);
 
-    var buf2: [256][]const u8 = undefined;
+    var buf2: ArgStorage = .{};
     const parsed2 = try parseArgs(&.{ "sync", "--asexplicit", "foo" }, &buf2);
     try std.testing.expect(parsed2.flags.asexplicit);
 }
 
 test "parseArgs: --devel flag" {
-    var buf: [256][]const u8 = undefined;
+    var buf: ArgStorage = .{};
     const parsed = try parseArgs(&.{ "sync", "--devel", "foo" }, &buf);
     try std.testing.expect(parsed.flags.devel);
 }
 
 test "parseArgs: --all flag" {
-    var buf: [256][]const u8 = undefined;
+    var buf: ArgStorage = .{};
     const parsed = try parseArgs(&.{ "clean", "--all" }, &buf);
     try std.testing.expect(parsed.flags.all);
 }
 
 test "parseArgs: --ignore flag with single package" {
-    var buf: [256][]const u8 = undefined;
+    var buf: ArgStorage = .{};
     const parsed = try parseArgs(&.{ "sync", "--ignore", "foo", "bar" }, &buf);
     try std.testing.expectEqual(@as(usize, 1), parsed.flags.ignore.len);
     try std.testing.expectEqualStrings("foo", parsed.flags.ignore[0]);
 }
 
 test "parseArgs: --ignore flag with comma-separated packages" {
-    var buf: [256][]const u8 = undefined;
+    var buf: ArgStorage = .{};
     const parsed = try parseArgs(&.{ "sync", "--ignore", "foo,bar,baz", "target" }, &buf);
     try std.testing.expectEqual(@as(usize, 3), parsed.flags.ignore.len);
     try std.testing.expectEqualStrings("foo", parsed.flags.ignore[0]);
@@ -722,7 +736,7 @@ test "parseArgs: recognizes all command names" {
         .{ .name = "buildorder", .op = .buildorder },
     };
     for (cmds) |cmd| {
-        var buf: [256][]const u8 = undefined;
+        var buf: ArgStorage = .{};
         const parsed = try parseArgs(&.{ cmd.name, "arg" }, &buf);
         try std.testing.expectEqual(cmd.op, parsed.operation);
     }
@@ -731,7 +745,7 @@ test "parseArgs: recognizes all command names" {
 test "parseArgs: commands without required targets" {
     const cmds = [_][]const u8{ "outdated", "upgrade", "clean", "status" };
     for (cmds) |cmd| {
-        var buf: [256][]const u8 = undefined;
+        var buf: ArgStorage = .{};
         const parsed = try parseArgs(&.{cmd}, &buf);
         try std.testing.expectEqual(@as(usize, 0), parsed.targets.len);
     }
@@ -755,4 +769,43 @@ test "Operation.requiresTargets" {
     try std.testing.expect(!Operation.outdated.requiresTargets());
     try std.testing.expect(!Operation.upgrade.requiresTargets());
     try std.testing.expect(!Operation.clean.requiresTargets());
+}
+
+test "parseArgs: ignore list lives in caller storage and survives copies" {
+    var storage: ArgStorage = .{};
+    const parsed = try parseArgs(&.{ "sync", "--ignore", "foo,bar", "pkg" }, &storage);
+    // A copy of Flags (as passed to every context) shares the storage, so
+    // it stays valid however often it is copied or returned.
+    const copy = parsed.flags;
+    var ctx = query_context.QueryContext.init(std.testing.allocator, std.testing.io, undefined, "/tmp", copy);
+    _ = &ctx;
+    try std.testing.expectEqual(@as([*]const []const u8, &storage.ignore), ctx.flags.ignore.ptr);
+    try std.testing.expectEqual(@as(usize, 2), ctx.flags.ignore.len);
+    try std.testing.expectEqualStrings("bar", ctx.flags.ignore[1]);
+}
+
+test "parseArgs: overflowing an argument buffer is TooManyArguments" {
+    // The command plus 257 targets: one more than the target storage holds.
+    var many: [258][]const u8 = undefined;
+    many[0] = "sync";
+    for (many[1..]) |*a| a.* = "pkg";
+    try std.testing.expectError(ParseError.TooManyArguments, testParse(&many));
+
+    // 257 comma-separated names, one more than the ignore storage holds.
+    var names_buf: [257 * 2]u8 = undefined;
+    for (0..257) |i| {
+        names_buf[2 * i] = 'a';
+        names_buf[2 * i + 1] = ',';
+    }
+    const names = names_buf[0 .. names_buf.len - 1];
+    try std.testing.expectError(ParseError.TooManyArguments, testParse(&.{ "sync", "--ignore", names, "pkg" }));
+}
+
+test "mergeIgnore appends pacman.conf names not given on the command line" {
+    const merged = try mergeIgnore(std.testing.allocator, &.{ "a", "b" }, &.{ "b", "c" });
+    defer std.testing.allocator.free(merged);
+    try std.testing.expectEqual(@as(usize, 3), merged.len);
+    try std.testing.expectEqualStrings("a", merged[0]);
+    try std.testing.expectEqualStrings("b", merged[1]);
+    try std.testing.expectEqualStrings("c", merged[2]);
 }

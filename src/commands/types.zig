@@ -33,15 +33,9 @@ pub const Flags = struct {
     by: ?aur.SearchField = null,
     sort: ?SortField = null,
     rsort: ?SortField = null,
+    /// Packages to skip. Borrowed: main.run owns the storage, which
+    /// outlives every command, so Flags can be copied freely.
     ignore: []const []const u8 = &.{},
-    ignore_buf: [64][]const u8 = undefined,
-
-    /// Re-anchor the ignore slice to point into our own ignore_buf.
-    /// Must be called after any struct copy (Zig copies the slice pointer
-    /// verbatim, leaving it pointing at the source struct's buffer).
-    pub fn reanchorIgnore(self: *Flags) void {
-        self.ignore = self.ignore_buf[0..self.ignore.len];
-    }
 };
 
 pub const SortField = enum {
