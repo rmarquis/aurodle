@@ -1,4 +1,5 @@
 const std = @import("std");
+const utils = @import("utils.zig");
 const Allocator = std.mem.Allocator;
 
 pub const DEFAULT_REPO_NAME = "aur";
@@ -7,7 +8,7 @@ pub const DEFAULT_REPO_NAME = "aur";
 pub fn isConfiguredFromPathWithName(path: []const u8, name: []const u8) bool {
     // pacman.conf is small — read entire file
     var buf: [64 * 1024]u8 = undefined;
-    const content = std.Io.Dir.readFile(std.Io.Dir.cwd(), std.Options.debug_io, path, &buf) catch return false;
+    const content = std.Io.Dir.readFile(std.Io.Dir.cwd(), utils.currentIo(), path, &buf) catch return false;
 
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {
@@ -29,7 +30,7 @@ pub fn isConfiguredFromPathWithName(path: []const u8, name: []const u8) bool {
 /// This returns "mypkgs".
 pub fn deriveRepoNameFromPacmanConf(allocator: Allocator, pkgdest: []const u8) !?[]const u8 {
     var buf: [64 * 1024]u8 = undefined;
-    const content = std.Io.Dir.readFile(std.Io.Dir.cwd(), std.Options.debug_io, "/etc/pacman.conf", &buf) catch return null;
+    const content = std.Io.Dir.readFile(std.Io.Dir.cwd(), utils.currentIo(), "/etc/pacman.conf", &buf) catch return null;
 
     var current_section: ?[]const u8 = null;
     var lines = std.mem.splitScalar(u8, content, '\n');

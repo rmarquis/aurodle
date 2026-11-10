@@ -5,6 +5,7 @@
 //! assignment.
 
 const std = @import("std");
+const utils = @import("utils.zig");
 const Allocator = std.mem.Allocator;
 
 pub const DEFAULT_PKGEXT = ".pkg.tar.zst";
@@ -93,7 +94,7 @@ pub fn parseMakepkgConf(allocator: Allocator) !MakepkgConfig {
 /// skipped.
 pub fn parseMakepkgConfFromFile(allocator: Allocator, path: []const u8, config: *MakepkgConfig) Allocator.Error!void {
     var buf: [MAX_CONF_BYTES]u8 = undefined;
-    const content = std.Io.Dir.readFile(std.Io.Dir.cwd(), std.Options.debug_io, path, &buf) catch return;
+    const content = std.Io.Dir.readFile(std.Io.Dir.cwd(), utils.currentIo(), path, &buf) catch return;
     try parseContent(allocator, content, config);
 }
 
@@ -138,7 +139,7 @@ fn readDropIns(allocator: Allocator, system: []const u8, config: *MakepkgConfig)
     defer arena.deinit();
     const a = arena.allocator();
 
-    const io = std.Options.debug_io;
+    const io = utils.currentIo();
     const dir_path = try std.fmt.allocPrint(a, "{s}.d", .{system});
     var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return;
     defer dir.close(io);
@@ -176,7 +177,7 @@ fn readUserFile(allocator: Allocator, paths: Paths, config: *MakepkgConfig) Allo
         null;
 
     if (xdg) |path| {
-        if (std.Io.Dir.cwd().access(std.Options.debug_io, path, .{ .read = true })) |_| {
+        if (std.Io.Dir.cwd().access(utils.currentIo(), path, .{ .read = true })) |_| {
             return parseMakepkgConfFromFile(allocator, path, config);
         } else |_| {}
     }

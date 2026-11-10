@@ -198,7 +198,7 @@ pub fn cachedPackagePaths(
     for (cache_dirs) |dir| {
         for (basenames) |basename| {
             const path = try std.fs.path.join(allocator, &.{ dir, basename });
-            std.Io.Dir.accessAbsolute(std.Options.debug_io, path, .{}) catch {
+            std.Io.Dir.accessAbsolute(utils.currentIo(), path, .{}) catch {
                 allocator.free(path);
                 continue;
             };

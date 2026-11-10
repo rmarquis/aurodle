@@ -51,7 +51,7 @@ const MonitorList = struct {
 };
 
 pub fn run(allocator: Allocator, sty: color_mod.Style) !u8 {
-    var http_client = std.http.Client{ .allocator = allocator, .io = std.Options.debug_io };
+    var http_client = std.http.Client{ .allocator = allocator, .io = utils.currentIo() };
     defer http_client.deinit();
 
     var aw: std.Io.Writer.Allocating = .init(allocator);

@@ -1,4 +1,5 @@
 const std = @import("std");
+const utils = @import("utils.zig");
 const alpm = @import("alpm.zig");
 
 /// Parsed pacman.conf state returned by registerSyncDbs.
@@ -40,7 +41,7 @@ pub fn registerSyncDbs(allocator: std.mem.Allocator, handle: alpm.Handle) !Pacma
 
     // pacman.conf is small — read entire file
     var buf: [64 * 1024]u8 = undefined;
-    const content = std.Io.Dir.readFile(std.Io.Dir.cwd(), std.Options.debug_io, "/etc/pacman.conf", &buf) catch
+    const content = std.Io.Dir.readFile(std.Io.Dir.cwd(), utils.currentIo(), "/etc/pacman.conf", &buf) catch
         return error.PacmanConfNotFound;
 
     var current_repo: ?alpm.Database = null;
@@ -113,7 +114,7 @@ pub fn registerSyncDbs(allocator: std.mem.Allocator, handle: alpm.Handle) !Pacma
 /// Read a mirrorlist file and add each Server= URL to the database.
 fn addServersFromMirrorlist(db: alpm.Database, path: []const u8) void {
     var buf: [256 * 1024]u8 = undefined;
-    const content = std.Io.Dir.readFile(std.Io.Dir.cwd(), std.Options.debug_io, path, &buf) catch return;
+    const content = std.Io.Dir.readFile(std.Io.Dir.cwd(), utils.currentIo(), path, &buf) catch return;
 
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {
@@ -129,7 +130,7 @@ fn addServersFromMirrorlist(db: alpm.Database, path: []const u8) void {
 
 /// Return true when running on an Arch Linux system (has pacman local db).
 pub fn isArchLinux() bool {
-    std.Io.Dir.accessAbsolute(std.Options.debug_io, "/var/lib/pacman/local", .{}) catch return false;
+    std.Io.Dir.accessAbsolute(utils.currentIo(), "/var/lib/pacman/local", .{}) catch return false;
     return true;
 }
 

@@ -33,7 +33,7 @@ fn ensureChroot(allocator: Allocator, auth: *auth_mod.Auth, err_writer: anytype,
     const root_path = std.fmt.allocPrint(allocator, "{s}/root", .{chroot_path}) catch return false;
     defer allocator.free(root_path);
 
-    std.Io.Dir.accessAbsolute(std.Options.debug_io, root_path, .{}) catch {
+    std.Io.Dir.accessAbsolute(utils.currentIo(), root_path, .{}) catch {
         err_writer.print("{s}::{s} creating chroot at {s}...\n", .{ ec.blue, ec.reset, chroot_path }) catch {};
         const exit_code = try auth.runInteractive(
             &.{ "mkarchroot", root_path, "base-devel" },
@@ -85,7 +85,7 @@ fn freePaths(allocator: Allocator, paths: ?[]const []const u8) void {
 fn allPackagesBuilt(paths: ?[]const []const u8) bool {
     const list = paths orelse return false;
     for (list) |path| {
-        std.Io.Dir.accessAbsolute(std.Options.debug_io, path, .{}) catch return false;
+        std.Io.Dir.accessAbsolute(utils.currentIo(), path, .{}) catch return false;
     }
     return true;
 }
@@ -105,7 +105,7 @@ fn existingPaths(allocator: Allocator, list: []const []const u8, since: ?i96) !?
     }
     const cwd = std.Io.Dir.cwd();
     for (list) |path| {
-        const stat = cwd.statFile(std.Options.debug_io, path, .{}) catch continue;
+        const stat = cwd.statFile(utils.currentIo(), path, .{}) catch continue;
         if (since) |t| if (stat.mtime.nanoseconds < t) continue;
         try paths.append(allocator, try allocator.dupe(u8, path));
     }

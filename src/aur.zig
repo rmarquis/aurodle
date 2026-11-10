@@ -1,4 +1,5 @@
 const std = @import("std");
+const utils = @import("utils.zig");
 const Allocator = std.mem.Allocator;
 
 /// Max response size from AUR. Typical responses are <100KB.
@@ -155,7 +156,7 @@ pub const Client = struct {
         return .{
             .allocator = allocator,
             .arena = std.heap.ArenaAllocator.init(allocator),
-            .http_client = .{ .allocator = allocator, .io = std.Options.debug_io },
+            .http_client = .{ .allocator = allocator, .io = utils.currentIo() },
             .cache = .empty,
         };
     }

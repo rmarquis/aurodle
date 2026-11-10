@@ -2,11 +2,14 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const color = @import("color.zig");
 
-/// Runtime I/O implementation. Set from `init.io` in `main` so that process
-/// spawning (which is incompatible with `std.Options.debug_io` in Zig 0.16.0)
-/// uses the correct backend.
+/// The program's I/O implementation, set from `init.io` in `main`. All
+/// production I/O goes through currentIo(). std.Options.debug_io is a
+/// separate single-threaded instance reserved for std.debug, and it cannot
+/// spawn processes. The default only covers code running before main sets
+/// this.
 pub var global_io: std.Io = std.Options.debug_io;
 
+/// The I/O implementation to use: the program's, or std.testing.io in tests.
 pub fn currentIo() std.Io {
     return if (@import("builtin").is_test) std.testing.io else global_io;
 }
@@ -226,7 +229,7 @@ pub fn findOnPath(name: []const u8) bool {
         // Use a stack buffer to avoid allocation.
         var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         const full = std.fmt.bufPrint(&buf, "{s}/{s}", .{ dir, name }) catch continue;
-        std.Io.Dir.accessAbsolute(std.Options.debug_io, full, .{}) catch continue;
+        std.Io.Dir.accessAbsolute(currentIo(), full, .{}) catch continue;
         return true;
     }
     return false;
@@ -309,7 +312,7 @@ pub fn expandHome(allocator: Allocator, path: []const u8) ![]u8 {
 
 /// Check if a path exists and is a directory.
 pub fn dirExists(path: []const u8) bool {
-    const stat = std.Io.Dir.statFile(std.Io.Dir.cwd(), std.Options.debug_io, path, .{}) catch return false;
+    const stat = std.Io.Dir.statFile(std.Io.Dir.cwd(), currentIo(), path, .{}) catch return false;
     return stat.kind == .directory;
 }
 

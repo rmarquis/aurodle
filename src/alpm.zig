@@ -1,4 +1,5 @@
 const std = @import("std");
+const utils = @import("utils.zig");
 
 /// Raw C bindings for libalpm. Never exposed outside this module.
 const c = @import("alpm_c");
@@ -292,7 +293,7 @@ const CStringBuf = struct {
 // pacman database on an Arch Linux system.
 
 fn isArchLinux() bool {
-    std.Io.Dir.accessAbsolute(std.Options.debug_io, "/var/lib/pacman/local", .{}) catch return false;
+    std.Io.Dir.accessAbsolute(utils.currentIo(), "/var/lib/pacman/local", .{}) catch return false;
     return true;
 }
 

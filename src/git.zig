@@ -118,7 +118,7 @@ pub fn clone(allocator: Allocator, cache_root: []const u8, pkgbase: []const u8) 
 
     // Ensure parent directory exists
     if (std.fs.path.dirname(dest)) |parent| {
-        std.Io.Dir.createDirPath(std.Io.Dir.cwd(), std.Options.debug_io, parent) catch {};
+        std.Io.Dir.createDirPath(std.Io.Dir.cwd(), utils.currentIo(), parent) catch {};
     }
 
     const url = try std.fmt.allocPrint(allocator, "{s}{s}.git", .{ AUR_GIT_BASE, pkgbase });
@@ -128,13 +128,13 @@ pub fn clone(allocator: Allocator, cache_root: []const u8, pkgbase: []const u8) 
         "git", "clone", "--depth=1", url, dest,
     }) catch {
         // git binary not found or spawn failure
-        std.Io.Dir.deleteTree(std.Io.Dir.cwd(), std.Options.debug_io, dest) catch {};
+        std.Io.Dir.deleteTree(std.Io.Dir.cwd(), utils.currentIo(), dest) catch {};
         return error.CloneFailed;
     };
     defer result.deinit(allocator);
 
     if (!result.success()) {
-        std.Io.Dir.deleteTree(std.Io.Dir.cwd(), std.Options.debug_io, dest) catch {};
+        std.Io.Dir.deleteTree(std.Io.Dir.cwd(), utils.currentIo(), dest) catch {};
         return error.CloneFailed;
     }
 
@@ -168,7 +168,7 @@ pub fn cloneOrFetch(allocator: Allocator, cache_root: []const u8, pkgbase: []con
         return if (pending) .pending else .unchanged;
     } else |err| switch (err) {
         error.InvalidRepository => {
-            std.Io.Dir.deleteTree(std.Io.Dir.cwd(), std.Options.debug_io, dest) catch {};
+            std.Io.Dir.deleteTree(std.Io.Dir.cwd(), utils.currentIo(), dest) catch {};
             _ = try clone(allocator, cache_root, pkgbase);
             return .reCloned;
         },
@@ -220,7 +220,7 @@ pub fn listFiles(allocator: Allocator, cache_root: []const u8, pkgbase: []const 
         defer allocator.free(full_path);
 
         const size: u64 = blk: {
-            const stat = std.Io.Dir.statFile(std.Io.Dir.cwd(), std.Options.debug_io, full_path, .{}) catch break :blk 0;
+            const stat = std.Io.Dir.statFile(std.Io.Dir.cwd(), utils.currentIo(), full_path, .{}) catch break :blk 0;
             break :blk stat.size;
         };
 
@@ -259,7 +259,7 @@ pub fn readFile(allocator: Allocator, cache_root: []const u8, pkgbase: []const u
     const full_path = try std.fs.path.join(allocator, &.{ dest, filename });
     defer allocator.free(full_path);
 
-    return std.Io.Dir.readFileAlloc(std.Io.Dir.cwd(), std.Options.debug_io, full_path, allocator, .limited(1024 * 1024)) catch error.InvalidFilePath;
+    return std.Io.Dir.readFileAlloc(std.Io.Dir.cwd(), utils.currentIo(), full_path, allocator, .limited(1024 * 1024)) catch error.InvalidFilePath;
 }
 
 // ── Internal Helpers ────────────────────────────────────────────────────
