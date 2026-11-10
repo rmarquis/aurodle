@@ -34,6 +34,11 @@ pub const PackageRegistry = RegistryImpl(pacman_mod.Pacman, aur.Client);
 
 // ── Generic Registry Implementation ──────────────────────────────────────
 
+/// Lifetimes: the registry copies no strings. Cache keys are the names
+/// parsed from the dependency strings passed to resolve/resolveMany, and
+/// Resolution fields point into Pacman (libalpm) and AurClient (its arena)
+/// memory. The registry and every Resolution it returns must not outlive
+/// the dependency strings, the Pacman instance or the AUR client.
 pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
     return struct {
         const Self = @This();

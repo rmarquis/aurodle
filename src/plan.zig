@@ -55,6 +55,18 @@ pub const Unresolved = struct {
     found_version: ?[]const u8 = null,
 };
 
+/// The result of Solver.resolve.
+///
+/// Lifetimes: deinit frees the plan's own slices (build_order, all_deps,
+/// the name lists and each entry's target_names/aur_dep_bases), not the
+/// strings in them. Those are borrowed, never copied, from what the solver
+/// read:
+/// - the target names passed to resolve (argv);
+/// - aur.Client's arena (AUR names, versions, pkgbases, dependency lists);
+/// - libalpm memory through Pacman (repo package names, versions and
+///   dependency lists), valid until Pacman.deinit or refreshAurDb.
+/// The plan does not borrow from the solver itself, so it may outlive it,
+/// but not the AUR client, the Pacman instance or argv.
 pub const BuildPlan = struct {
     build_order: []BuildEntry,
     all_deps: []DependencyEntry,

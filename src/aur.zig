@@ -143,7 +143,9 @@ pub const RpcPackage = struct {
 
 pub const Client = struct {
     allocator: Allocator,
-    /// All Package data lives here. Freed in bulk on deinit().
+    /// All Package data lives here. Freed in bulk on deinit(), which
+    /// invalidates every *Package and string returned, and everything that
+    /// borrows them (registry resolutions, build plans).
     arena: std.heap.ArenaAllocator,
     http_client: std.http.Client,
     cache: std.StringHashMapUnmanaged(*Package),

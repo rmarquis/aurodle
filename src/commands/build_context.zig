@@ -61,7 +61,8 @@ pub const BuildContext = struct {
     /// A solver set up from the command-line flags. Every command that
     /// shows or builds a plan (resolve, buildorder, sync, build, upgrade)
     /// uses it, so they all agree on what would be built.
-    /// Caller deinits; the plan it returns borrows from it.
+    /// Caller deinits. The plans it returns do not borrow from it; see
+    /// plan.BuildPlan for what they do borrow.
     pub fn newSolver(self: *const BuildContext) solver_mod.Solver {
         var s = solver_mod.Solver.init(self.allocator, self.registry);
         s.rebuild = self.flags.rebuild;

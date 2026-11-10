@@ -43,7 +43,9 @@ pub const SyncProviderChoice = struct {
 /// "which repo provides this?", "does version X satisfy constraint Y?"
 ///
 /// All returned string slices are borrowed from libalpm internal memory
-/// and are valid until Pacman.deinit().
+/// and are valid until Pacman.deinit(). refreshAurDb also frees the local
+/// AUR repository's package cache, so strings from that database are
+/// invalid after it.
 pub const Pacman = struct {
     allocator: Allocator,
     handle: alpm.Handle,
