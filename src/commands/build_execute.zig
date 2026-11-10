@@ -47,51 +47,93 @@ fn ensureChroot(allocator: Allocator, auth: *auth_mod.Auth, err_writer: anytype,
     return true;
 }
 
-/// Returns true if every package file listed by `makepkg --packagelist` already
-/// exists on disk. When true the build can be skipped entirely.
-fn allPackagesBuilt(allocator: Allocator, clone_dir: []const u8) !bool {
+/// Package file paths reported by `makepkg --packagelist` for clone_dir,
+/// whether or not they exist yet. Null when the command fails or lists
+/// nothing. Each run sources makepkg.conf and the PKGBUILD (about half a
+/// second), so the build loop runs it once per package and reuses it.
+/// Caller frees with freePaths.
+fn packageList(allocator: Allocator, clone_dir: []const u8) !?[]const []const u8 {
     const result = try utils.runCommandIn(allocator, &.{ "makepkg", "--packagelist" }, clone_dir);
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-
-    if (result.exit_code != 0) return false;
-
-    var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, result.stdout, "\n"), '\n');
-    var found_any = false;
-    while (lines.next()) |line| {
-        if (line.len == 0) continue;
-        found_any = true;
-        std.Io.Dir.accessAbsolute(std.Options.debug_io, line, .{}) catch return false;
-    }
-    return found_any;
-}
-
-/// Return the exact package file paths produced by the build in clone_dir,
-/// as reported by `makepkg --packagelist`. Only paths that exist on disk
-/// are included. Returns null when --packagelist fails so callers fall back
-/// to the directory-scan approach. Caller owns the returned slice and strings.
-fn collectBuiltPackagePaths(allocator: Allocator, clone_dir: []const u8) !?[]const []const u8 {
-    const result = try utils.runCommandIn(allocator, &.{ "makepkg", "--packagelist" }, clone_dir);
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-
-    if (result.exit_code != 0) return null;
+    defer result.deinit(allocator);
+    if (!result.success()) return null;
 
     var paths: std.ArrayListUnmanaged([]const u8) = .empty;
     errdefer {
         for (paths.items) |p| allocator.free(p);
         paths.deinit(allocator);
     }
-
-    var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, result.stdout, "\n"), '\n');
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
     while (lines.next()) |line| {
         if (line.len == 0) continue;
-        std.Io.Dir.accessAbsolute(std.Options.debug_io, line, .{}) catch continue;
         try paths.append(allocator, try allocator.dupe(u8, line));
     }
-
-    if (paths.items.len == 0) return null;
+    if (paths.items.len == 0) {
+        paths.deinit(allocator);
+        return null;
+    }
     return try paths.toOwnedSlice(allocator);
+}
+
+fn freePaths(allocator: Allocator, paths: ?[]const []const u8) void {
+    const list = paths orelse return;
+    for (list) |p| allocator.free(p);
+    allocator.free(list);
+}
+
+/// True if every file in a packageList result exists, i.e. the build can
+/// be skipped.
+fn allPackagesBuilt(paths: ?[]const []const u8) bool {
+    const list = paths orelse return false;
+    for (list) |path| {
+        std.Io.Dir.accessAbsolute(std.Options.debug_io, path, .{}) catch return false;
+    }
+    return true;
+}
+
+/// The paths from `list` whose file exists and, when `since` is set, was
+/// last written at or after it. Null if none qualify. Caller frees with
+/// freePaths.
+///
+/// `since` guards a list computed before the build: if pkgver() changed
+/// the version, the listed names are stale and may still match old files
+/// in PKGDEST, which must not be added to the repo.
+fn existingPaths(allocator: Allocator, list: []const []const u8, since: ?i96) !?[]const []const u8 {
+    var paths: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer {
+        for (paths.items) |p| allocator.free(p);
+        paths.deinit(allocator);
+    }
+    const cwd = std.Io.Dir.cwd();
+    for (list) |path| {
+        const stat = cwd.statFile(std.Options.debug_io, path, .{}) catch continue;
+        if (since) |t| if (stat.mtime.nanoseconds < t) continue;
+        try paths.append(allocator, try allocator.dupe(u8, path));
+    }
+    if (paths.items.len == 0) {
+        paths.deinit(allocator);
+        return null;
+    }
+    return try paths.toOwnedSlice(allocator);
+}
+
+/// Return the exact package file paths produced by the build in clone_dir.
+/// Reuses `list` (from packageList before the build) when it names files
+/// written since `since`, or as-is when nothing was built (`since` null);
+/// otherwise asks `makepkg --packagelist` again. Returns null when no file
+/// is found so callers fall back to the directory-scan approach. Caller
+/// frees with freePaths.
+fn collectBuiltPackagePaths(
+    allocator: Allocator,
+    clone_dir: []const u8,
+    list: ?[]const []const u8,
+    since: ?i96,
+) !?[]const []const u8 {
+    if (list) |l| {
+        if (try existingPaths(allocator, l, since)) |paths| return paths;
+    }
+    const fresh = try packageList(allocator, clone_dir) orelse return null;
+    defer freePaths(allocator, fresh);
+    return existingPaths(allocator, fresh, null);
 }
 
 /// Build a package inside a clean chroot using makechrootpkg.
@@ -139,7 +181,16 @@ fn runChrootBuild(
 /// pass 1 and the already-built check (see sourcesStillPrepared), so only
 /// pass 2 runs.
 /// Returns the makepkg exit code (0 when skipped as already built).
-fn runVcsBuild(self: *const BuildContext, entry: plan_mod.BuildEntry, clone_dir: []const u8, prepared: bool) !u8 {
+/// When not `prepared`, stores the `--packagelist` result in `pkglist` and
+/// sets `skipped` when every listed file already exists.
+fn runVcsBuild(
+    self: *const BuildContext,
+    entry: plan_mod.BuildEntry,
+    clone_dir: []const u8,
+    prepared: bool,
+    pkglist: *?[]const []const u8,
+    skipped: *bool,
+) !u8 {
     const sc = self.stdout_color;
     const stdout = types.getStdout();
 
@@ -153,7 +204,11 @@ fn runVcsBuild(self: *const BuildContext, entry: plan_mod.BuildEntry, clone_dir:
     defer if (version) |v| self.allocator.free(v);
     const ver = version orelse "latest";
 
-    if (!prepared and (allPackagesBuilt(self.allocator, clone_dir) catch false)) {
+    if (!prepared) {
+        pkglist.* = packageList(self.allocator, clone_dir) catch null;
+    }
+    if (!prepared and allPackagesBuilt(pkglist.*)) {
+        skipped.* = true;
         stdout.print("{s}::{s} {s} {s} already built, skipping (use --rebuild to force)\n", .{ sc.yellow, sc.reset, entry.name, ver }) catch {};
         return 0;
     }
@@ -259,13 +314,25 @@ pub fn buildLoop(
         // (it reports the stale cached pkgver). Without a hint, runVcsBuild
         // performs the check between its two makepkg passes instead.
         // Non-VCS packages: check PKGDEST via makepkg --packagelist as usual.
+        // The --packagelist result is kept to find the built files
+        // afterwards without running makepkg once more.
         const is_vcs = devel.isVcsPackage(entry.name);
-        const already_built = !self.flags.rebuild and
+        var pkglist: ?[]const []const u8 = null;
+        defer freePaths(self.allocator, pkglist);
+        if (!is_vcs and !self.flags.rebuild and !self.flags.chroot) {
+            pkglist = packageList(self.allocator, clone_dir) catch null;
+        }
+        var already_built = !self.flags.rebuild and
             !self.flags.chroot and
             if (is_vcs) blk: {
                 const hint = self.devel_version_hint.get(entry.name) orelse break :blk false;
                 break :blk repository.hasPackageVersion(entry.name, hint);
-            } else (allPackagesBuilt(self.allocator, clone_dir) catch false);
+            } else allPackagesBuilt(pkglist);
+
+        // Built files are written after this point. The margin absorbs
+        // coarse filesystem timestamps; files left by an earlier run are
+        // far older.
+        const build_start = std.Io.Timestamp.now(self.io, .real).nanoseconds - std.time.ns_per_s;
 
         if (already_built) {
             types.getStdout().print("{s}::{s} {s} {s} already built, skipping (use --rebuild to force)\n", .{ sc.yellow, sc.reset, entry.name, ver }) catch {};
@@ -278,7 +345,8 @@ pub fn buildLoop(
             const exit_code = if (self.flags.chroot) blk: {
                 break :blk try runChrootBuild(self, entry, &built_pkg_paths, clone_dir);
             } else if (split_vcs) blk: {
-                break :blk try runVcsBuild(self, entry, clone_dir, sourcesStillPrepared(self, entry.name, clone_dir));
+                const prepared = sourcesStillPrepared(self, entry.name, clone_dir);
+                break :blk try runVcsBuild(self, entry, clone_dir, prepared, &pkglist, &already_built);
             } else blk: {
                 const args: []const []const u8 = if (self.flags.rebuild)
                     &.{ "makepkg", "-sf", "--noconfirm" }
@@ -314,15 +382,14 @@ pub fn buildLoop(
         }
 
         // Build succeeded — add packages to repo.
-        // Use makepkg --packagelist to get only the files produced by this
+        // Use the --packagelist result (reused from before the build when
+        // its files are fresh) to get only the files produced by this
         // specific build, avoiding stale old-version files in PKGDEST that
         // would cause repo-add -R to fail (it deletes the old file then can't
         // find it when it also appears in the argument list).
-        const built_paths = collectBuiltPackagePaths(self.allocator, clone_dir) catch null;
-        defer if (built_paths) |paths| {
-            for (paths) |p| self.allocator.free(p);
-            self.allocator.free(paths);
-        };
+        const since: ?i96 = if (already_built) null else build_start;
+        const built_paths = collectBuiltPackagePaths(self.allocator, clone_dir, pkglist, since) catch null;
+        defer freePaths(self.allocator, built_paths);
 
         const added = if (built_paths) |paths|
             repository.addPackageFiles(paths)
@@ -367,4 +434,53 @@ pub fn buildLoop(
         .signal_aborted = false,
         .built_pkg_basenames = try all_built_basenames.toOwnedSlice(self.allocator),
     };
+}
+
+// ── Tests ───────────────────────────────────────────────────────────
+
+const testing = std.testing;
+
+fn writeWithMtime(dir: std.Io.Dir, name: []const u8, ns: i96) !void {
+    try dir.writeFile(testing.io, .{ .sub_path = name, .data = "pkg" });
+    const file = try dir.openFile(testing.io, name, .{ .mode = .read_write });
+    defer file.close(testing.io);
+    try file.setTimestamps(testing.io, .{ .modify_timestamp = .{ .new = .{ .nanoseconds = ns } } });
+}
+
+test "existingPaths keeps only files written since the build started" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try std.Io.Dir.realPathFileAlloc(tmp.dir, testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+
+    const start: i96 = 1_000 * std.time.ns_per_s;
+    try writeWithMtime(tmp.dir, "new.pkg.tar.zst", start + std.time.ns_per_s);
+    try writeWithMtime(tmp.dir, "old.pkg.tar.zst", start - 3600 * std.time.ns_per_s);
+
+    const new_path = try std.fs.path.join(testing.allocator, &.{ root, "new.pkg.tar.zst" });
+    defer testing.allocator.free(new_path);
+    const old_path = try std.fs.path.join(testing.allocator, &.{ root, "old.pkg.tar.zst" });
+    defer testing.allocator.free(old_path);
+    const missing_path = try std.fs.path.join(testing.allocator, &.{ root, "debug.pkg.tar.zst" });
+    defer testing.allocator.free(missing_path);
+    const list: []const []const u8 = &.{ new_path, old_path, missing_path };
+
+    // After a build: the stale file and the missing one are dropped.
+    const fresh = (try existingPaths(testing.allocator, list, start)).?;
+    defer freePaths(testing.allocator, fresh);
+    try testing.expectEqual(@as(usize, 1), fresh.len);
+    try testing.expectEqualStrings(new_path, fresh[0]);
+
+    // Nothing built (already-built skip): every existing file counts.
+    const existing = (try existingPaths(testing.allocator, list, null)).?;
+    defer freePaths(testing.allocator, existing);
+    try testing.expectEqual(@as(usize, 2), existing.len);
+
+    // pkgver() moved the version: no listed file is fresh, so the caller
+    // must ask makepkg again.
+    try testing.expect(try existingPaths(testing.allocator, &.{old_path}, start) == null);
+
+    try testing.expect(allPackagesBuilt(&.{ new_path, old_path }));
+    try testing.expect(!allPackagesBuilt(list));
+    try testing.expect(!allPackagesBuilt(null));
 }
