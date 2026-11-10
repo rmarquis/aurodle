@@ -71,12 +71,12 @@ pub const Repository = struct {
 
     /// Create a Repository using paths derived from makepkg.conf:
     /// - repo_dir: PKGDEST from makepkg.conf (required)
-    /// - cache_dir: ~/.cache/aurodle (user-owned clones and logs)
+    /// - cache_dir: `cache_root`, the clone cache shared with git.zig
+    ///   ($AURDEST or ~/.cache/aurodle, see git.defaultCacheRoot)
     /// - repo_name: derived from pacman.conf by matching PKGDEST to a Server directive
     /// Parses makepkg.conf for PKGDEST and PKGEXT.
-    pub fn init(allocator: Allocator, io: std.Io) !Repository {
-        const home = if (std.c.getenv("HOME")) |p| std.mem.span(p) else return error.NoHomeDirectory;
-        const cache_dir = try std.fs.path.join(allocator, &.{ home, ".cache/aurodle" });
+    pub fn init(allocator: Allocator, io: std.Io, cache_root: []const u8) !Repository {
+        const cache_dir = try allocator.dupe(u8, cache_root);
         errdefer allocator.free(cache_dir);
 
         const conf = makepkg.parseMakepkgConf(allocator) catch MakepkgConfig{};

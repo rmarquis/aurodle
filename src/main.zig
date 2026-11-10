@@ -323,7 +323,7 @@ fn runWithFullStack(
     parsed: ParsedCommand,
 ) !ExitCode {
     // Initialize local repository first (derives repo name from pacman.conf + PKGDEST)
-    var repository = repo_mod.Repository.init(allocator, io) catch |err| {
+    var repository = repo_mod.Repository.init(allocator, io, cache_root) catch |err| {
         if (err == error.PkgdestNotSet) {
             std.debug.print("error: PKGDEST is not set in makepkg.conf\n", .{});
         } else if (err == error.RepoNotInPacmanConf) {
