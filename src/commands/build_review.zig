@@ -22,20 +22,25 @@ pub fn getViewer() []const u8 {
 
 /// For each build entry: if the clone was just updated show an interactive diff,
 /// otherwise open all files in the viewer for fresh-clone review.
+/// `clone_results[i]` is the result of cloning/updating `entries[i]` in this
+/// run. ORIG_HEAD alone can't tell: git leaves it behind after every pull,
+/// so it exists for clones that did not change this time.
 pub fn reviewPackages(
     self: *BuildContext,
     entries: []const plan_mod.BuildEntry,
+    clone_results: []const git.CloneOrUpdateResult,
     c_root: []const u8,
 ) !void {
+    std.debug.assert(entries.len == clone_results.len);
     const stdout = types.getStdout();
     const sc = self.stdout_color;
     const editor = getViewer();
 
-    for (entries) |entry| {
+    for (entries, clone_results) |entry, clone_result| {
         const clone_dir = try git.cloneDir(self.allocator, c_root, entry.pkgbase);
         defer self.allocator.free(clone_dir);
 
-        const is_update = git.hasOrigHead(self.allocator, c_root, entry.pkgbase) catch false;
+        const is_update = clone_result == .updated;
 
         if (is_update) {
             const msg = try std.fmt.allocPrint(self.allocator, "View {s} diff?", .{entry.pkgbase});

@@ -214,24 +214,6 @@ pub fn readFile(allocator: Allocator, cache_root: []const u8, pkgbase: []const u
     return std.Io.Dir.readFileAlloc(std.Io.Dir.cwd(), std.Options.debug_io, full_path, allocator, .limited(1024 * 1024)) catch error.InvalidFilePath;
 }
 
-/// Show the diff between the previous HEAD and current HEAD.
-/// Uses ORIG_HEAD which git sets during pull.
-/// Check whether ORIG_HEAD exists in the clone (set by git pull).
-/// Returns false for fresh clones that have never been pulled.
-pub fn hasOrigHead(allocator: Allocator, cache_root: []const u8, pkgbase: []const u8) !bool {
-    const dest = try cloneDir(allocator, cache_root, pkgbase);
-    defer allocator.free(dest);
-
-    if (!dirExists(dest)) return error.NotCloned;
-
-    const result = try utils.runCommandIn(allocator, &.{
-        "git", "rev-parse", "--verify", "ORIG_HEAD",
-    }, dest);
-    defer result.deinit(allocator);
-
-    return result.success();
-}
-
 // ── Internal Helpers ────────────────────────────────────────────────────
 
 fn updateIn(allocator: Allocator, dest: []const u8) !UpdateResult {

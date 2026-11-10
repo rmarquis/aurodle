@@ -245,20 +245,23 @@ pub fn runBuildPipeline(self: *BuildContext, filtered: []const []const u8, mode:
         }
     }
 
-    // Phase 3: Clone
-    for (plan.build_order) |entry| {
-        const clone_result = git.cloneOrUpdate(self.allocator, c_root, entry.pkgbase) catch |err| {
+    // Phase 3: Clone. Keep each result so the review knows which clones
+    // actually changed.
+    const clone_results = try self.allocator.alloc(git.CloneOrUpdateResult, plan.build_order.len);
+    defer self.allocator.free(clone_results);
+    for (plan.build_order, clone_results) |entry, *clone_result| {
+        clone_result.* = git.cloneOrUpdate(self.allocator, c_root, entry.pkgbase) catch |err| {
             self.err_writer.print("{s}error:{s} failed to clone/update '{s}': {}\n", .{ ec.red, ec.reset, entry.pkgbase, err }) catch {};
             return .general_error;
         };
-        if (clone_result == .reCloned) {
+        if (clone_result.* == .reCloned) {
             self.err_writer.print("{s}warning:{s} cached repository for '{s}' was invalid and has been re-cloned\n", .{ ec.yellow, ec.reset, entry.pkgbase }) catch {};
         }
     }
 
     // Phase 4: Review (unless --noshow)
     if (!self.flags.noshow) {
-        try review_phase.reviewPackages(self, plan.build_order, c_root);
+        try review_phase.reviewPackages(self, plan.build_order, clone_results, c_root);
     }
 
     // Phase 4.5: Acquire credentials now that the user has committed

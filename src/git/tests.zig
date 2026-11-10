@@ -247,23 +247,3 @@ test "cloneOrUpdate returns NotCloned-free result for existing repo" {
     const result = git.cloneOrUpdate(testing.allocator, tmp_path, "cou-pkg");
     try testing.expectError(error.PullFailed, result);
 }
-
-test "hasOrigHead returns false for fresh clone" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const tmp_path = try std.Io.Dir.realPathFileAlloc(tmp.dir, testing.io, ".", testing.allocator);
-    defer testing.allocator.free(tmp_path);
-
-    const repo_dir = try git.createTestGitRepo(testing.allocator, tmp_path, "diff-pkg");
-    defer testing.allocator.free(repo_dir);
-
-    // No ORIG_HEAD exists on a fresh repo
-    const result = try git.hasOrigHead(testing.allocator, tmp_path, "diff-pkg");
-    try testing.expect(!result);
-}
-
-test "hasOrigHead returns NotCloned when not cloned" {
-    const result = git.hasOrigHead(testing.allocator, "/tmp/nonexistent-aurodle-test", "fake-pkg");
-    try testing.expectError(error.NotCloned, result);
-}
