@@ -78,7 +78,8 @@ pub fn selectRepoDepsProviders(
 
 /// Install AUR targets (from aurpkgs) and repo targets (from their sync db)
 /// in a single `pacman -S` transaction.
-pub fn installAllTargets(self: *BuildContext, aurpkgs_names: []const []const u8, repo_names: []const []const u8) !void {
+/// Returns false if pacman exits non-zero (the error is already printed).
+pub fn installAllTargets(self: *BuildContext, aurpkgs_names: []const []const u8, repo_names: []const []const u8) !bool {
     var argv: std.ArrayListUnmanaged([]const u8) = .empty;
     defer argv.deinit(self.allocator);
 
@@ -129,7 +130,9 @@ pub fn installAllTargets(self: *BuildContext, aurpkgs_names: []const []const u8,
     if (exit_code != 0) {
         const ec = self.stderr_color;
         self.err_writer.print("{s}error:{s} installation failed (exit {d})\n", .{ ec.red, ec.reset, exit_code }) catch {};
+        return false;
     }
+    return true;
 }
 
 /// Pre-install chosen virtual-dep providers via `pacman -S --needed --asdeps`

@@ -298,12 +298,16 @@ pub fn runBuildPipeline(self: *BuildContext, filtered: []const []const u8, mode:
         install_phase.purgePacmanCache(self, build_result.built_pkg_basenames);
 
         if (build_result.failed.len == 0) {
-            try install_phase.installAllTargets(self, aur_targets.items, plan.repo_targets);
+            if (!try install_phase.installAllTargets(self, aur_targets.items, plan.repo_targets)) {
+                return .general_error;
+            }
         } else {
             const installable = try install_phase.filterInstallable(self.allocator, plan.build_order, build_result.failed);
             defer self.allocator.free(installable);
             if (installable.len > 0 or plan.repo_targets.len > 0) {
-                try install_phase.installAllTargets(self, installable, plan.repo_targets);
+                // Already returning build_failed; a failed install is
+                // reported by installAllTargets itself.
+                _ = try install_phase.installAllTargets(self, installable, plan.repo_targets);
             }
             printBuildSummary(build_result, self.err_writer, ec);
             return .build_failed;
@@ -352,7 +356,9 @@ fn handleEmptyBuildOrder(self: *BuildContext, plan: solver_mod.BuildPlan, mode: 
         }
     }
 
-    try install_phase.installAllTargets(self, aurpkgs_targets.items, plan.repo_targets);
+    if (!try install_phase.installAllTargets(self, aurpkgs_targets.items, plan.repo_targets)) {
+        return .general_error;
+    }
     return .success;
 }
 
