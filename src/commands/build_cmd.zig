@@ -271,7 +271,10 @@ pub fn runBuildPipeline(self: *BuildContext, filtered: []const []const u8, mode:
 
     // Phase 5: Build
     try repository.ensureExists();
-    const build_result = try build_phase.buildLoop(self, plan, repository, c_root);
+    const build_result = build_phase.buildLoop(self, plan, repository, c_root) catch |err| switch (err) {
+        error.ChrootUnavailable => return .build_failed,
+        else => |e| return e,
+    };
     defer build_result.deinit(self.allocator);
 
     if (build_result.signal_aborted) return .signal_killed;

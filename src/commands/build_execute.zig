@@ -181,6 +181,8 @@ pub fn anySubsequentEntryNeeds(remaining: []const plan_mod.BuildEntry, pkgbase: 
 /// Run makepkg (or makechrootpkg) for every entry in build order.
 /// Propagates failures to downstream entries that depend on a failed pkgbase.
 /// Returns a BuildResult that the caller must deinit.
+/// Returns error.ChrootUnavailable (after printing why) if --chroot was
+/// requested but the chroot could not be set up; nothing was built.
 pub fn buildLoop(
     self: *BuildContext,
     plan: plan_mod.BuildPlan,
@@ -200,13 +202,11 @@ pub fn buildLoop(
     }
 
     if (self.flags.chroot) {
+        // Nothing can be built without a chroot. Returning an empty result
+        // here would look like "no failures" and let the caller install
+        // every target, so fail the whole build instead.
         if (!try ensureChroot(self.allocator, self.auth, self.err_writer, ec)) {
-            return .{
-                .succeeded = try succeeded.toOwnedSlice(self.allocator),
-                .failed = try failed.toOwnedSlice(self.allocator),
-                .signal_aborted = false,
-                .built_pkg_basenames = try all_built_basenames.toOwnedSlice(self.allocator),
-            };
+            return error.ChrootUnavailable;
         }
     }
 
