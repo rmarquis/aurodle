@@ -327,7 +327,9 @@ fn runWithFullStack(
     // Initialize local repository first (derives repo name from pacman.conf + PKGDEST)
     var repository = repo_mod.Repository.init(allocator, io, cache_root) catch |err| {
         if (err == error.PkgdestNotSet) {
+            // Usually the first thing a new user hits: give the whole setup.
             std.debug.print("error: PKGDEST is not set in makepkg.conf\n", .{});
+            std.debug.print("{s}\n", .{repo_mod.Repository.configInstructions()});
         } else if (err == error.RepoNotInPacmanConf) {
             std.debug.print("error: no pacman.conf repo has a Server = file:// matching PKGDEST\n", .{});
             std.debug.print("{s}\n", .{repo_mod.Repository.configInstructions()});
