@@ -129,7 +129,9 @@ pub fn clone(allocator: Allocator, cache_root: []const u8, pkgbase: []const u8) 
     return .cloned;
 }
 
-/// Update an existing clone via git pull --ff-only.
+/// Update an existing clone to the AUR's current state (fetch, then reset
+/// to the upstream branch if it moved). Local edits are kept when nothing
+/// changed and discarded otherwise.
 /// Returns .updated if HEAD changed, .up_to_date if unchanged.
 pub fn update(allocator: Allocator, cache_root: []const u8, pkgbase: []const u8) !UpdateResult {
     const dest = try cloneDir(allocator, cache_root, pkgbase);
@@ -243,20 +245,36 @@ pub fn readFile(allocator: Allocator, cache_root: []const u8, pkgbase: []const u
 // ── Internal Helpers ────────────────────────────────────────────────────
 
 fn updateIn(allocator: Allocator, dest: []const u8) !UpdateResult {
-    const old_head = try getHead(allocator, dest);
-    defer allocator.free(old_head);
+    const fetch = try utils.runCommandIn(allocator, &.{ "git", "fetch", "--quiet" }, dest);
+    defer fetch.deinit(allocator);
+    if (!fetch.success()) return error.PullFailed;
 
-    const result = try utils.runCommandIn(allocator, &.{
-        "git", "pull", "--ff-only",
-    }, dest);
+    const head = try getHead(allocator, dest);
+    defer allocator.free(head);
+    const upstream = getUpstream(allocator, dest) catch return error.PullFailed;
+    defer allocator.free(upstream);
+
+    // Nothing new: leave the working tree alone. makepkg rewrites pkgver
+    // in the PKGBUILD of VCS packages, and later --holdver/--noextract
+    // builds rely on that edit.
+    if (std.mem.eql(u8, head, upstream)) return .up_to_date;
+
+    // Move to the AUR's version. `git pull --ff-only` refuses to when a
+    // file it updates was modified locally, which is always the case for
+    // a VCS package's PKGBUILD after a build. reset also sets ORIG_HEAD
+    // to the previous HEAD, as pull did.
+    const reset = try utils.runCommandIn(allocator, &.{ "git", "reset", "--hard", "--quiet", "@{upstream}" }, dest);
+    defer reset.deinit(allocator);
+    if (!reset.success()) return error.PullFailed;
+    return .updated;
+}
+
+/// Commit id of the branch's upstream (the fetched AUR state).
+fn getUpstream(allocator: Allocator, repo_path: []const u8) ![]u8 {
+    const result = try utils.runCommandIn(allocator, &.{ "git", "rev-parse", "@{upstream}" }, repo_path);
     defer result.deinit(allocator);
-
-    if (!result.success()) return error.PullFailed;
-
-    const new_head = try getHead(allocator, dest);
-    defer allocator.free(new_head);
-
-    return if (std.mem.eql(u8, old_head, new_head)) .up_to_date else .updated;
+    if (!result.success()) return error.NoUpstream;
+    return try allocator.dupe(u8, std.mem.trim(u8, result.stdout, " \t\n"));
 }
 
 fn getHead(allocator: Allocator, repo_path: []const u8) ![]u8 {
