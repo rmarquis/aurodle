@@ -238,6 +238,133 @@ test "resolve returns UnresolvableDependency for unknown packages" {
     try testing.expectError(error.UnresolvableDependency, s.resolve(&.{"A"}));
 }
 
+// ── Version Constraint Tests ─────────────────────────────────────────────
+
+fn findDep(plan: BuildPlan, name: []const u8) ?solver_mod.DependencyEntry {
+    for (plan.all_deps) |d| {
+        if (std.mem.eql(u8, d.name, name)) return d;
+    }
+    return null;
+}
+
+test "unresolved names the missing target" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    try testing.expectError(error.UnresolvableDependency, s.resolve(&.{"missing"}));
+    try testing.expectEqualStrings("missing", s.unresolved.?.dep);
+    try testing.expect(s.unresolved.?.required_by == null);
+}
+
+test "versioned dep upgrades an outdated installed package from the repos" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    mock.addAurPackage("A", &.{"dep>=2"}, &.{});
+    mock.addSatisfied("dep", "1");
+    mock.addUpgrade("dep", .repos, "2", &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"A"});
+    defer plan.deinit(testing.allocator);
+
+    const dep = findDep(plan, "dep").?;
+    try testing.expectEqual(registry_mod.Source.repos, dep.source);
+    try testing.expectEqualStrings("2", s.graph.nodes.get("dep").?.meta.version.?);
+    try testing.expectEqual(@as(usize, 1), plan.repo_deps.len);
+}
+
+test "versioned dep builds a newer AUR version and discovers its deps" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    mock.addAurPackage("A", &.{"dep>=2"}, &.{});
+    mock.addSatisfied("dep", "1");
+    mock.addUpgrade("dep", .aur, "2", &.{"sub"});
+    mock.addAurPackage("sub", &.{}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"A"});
+    defer plan.deinit(testing.allocator);
+
+    // sub before dep before A
+    try testing.expectEqual(@as(usize, 3), plan.build_order.len);
+    try testing.expectEqualStrings("sub", plan.build_order[0].name);
+    try testing.expectEqualStrings("dep", plan.build_order[1].name);
+    try testing.expectEqualStrings("A", plan.build_order[2].name);
+}
+
+test "versioned dep is checked even when the name was resolved first without one" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // A wants plain "dep", B wants "dep>=2"; both reach dep in the same round.
+    mock.addAurPackage("A", &.{"dep"}, &.{});
+    mock.addAurPackage("B", &.{"dep>=2"}, &.{});
+    mock.addSatisfied("dep", "1");
+    mock.addUpgrade("dep", .repos, "2", &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{ "A", "B" });
+    defer plan.deinit(testing.allocator);
+
+    const dep = findDep(plan, "dep").?;
+    try testing.expectEqual(registry_mod.Source.repos, dep.source);
+    try testing.expectEqualStrings("2", s.graph.nodes.get("dep").?.meta.version.?);
+}
+
+test "unsatisfiable versioned dep reports the dep, its parent and the version found" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    mock.addAurPackage("A", &.{"dep>=2"}, &.{});
+    mock.addSatisfied("dep", "1");
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    try testing.expectError(error.UnresolvableDependency, s.resolve(&.{"A"}));
+    const u = s.unresolved.?;
+    try testing.expectEqualStrings("dep>=2", u.dep);
+    try testing.expectEqualStrings("A", u.required_by.?);
+    try testing.expectEqualStrings("1", u.found_version.?);
+}
+
+test "contradictory constraints fail instead of looping" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    mock.addAurPackage("A", &.{"dep>=2"}, &.{});
+    mock.addAurPackage("B", &.{"dep<2"}, &.{});
+    mock.addSatisfied("dep", "1");
+    mock.addUpgrade("dep", .repos, "2", &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    try testing.expectError(error.UnresolvableDependency, s.resolve(&.{ "A", "B" }));
+}
+
+test "versioned dep satisfied through a provider is not version-checked" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // Provision versions are not tracked: "virt>=5" provided by impl 1.
+    mock.addAurPackage("A", &.{"virt>=5"}, &.{});
+    mock.addProvider("virt", "impl", .satisfied_repos, "1");
+    mock.addSatisfiedRepo("impl", "1");
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"A"});
+    defer plan.deinit(testing.allocator);
+    try testing.expect(findDep(plan, "impl") != null);
+}
+
 // ── pkgbase Deduplication Tests ──────────────────────────────────────────
 
 test "resolve deduplicates packages sharing the same pkgbase" {

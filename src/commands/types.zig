@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const aur = @import("../aur.zig");
 const color = @import("../color.zig");
 const utils = @import("../utils.zig");
+const plan_mod = @import("../plan.zig");
 
 // ── Exit Codes ───────────────────────────────────────────────────────────
 
@@ -164,11 +165,12 @@ pub const null_err_writer: ErrWriter = .{ .discard = true };
 
 // ── Error Helpers ────────────────────────────────────────────────────────
 
-pub fn handleResolveError(err: anyerror, err_writer: ErrWriter, ec: color.Style) ExitCode {
+/// `unresolved` is the solver's explanation for UnresolvableDependency.
+pub fn handleResolveError(err: anyerror, unresolved: ?plan_mod.Unresolved, err_writer: ErrWriter, ec: color.Style) ExitCode {
     if (err == error.CircularDependency) {
         err_writer.print("{s}error:{s} circular dependency detected\n", .{ ec.red, ec.reset }) catch {};
     } else if (err == error.UnresolvableDependency) {
-        err_writer.print("{s}error:{s} unresolvable dependency\n", .{ ec.red, ec.reset }) catch {};
+        printUnresolved(unresolved, err_writer, ec);
     } else if (err == error.IgnoredDependency) {
         err_writer.print("{s}error:{s} a required dependency is in the ignore list\n", .{ ec.red, ec.reset }) catch {};
     } else if (err == error.NetworkError or err == error.RateLimited or
@@ -179,6 +181,22 @@ pub fn handleResolveError(err: anyerror, err_writer: ErrWriter, ec: color.Style)
         err_writer.print("{s}error:{s} dependency resolution failed: {}\n", .{ ec.red, ec.reset, err }) catch {};
     }
     return .general_error;
+}
+
+fn printUnresolved(unresolved: ?plan_mod.Unresolved, err_writer: ErrWriter, ec: color.Style) void {
+    const u = unresolved orelse {
+        err_writer.print("{s}error:{s} unresolvable dependency\n", .{ ec.red, ec.reset }) catch {};
+        return;
+    };
+    const parent = u.required_by orelse {
+        err_writer.print("{s}error:{s} target not found: {s}\n", .{ ec.red, ec.reset, u.dep }) catch {};
+        return;
+    };
+    if (u.found_version) |v| {
+        err_writer.print("{s}error:{s} unable to satisfy dependency '{s}' required by {s} (found {s})\n", .{ ec.red, ec.reset, u.dep, parent, v }) catch {};
+    } else {
+        err_writer.print("{s}error:{s} unable to satisfy dependency '{s}' required by {s}\n", .{ ec.red, ec.reset, u.dep, parent }) catch {};
+    }
 }
 
 pub fn printError(err: anytype, err_writer: ErrWriter, ec: color.Style) !void {
@@ -243,16 +261,16 @@ test {
 const testing = std.testing;
 
 test "handleResolveError returns general_error for CircularDependency" {
-    const result = handleResolveError(error.CircularDependency, null_err_writer, color.Style.disabled);
+    const result = handleResolveError(error.CircularDependency, null, null_err_writer, color.Style.disabled);
     try testing.expectEqual(ExitCode.general_error, result);
 }
 
 test "handleResolveError returns general_error for UnresolvableDependency" {
-    const result = handleResolveError(error.UnresolvableDependency, null_err_writer, color.Style.disabled);
+    const result = handleResolveError(error.UnresolvableDependency, null, null_err_writer, color.Style.disabled);
     try testing.expectEqual(ExitCode.general_error, result);
 }
 
 test "handleResolveError returns general_error for other errors" {
-    const result = handleResolveError(error.OutOfMemory, null_err_writer, color.Style.disabled);
+    const result = handleResolveError(error.OutOfMemory, null, null_err_writer, color.Style.disabled);
     try testing.expectEqual(ExitCode.general_error, result);
 }

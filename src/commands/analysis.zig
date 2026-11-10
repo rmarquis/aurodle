@@ -28,7 +28,7 @@ pub fn resolve(self: *BuildContext, targets: []const []const u8) !ExitCode {
     defer s.deinit();
 
     const plan = s.resolve(filtered) catch |err| {
-        return handleResolveError(err, self.err_writer, ec);
+        return handleResolveError(err, s.unresolved, self.err_writer, ec);
     };
     defer plan.deinit(self.allocator);
 
@@ -53,7 +53,7 @@ pub fn buildorder(self: *BuildContext, targets: []const []const u8) !ExitCode {
     defer s.deinit();
 
     const plan = s.resolve(filtered) catch |err| {
-        return handleResolveError(err, self.err_writer, ec);
+        return handleResolveError(err, s.unresolved, self.err_writer, ec);
     };
     defer plan.deinit(self.allocator);
 

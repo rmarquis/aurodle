@@ -44,6 +44,17 @@ pub const Conflict = struct {
     };
 };
 
+/// Why dependency resolution failed with error.UnresolvableDependency.
+pub const Unresolved = struct {
+    /// The dependency string that could not be satisfied (e.g. "foo>=2").
+    dep: []const u8,
+    /// Package that requires it; null for a user-requested target.
+    required_by: ?[]const u8 = null,
+    /// Version of the best candidate found, when one exists but is too old
+    /// (or too new) for the constraint.
+    found_version: ?[]const u8 = null,
+};
+
 pub const BuildPlan = struct {
     build_order: []BuildEntry,
     all_deps: []DependencyEntry,

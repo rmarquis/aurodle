@@ -6,6 +6,7 @@ const graph_mod = @import("solver/graph.zig");
 const topo_mod = @import("solver/topo.zig");
 const conflicts_mod = @import("solver/conflicts.zig");
 const plan_mod = @import("plan.zig");
+const version_mod = @import("version.zig");
 
 const NodeMeta = graph_mod.NodeMeta;
 const DepGraph = graph_mod.DepGraph;
@@ -16,6 +17,7 @@ pub const BuildEntry = plan_mod.BuildEntry;
 pub const DependencyEntry = plan_mod.DependencyEntry;
 pub const Conflict = plan_mod.Conflict;
 pub const BuildPlan = plan_mod.BuildPlan;
+pub const Unresolved = plan_mod.Unresolved;
 
 // ── Production Type Alias ────────────────────────────────────────────────
 
@@ -34,6 +36,19 @@ pub fn SolverImpl(comptime RegistryT: type) type {
         rebuild: bool = false,
         needed: bool = false,
         ignore: []const []const u8 = &.{},
+        /// Set when resolve() fails with error.UnresolvableDependency.
+        unresolved: ?Unresolved = null,
+        /// Dep string → name of the first package that required it.
+        required_by: std.StringHashMapUnmanaged([]const u8) = .empty,
+        /// Every versioned dep seen during discovery, checked after it.
+        constraints: std.ArrayListUnmanaged(ConstraintEdge) = .empty,
+
+        const ConstraintEdge = struct { dep: []const u8, parent: []const u8 };
+
+        /// Rounds of "upgrade nodes that fail a constraint, then discover
+        /// their new deps". Normally one; the cap stops contradictory
+        /// constraints (foo>=2 and foo<2) from flipping a node forever.
+        const max_constraint_rounds = 8;
 
         pub fn init(allocator: Allocator, reg: *RegistryT) Self {
             return .{
@@ -47,6 +62,8 @@ pub fn SolverImpl(comptime RegistryT: type) type {
         pub fn deinit(self: *Self) void {
             self.graph.deinit();
             self.targets.deinit(self.allocator);
+            self.required_by.deinit(self.allocator);
+            self.constraints.deinit(self.allocator);
         }
 
         /// Resolve a set of target packages into a BuildPlan.
@@ -95,11 +112,30 @@ pub fn SolverImpl(comptime RegistryT: type) type {
 
             var frontier: std.ArrayListUnmanaged([]const u8) = .empty;
             defer frontier.deinit(self.allocator);
-            for (target_names) |name| {
-                try frontier.append(self.allocator, name);
-            }
+            try frontier.appendSlice(self.allocator, target_names);
+            try self.expand(&visited, &frontier, 0);
 
-            var depth: u32 = 0;
+            // Versioned deps: a name is resolved once, by whichever edge
+            // reached it first, so a later "foo>=2" may find foo 1.0 in the
+            // graph. Upgrade such nodes, discover what they pull in, repeat.
+            var round: usize = 0;
+            while (round < max_constraint_rounds) : (round += 1) {
+                if (!try self.upgradeUnsatisfied(&visited, &frontier)) break;
+                try self.expand(&visited, &frontier, null);
+            }
+            try self.checkConstraints();
+        }
+
+        /// Breadth-first discovery from the dep strings in `frontier`
+        /// (consumed). `start_depth` null means each entry is one level
+        /// below the node that required it.
+        fn expand(
+            self: *Self,
+            visited: *std.StringHashMapUnmanaged(void),
+            frontier: *std.ArrayListUnmanaged([]const u8),
+            start_depth: ?u32,
+        ) !void {
+            var depth: u32 = start_depth orelse self.frontierDepth(frontier.items);
 
             while (frontier.items.len > 0) {
                 const resolutions = try self.registry.resolveMany(frontier.items);
@@ -107,15 +143,18 @@ pub fn SolverImpl(comptime RegistryT: type) type {
 
                 var next_frontier: std.ArrayListUnmanaged([]const u8) = .empty;
 
-                try self.prefetchAurTargets(frontier.items, resolutions, &visited);
+                errdefer next_frontier.deinit(self.allocator);
 
-                for (frontier.items, resolutions) |name, resolution| {
+                try self.prefetchAurTargets(frontier.items, resolutions, visited);
+
+                for (frontier.items, resolutions) |dep, resolution| {
+                    const name = registry_mod.parseDep(dep).name;
                     if (visited.contains(name)) {
                         self.graph.updateDepth(name, depth);
                         continue;
                     }
 
-                    const redirected = try self.resolveWithRedirects(name, resolution, &visited, depth) orelse continue;
+                    const redirected = try self.resolveWithRedirects(dep, name, resolution, visited, depth) orelse continue;
                     const actual_name = redirected.name;
                     const actual_resolution = redirected.resolution;
 
@@ -143,16 +182,109 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                     const aur_pkg = try self.fetchAndReclassifyAurPkg(node, actual_name, name, actual_resolution);
 
                     if (aur_pkg) |pkg| {
-                        try self.collectDeps(&next_frontier, &visited, node, pkg.depends, depth);
-                        try self.collectDeps(&next_frontier, &visited, node, pkg.makedepends, depth);
-                        try self.collectDeps(&next_frontier, &visited, node, pkg.checkdepends, depth);
+                        try self.collectAllDeps(&next_frontier, visited, node, pkg, depth);
                     }
                 }
 
                 frontier.deinit(self.allocator);
-                frontier = next_frontier;
+                frontier.* = next_frontier;
                 depth += 1;
             }
+        }
+
+        /// Depth for a frontier of deps queued by upgradeUnsatisfied: one
+        /// below the shallowest package that required them.
+        fn frontierDepth(self: *Self, deps: []const []const u8) u32 {
+            var depth: ?u32 = null;
+            for (deps) |dep| {
+                const parent = self.required_by.get(dep) orelse continue;
+                const node = self.graph.getNode(parent) orelse continue;
+                const d = node.meta.depth + 1;
+                if (depth == null or d < depth.?) depth = d;
+            }
+            return depth orelse 0;
+        }
+
+        // ── Phase 1b: Version constraints ───────────────────────────────
+
+        /// For each versioned dep whose node fails it, ask the registry for a
+        /// package that satisfies it (e.g. a newer sync or AUR version of an
+        /// installed package) and update the node. Deps of a node that became
+        /// an AUR build are queued in `frontier`. Returns true if any node
+        /// changed.
+        fn upgradeUnsatisfied(
+            self: *Self,
+            visited: *std.StringHashMapUnmanaged(void),
+            frontier: *std.ArrayListUnmanaged([]const u8),
+        ) !bool {
+            var changed = false;
+            for (self.constraints.items) |edge| {
+                const node = self.constrainedNode(edge.dep) orelse continue;
+                if (self.nodeSatisfies(node, edge.dep)) continue;
+
+                const res = try self.registry.resolve(edge.dep);
+                // Only accept an exact-name match that meets the constraint;
+                // anything else is reported by checkConstraints.
+                if (res.source == .unknown) continue;
+                if (res.provider) |p| if (!std.mem.eql(u8, p, node.meta.name)) continue;
+                const ver = res.version orelse continue;
+                const constraint = registry_mod.parseDep(edge.dep).constraint.?;
+                if (!versionSatisfies(ver, constraint)) continue;
+
+                node.meta.source = res.source;
+                node.meta.version = ver;
+                if (res.aur_pkg) |pkg| {
+                    node.meta.aur_pkg = pkg;
+                    node.meta.pkgbase = pkg.pkgbase;
+                    if (res.source == .aur) {
+                        try self.collectAllDeps(frontier, visited, node, pkg, node.meta.depth);
+                    }
+                }
+                changed = true;
+            }
+            return changed;
+        }
+
+        /// Fail with error.UnresolvableDependency (and set `unresolved`) if
+        /// any versioned dep is still not met by its node.
+        fn checkConstraints(self: *Self) !void {
+            for (self.constraints.items) |edge| {
+                const node = self.constrainedNode(edge.dep) orelse continue;
+                if (self.nodeSatisfies(node, edge.dep)) continue;
+                self.unresolved = .{
+                    .dep = edge.dep,
+                    .required_by = edge.parent,
+                    .found_version = node.meta.version,
+                };
+                return error.UnresolvableDependency;
+            }
+        }
+
+        /// The graph node a versioned dep must satisfy, or null when it can't
+        /// be checked: the name was resolved through a provider (aliases;
+        /// provision versions are not tracked) or never reached the graph.
+        fn constrainedNode(self: *Self, dep: []const u8) ?*DepGraph.Node {
+            const name = registry_mod.parseDep(dep).name;
+            const node = self.graph.nodes.getPtr(name) orelse return null;
+            if (node.meta.version == null) return null;
+            return node;
+        }
+
+        fn nodeSatisfies(self: *Self, node: *const DepGraph.Node, dep: []const u8) bool {
+            _ = self;
+            const constraint = registry_mod.parseDep(dep).constraint orelse return true;
+            return versionSatisfies(node.meta.version.?, constraint);
+        }
+
+        fn versionSatisfies(ver: []const u8, constraint: version_mod.VersionConstraint) bool {
+            const cmp = RegistryT.vercmp(ver, constraint.version);
+            return switch (constraint.op) {
+                .eq => cmp == 0,
+                .ge => cmp >= 0,
+                .le => cmp <= 0,
+                .gt => cmp > 0,
+                .lt => cmp < 0,
+            };
         }
 
         /// Prefetch full AUR metadata for frontier targets that were resolved locally
@@ -183,6 +315,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
         /// Returns null when the item should be skipped (already visited after redirect).
         fn resolveWithRedirects(
             self: *Self,
+            dep: []const u8,
             name: []const u8,
             resolution: registry_mod.Resolution,
             visited: *const std.StringHashMapUnmanaged(void),
@@ -224,10 +357,17 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                 }
             }
 
-            // Resolve unknown via full cascade
+            // Resolve unknown via full cascade. Keep the dep's constraint
+            // unless a provider redirect changed the name.
             if (actual_resolution.source == .unknown) {
-                const full_res = try self.registry.resolve(actual_name);
+                const query = if (std.mem.eql(u8, actual_name, name)) dep else actual_name;
+                const full_res = try self.registry.resolve(query);
                 if (full_res.source == .unknown) {
+                    self.unresolved = .{
+                        .dep = query,
+                        .required_by = self.required_by.get(dep),
+                        .found_version = full_res.version,
+                    };
                     return error.UnresolvableDependency;
                 }
                 actual_resolution = full_res;
@@ -306,14 +446,35 @@ pub fn SolverImpl(comptime RegistryT: type) type {
             depth: u32,
         ) !void {
             for (deps) |dep| {
-                const dep_name = registry_mod.parseDep(dep).name;
-                try parent_node.edges.put(self.allocator, dep_name, {});
-                if (!visited.contains(dep_name)) {
-                    try next_frontier.append(self.allocator, dep_name);
+                const spec = registry_mod.parseDep(dep);
+                try parent_node.edges.put(self.allocator, spec.name, {});
+
+                const gop = try self.required_by.getOrPut(self.allocator, dep);
+                if (!gop.found_existing) gop.value_ptr.* = parent_node.meta.name;
+                if (spec.constraint != null) {
+                    try self.constraints.append(self.allocator, .{ .dep = dep, .parent = parent_node.meta.name });
+                }
+
+                // Queue the full dep string so the registry sees the constraint.
+                if (!visited.contains(spec.name)) {
+                    try next_frontier.append(self.allocator, dep);
                 } else {
-                    self.graph.updateDepth(dep_name, depth + 1);
+                    self.graph.updateDepth(spec.name, depth + 1);
                 }
             }
+        }
+
+        fn collectAllDeps(
+            self: *Self,
+            next_frontier: *std.ArrayListUnmanaged([]const u8),
+            visited: *const std.StringHashMapUnmanaged(void),
+            node: *DepGraph.Node,
+            pkg: *aur.Package,
+            depth: u32,
+        ) !void {
+            try self.collectDeps(next_frontier, visited, node, pkg.depends, depth);
+            try self.collectDeps(next_frontier, visited, node, pkg.makedepends, depth);
+            try self.collectDeps(next_frontier, visited, node, pkg.checkdepends, depth);
         }
 
         fn isIgnoredPkg(self: *Self, name: []const u8) bool {

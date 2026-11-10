@@ -114,7 +114,7 @@ pub fn clonePackages(self: *QueryContext, targets: []const []const u8) !ExitCode
         defer s.deinit();
 
         const plan = s.resolve(targets) catch |err| {
-            return handleResolveError(err, self.err_writer, ec);
+            return handleResolveError(err, s.unresolved, self.err_writer, ec);
         };
         defer plan.deinit(self.allocator);
 
@@ -191,7 +191,7 @@ pub fn runBuildPipeline(self: *BuildContext, filtered: []const []const u8, mode:
     defer s.deinit();
 
     const plan = s.resolve(filtered) catch |err| {
-        return handleResolveError(err, self.err_writer, ec);
+        return handleResolveError(err, s.unresolved, self.err_writer, ec);
     };
     defer plan.deinit(self.allocator);
 

@@ -41,6 +41,8 @@ pub const MockRegistry = struct {
     /// Names that resolveMany returns as .unknown but resolve() finds
     /// via provider (simulates AUR provider search fallback).
     deferred_providers: std.StringHashMapUnmanaged(MockPackageInfo) = .empty,
+    /// See addUpgrade.
+    upgrades: std.StringHashMapUnmanaged(MockPackageInfo) = .empty,
     arena: std.heap.ArenaAllocator,
     pacman: *MockInstalledSet = undefined,
 
@@ -70,6 +72,7 @@ pub const MockRegistry = struct {
         self.packages.deinit(testing.allocator);
         self.aur_overrides.deinit(testing.allocator);
         self.deferred_providers.deinit(testing.allocator);
+        self.upgrades.deinit(testing.allocator);
         self.pacman.deinit();
         self.arena.deinit();
     }
@@ -165,6 +168,36 @@ pub const MockRegistry = struct {
     }
 
     pub fn addAurPackageWithBase(self: *MockRegistry, name: []const u8, pkgbase: []const u8, depends: []const []const u8, makedepends: []const []const u8) void {
+        const pkg = self.newAurPackage(name, pkgbase, "1.0-1", depends, makedepends);
+        self.packages.put(testing.allocator, name, .{
+            .source = .aur,
+            .version = "1.0-1",
+            .pkgbase = pkgbase,
+            .depends = depends,
+            .makedepends = makedepends,
+            .aur_pkg = pkg,
+        }) catch unreachable;
+    }
+
+    /// Register what resolve() returns for `name` when the regular entry
+    /// fails a dep's version constraint (e.g. a newer sync or AUR version
+    /// of an installed package). Only used if it meets the constraint.
+    pub fn addUpgrade(self: *MockRegistry, name: []const u8, source: registry_mod.Source, version: []const u8, depends: []const []const u8) void {
+        const pkg: ?*aur.Package = if (source == .aur)
+            self.newAurPackage(name, name, version, depends, &.{})
+        else
+            null;
+        self.upgrades.put(testing.allocator, name, .{
+            .source = source,
+            .version = version,
+            .pkgbase = name,
+            .depends = depends,
+            .makedepends = &.{},
+            .aur_pkg = pkg,
+        }) catch unreachable;
+    }
+
+    fn newAurPackage(self: *MockRegistry, name: []const u8, pkgbase: []const u8, version: []const u8, depends: []const []const u8, makedepends: []const []const u8) *aur.Package {
         const alloc = self.arena.allocator();
         const pkg = alloc.create(aur.Package) catch unreachable;
         pkg.* = .{
@@ -172,7 +205,7 @@ pub const MockRegistry = struct {
             .name = name,
             .pkgbase = pkgbase,
             .pkgbase_id = 0,
-            .version = "1.0-1",
+            .version = version,
             .description = null,
             .url = null,
             .url_path = null,
@@ -195,14 +228,7 @@ pub const MockRegistry = struct {
             .licenses = &.{},
             .comaintainers = &.{},
         };
-        self.packages.put(testing.allocator, name, .{
-            .source = .aur,
-            .version = "1.0-1",
-            .pkgbase = pkgbase,
-            .depends = depends,
-            .makedepends = makedepends,
-            .aur_pkg = pkg,
-        }) catch unreachable;
+        return pkg;
     }
 
     /// Register a package as installed locally, but also available in AUR
@@ -491,12 +517,35 @@ pub const MockRegistry = struct {
             }
             return .{ .name = spec.name, .source = .unknown };
         };
+        // Mirror the real registry: exact-name matches must meet the
+        // constraint; fall back to the registered upgrade, if any.
+        if (spec.constraint) |c| {
+            if (info.provider == null and !mockSatisfies(info.version, c)) {
+                if (self.upgrades.get(spec.name)) |up| {
+                    if (mockSatisfies(up.version, c)) {
+                        return .{ .name = spec.name, .source = up.source, .version = up.version, .aur_pkg = up.aur_pkg };
+                    }
+                }
+                return .{ .name = spec.name, .source = .unknown, .version = info.version };
+            }
+        }
         return .{
             .name = spec.name,
             .source = info.source,
             .version = info.version,
             .aur_pkg = info.aur_pkg,
             .provider = info.provider,
+        };
+    }
+
+    fn mockSatisfies(ver: []const u8, c: pacman_mod.VersionConstraint) bool {
+        const cmp = vercmp(ver, c.version);
+        return switch (c.op) {
+            .eq => cmp == 0,
+            .ge => cmp >= 0,
+            .le => cmp <= 0,
+            .gt => cmp > 0,
+            .lt => cmp < 0,
         };
     }
 
