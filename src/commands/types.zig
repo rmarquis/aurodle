@@ -63,6 +63,8 @@ pub const SortField = enum {
 pub const FailedBuild = struct {
     pkgbase: []const u8,
     exit_code: u32,
+    /// Not built because an AUR dependency failed; exit_code is meaningless.
+    skipped: bool = false,
 };
 
 pub const BuildResult = struct {

@@ -6,12 +6,12 @@ const repo_mod = @import("../repo.zig");
 const utils = @import("../utils.zig");
 const registry_mod = @import("../registry.zig");
 const pacman_mod = @import("../pacman.zig");
+const plan_mod = @import("../plan.zig");
 const color = @import("../color.zig");
 const types = @import("types.zig");
 const build_ctx = @import("build_context.zig");
 
 const BuildContext = build_ctx.BuildContext;
-const BuildResult = types.BuildResult;
 
 /// Acquire privilege credentials and start the keepalive thread.
 /// Called after the user has confirmed the plan and reviewed PKGBUILDs,
@@ -149,20 +149,22 @@ pub fn preInstallProviders(self: *BuildContext, pkg_names: []const []const u8) !
     return true;
 }
 
-/// Filter the AUR targets list down to packages whose builds succeeded.
-pub fn filterInstallable(self: *BuildContext, targets: []const []const u8, result: BuildResult) ![]const []const u8 {
+/// Collect the target names of every build entry whose pkgbase neither
+/// failed nor was skipped. Matching is per entry (pkgbase), so split
+/// packages whose names differ from their pkgbase are filtered correctly.
+pub fn filterInstallable(allocator: Allocator, build_order: []const plan_mod.BuildEntry, failed: []const types.FailedBuild) ![]const []const u8 {
     var failed_set: std.StringHashMapUnmanaged(void) = .empty;
-    defer failed_set.deinit(self.allocator);
-    for (result.failed) |f| {
-        try failed_set.put(self.allocator, f.pkgbase, {});
+    defer failed_set.deinit(allocator);
+    for (failed) |f| {
+        try failed_set.put(allocator, f.pkgbase, {});
     }
     var installable: std.ArrayListUnmanaged([]const u8) = .empty;
-    for (targets) |target| {
-        if (!failed_set.contains(target)) {
-            try installable.append(self.allocator, target);
-        }
+    errdefer installable.deinit(allocator);
+    for (build_order) |entry| {
+        if (failed_set.contains(entry.pkgbase)) continue;
+        try installable.appendSlice(allocator, entry.target_names);
     }
-    return try installable.toOwnedSlice(self.allocator);
+    return try installable.toOwnedSlice(allocator);
 }
 
 /// Delete package files from pacman's pkg cache so a rebuild with the same

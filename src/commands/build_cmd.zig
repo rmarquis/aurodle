@@ -297,7 +297,7 @@ pub fn runBuildPipeline(self: *BuildContext, filtered: []const []const u8, mode:
         if (build_result.failed.len == 0) {
             try install_phase.installAllTargets(self, aur_targets.items, plan.repo_targets);
         } else {
-            const installable = try install_phase.filterInstallable(self, aur_targets.items, build_result);
+            const installable = try install_phase.filterInstallable(self.allocator, plan.build_order, build_result.failed);
             defer self.allocator.free(installable);
             if (installable.len > 0 or plan.repo_targets.len > 0) {
                 try install_phase.installAllTargets(self, installable, plan.repo_targets);
@@ -468,7 +468,11 @@ fn printBuildSummary(result: BuildResult, err_writer: types.ErrWriter, ec: color
         ec.blue, ec.reset, result.succeeded.len, result.failed.len,
     }) catch {};
     for (result.failed) |f| {
-        err_writer.print("  {s}FAILED:{s} {s} (exit {d})\n", .{ ec.red, ec.reset, f.pkgbase, f.exit_code }) catch {};
+        if (f.skipped) {
+            err_writer.print("  {s}SKIPPED:{s} {s} (dependency failed)\n", .{ ec.yellow, ec.reset, f.pkgbase }) catch {};
+        } else {
+            err_writer.print("  {s}FAILED:{s} {s} (exit {d})\n", .{ ec.red, ec.reset, f.pkgbase, f.exit_code }) catch {};
+        }
     }
 }
 
@@ -514,6 +518,23 @@ test "hasFailedDep returns false when unrelated pkgbase is failed" {
     defer failed.deinit(testing.allocator);
     try failed.put(testing.allocator, "baz", {});
     try testing.expect(!build_phase.hasFailedDep(entry, &failed));
+}
+
+test "filterInstallable drops failed and skipped pkgbases, matching split packages by entry" {
+    const entries = [_]solver_mod.BuildEntry{
+        // Split pkgbase whose target names differ from the pkgbase.
+        .{ .name = "foo-a", .pkgbase = "foo", .version = "1.0", .is_target = true, .target_names = &.{ "foo-a", "foo-b" } },
+        .{ .name = "bar", .pkgbase = "bar", .version = "1.0", .is_target = true, .target_names = &.{"bar"}, .aur_dep_bases = &.{"foo"} },
+        .{ .name = "baz", .pkgbase = "baz", .version = "1.0", .is_target = true, .target_names = &.{"baz"} },
+    };
+    const failed = [_]FailedBuild{
+        .{ .pkgbase = "foo", .exit_code = 4 },
+        .{ .pkgbase = "bar", .exit_code = 0, .skipped = true },
+    };
+    const installable = try install_phase.filterInstallable(testing.allocator, &entries, &failed);
+    defer testing.allocator.free(installable);
+    try testing.expectEqual(@as(usize, 1), installable.len);
+    try testing.expectEqualStrings("baz", installable[0]);
 }
 
 test "anySubsequentEntryNeeds returns true when future entry depends on pkgbase" {

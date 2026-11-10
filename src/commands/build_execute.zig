@@ -227,6 +227,7 @@ pub fn buildLoop(
         if (hasFailedDep(entry, &failed_bases)) {
             self.err_writer.print("{s}::{s} skipping {s} -- a dependency failed to build\n", .{ ec.yellow, ec.reset, entry.name }) catch {};
             try failed_bases.put(self.allocator, entry.pkgbase, {});
+            try failed.append(self.allocator, .{ .pkgbase = entry.pkgbase, .exit_code = 0, .skipped = true });
             continue;
         }
 
