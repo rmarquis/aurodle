@@ -294,6 +294,12 @@ pub fn buildLoop(
         built_pkg_paths.deinit(self.allocator);
     }
 
+    // Package files already in the repo, for the VCS pre-check below.
+    // Listed on first use and dropped after every build, which changes
+    // PKGDEST (new files, repo-add -R removing old ones).
+    var repo_versions: ?repo_mod.PackageVersions = null;
+    defer if (repo_versions) |*v| v.deinit();
+
     for (plan.build_order, 0..) |entry, i| {
         if (hasFailedDep(entry, &failed_bases)) {
             self.err_writer.print("{s}::{s} skipping {s} -- a dependency failed to build\n", .{ ec.yellow, ec.reset, entry.name }) catch {};
@@ -326,7 +332,8 @@ pub fn buildLoop(
             !self.flags.chroot and
             if (is_vcs) blk: {
                 const hint = self.devel_version_hint.get(entry.name) orelse break :blk false;
-                break :blk repository.hasPackageVersion(entry.name, hint);
+                if (repo_versions == null) repo_versions = repository.packageVersions() catch break :blk false;
+                break :blk repo_versions.?.contains(entry.name, hint);
             } else allPackagesBuilt(pkglist);
 
         // Built files are written after this point. The margin absorbs
@@ -354,6 +361,12 @@ pub fn buildLoop(
                     &.{ "makepkg", "-s", "--noconfirm" };
                 break :blk try utils.runInteractive(self.allocator, args, clone_dir);
             };
+
+            // makepkg ran, so PKGDEST may have changed.
+            if (repo_versions) |*v| {
+                v.deinit();
+                repo_versions = null;
+            }
 
             // exit 13 = E_ALREADY_BUILT: pkgver() ran and updated the PKGBUILD,
             // but the output file already exists in PKGDEST. Fall through to

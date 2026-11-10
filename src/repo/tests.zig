@@ -669,3 +669,35 @@ test "Repository paths are correct" {
     try testing.expect(std.mem.endsWith(u8, r.repo_dir, "/" ++ DEFAULT_REPO_NAME));
     try testing.expect(std.mem.endsWith(u8, r.db_path, "/" ++ DEFAULT_REPO_NAME ++ "/" ++ DEFAULT_REPO_NAME ++ ".db.tar.xz"));
 }
+
+test "packageVersions lists package files by name and version" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_path = try getTmpPath(tmp);
+    defer testing.allocator.free(tmp_path);
+
+    var r = try Repository.initWithRoot(testing.allocator, testing.io, tmp_path);
+    defer r.deinit();
+    try r.ensureExists();
+
+    const dir = try std.Io.Dir.cwd().openDir(testing.io, r.repo_dir, .{});
+    defer dir.close(testing.io);
+    for ([_][]const u8{
+        "foo-git-1.0.r5.gabc-1-x86_64.pkg.tar.zst",
+        "lib32-bar-2:3.1-2-any.pkg.tar.xz",
+        "notes.txt",
+    }) |name| try dir.writeFile(testing.io, .{ .sub_path = name, .data = "" });
+    // The repo database is not a package.
+    const db_name = try std.fmt.allocPrint(testing.allocator, "{s}.db.tar.xz", .{r.repo_name});
+    defer testing.allocator.free(db_name);
+    try dir.writeFile(testing.io, .{ .sub_path = db_name, .data = "" });
+
+    var versions = try r.packageVersions();
+    defer versions.deinit();
+
+    try testing.expect(versions.contains("foo-git", "1.0.r5.gabc-1"));
+    try testing.expect(versions.contains("lib32-bar", "2:3.1-2"));
+    try testing.expect(!versions.contains("foo-git", "1.0.r6.gdef-1"));
+    try testing.expect(!versions.contains("foo", "git-1.0.r5.gabc-1"));
+    try testing.expectEqual(@as(u32, 2), versions.set.count());
+}

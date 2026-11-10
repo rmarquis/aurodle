@@ -58,6 +58,35 @@ const DbSnapshot = struct {
 
 // ── Repository ───────────────────────────────────────────────────────────
 
+/// Result of Repository.packageVersions.
+pub const PackageVersions = struct {
+    arena: std.heap.ArenaAllocator,
+    set: std.HashMapUnmanaged(Key, void, KeyContext, std.hash_map.default_max_load_percentage) = .empty,
+
+    const Key = struct { name: []const u8, version: []const u8 };
+    const KeyContext = struct {
+        pub fn hash(_: KeyContext, k: Key) u64 {
+            var h = std.hash.Wyhash.init(0);
+            h.update(k.name);
+            h.update(&.{0});
+            h.update(k.version);
+            return h.final();
+        }
+        pub fn eql(_: KeyContext, a: Key, b: Key) bool {
+            return std.mem.eql(u8, a.name, b.name) and std.mem.eql(u8, a.version, b.version);
+        }
+    };
+
+    /// Is there a package file for `name` at exactly `version`?
+    pub fn contains(self: *const PackageVersions, name: []const u8, version: []const u8) bool {
+        return self.set.contains(.{ .name = name, .version = version });
+    }
+
+    pub fn deinit(self: *PackageVersions) void {
+        self.arena.deinit();
+    }
+};
+
 pub const Repository = struct {
     allocator: Allocator,
     io: std.Io,
@@ -278,22 +307,31 @@ pub const Repository = struct {
         return packages.toOwnedSlice(self.allocator);
     }
 
-    /// Return true if a package file for `name` at exactly `version` already
-    /// exists in the repository directory.  Used to skip VCS rebuilds when the
-    /// devel-computed version matches what is already in the local repo.
-    pub fn hasPackageVersion(self: *const Repository, name: []const u8, version: []const u8) bool {
-        var dir = std.Io.Dir.openDir(std.Io.Dir.cwd(), self.io, self.repo_dir, .{ .iterate = true }) catch return false;
+    /// Snapshot of the package files in the repository directory, by name
+    /// and version. Used to skip VCS rebuilds when the devel-computed
+    /// version is already in the local repo, with one directory listing
+    /// for any number of lookups. It does not see later changes (a build,
+    /// repo-add -R): take a new one after those. Caller deinits.
+    pub fn packageVersions(self: *const Repository) !PackageVersions {
+        var result: PackageVersions = .{ .arena = .init(self.allocator) };
+        errdefer result.deinit();
+        const arena = result.arena.allocator();
+
+        var dir = try std.Io.Dir.openDir(std.Io.Dir.cwd(), self.io, self.repo_dir, .{ .iterate = true });
         defer dir.close(self.io);
         var it = dir.iterate();
-        while (it.next(self.io) catch return false) |entry| {
+        while (try it.next(self.io)) |entry| {
             if (entry.kind != .file) continue;
             if (std.mem.indexOf(u8, entry.name, ".pkg.tar.") == null) continue;
             if (self.isDbFile(entry.name)) continue;
-            if (parsePackageFilename(entry.name)) |parsed| {
-                if (std.mem.eql(u8, parsed.name, name) and std.mem.eql(u8, parsed.version, version)) return true;
-            }
+            const parsed = parsePackageFilename(entry.name) orelse continue;
+            // entry.name is only valid until the next iteration.
+            try result.set.put(arena, .{
+                .name = try arena.dupe(u8, parsed.name),
+                .version = try arena.dupe(u8, parsed.version),
+            }, {});
         }
-        return false;
+        return result;
     }
 
     // ── Configuration Check ──────────────────────────────────────────────
