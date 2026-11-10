@@ -268,7 +268,15 @@ pub fn runBuildPipeline(self: *BuildContext, filtered: []const []const u8, mode:
     defer self.allocator.free(repo_deps_full);
 
     // Phase 2: Display and confirm
-    displayPlan(plan, repo_deps_full, self.pacman, removals, self.err_writer, self.stdout_color, ec, &self.devel_version_hint);
+    displayPlan(plan, .{
+        .repo_deps = repo_deps_full,
+        .removals = removals,
+        .pacman = self.pacman,
+        .devel_versions = &self.devel_version_hint,
+        .err_writer = self.err_writer,
+        .stdout_color = self.stdout_color,
+        .stderr_color = ec,
+    });
 
     const prompt: []const u8 = switch (mode) {
         .sync => "Proceed with installation?",

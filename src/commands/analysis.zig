@@ -31,7 +31,14 @@ pub fn resolve(self: *BuildContext, targets: []const []const u8) !ExitCode {
     };
     defer plan.deinit(self.allocator);
 
-    displayPlan(plan, plan.repo_deps, self.pacman, &.{}, self.err_writer, self.stdout_color, ec, &self.devel_version_hint);
+    displayPlan(plan, .{
+        .repo_deps = plan.repo_deps,
+        .pacman = self.pacman,
+        .devel_versions = &self.devel_version_hint,
+        .err_writer = self.err_writer,
+        .stdout_color = self.stdout_color,
+        .stderr_color = ec,
+    });
     return .success;
 }
 

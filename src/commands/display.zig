@@ -66,7 +66,30 @@ const ColWidths = struct {
 
 // ── Public API ───────────────────────────────────────────────────────
 
-pub fn displayPlan(plan: plan_mod.BuildPlan, repo_deps_full: []const []const u8, pm: ?*pacman_mod.Pacman, removals: []const []const u8, err_writer: types.ErrWriter, c: color.Style, ec: color.Style, hint: *const std.StringHashMapUnmanaged([]const u8)) void {
+/// Everything displayPlan needs besides the plan. Named fields keep the
+/// two colour styles and the package lists from being swapped.
+pub const PlanDisplay = struct {
+    /// Every official-repo package to install, transitive deps included.
+    repo_deps: []const []const u8,
+    /// Installed packages to remove because of conflicts.
+    removals: []const []const u8 = &.{},
+    /// For sizes, old versions and VerbosePkgLists; null shows less.
+    pacman: ?*pacman_mod.Pacman,
+    /// Versions computed by `--devel`, by package name.
+    devel_versions: *const std.StringHashMapUnmanaged([]const u8),
+    err_writer: types.ErrWriter,
+    stdout_color: color.Style,
+    stderr_color: color.Style,
+};
+
+pub fn displayPlan(plan: plan_mod.BuildPlan, opts: PlanDisplay) void {
+    const repo_deps_full = opts.repo_deps;
+    const pm = opts.pacman;
+    const removals = opts.removals;
+    const err_writer = opts.err_writer;
+    const c = opts.stdout_color;
+    const ec = opts.stderr_color;
+    const hint = opts.devel_versions;
     const stdout = getStdout();
     const verbose = if (pm) |p| p.verbose_pkg_lists else false;
 
