@@ -7,6 +7,7 @@ const repo_mod = @import("../repo.zig");
 const auth_mod = @import("../auth.zig");
 const color = @import("../color.zig");
 const types = @import("types.zig");
+const solver_mod = @import("../solver.zig");
 
 pub const BuildContext = struct {
     allocator: Allocator,
@@ -56,8 +57,34 @@ pub const BuildContext = struct {
             .err_writer = types.defaultErrWriter(),
         };
     }
+
+    /// A solver set up from the command-line flags. Every command that
+    /// shows or builds a plan (resolve, buildorder, sync, build, upgrade)
+    /// uses it, so they all agree on what would be built.
+    /// Caller deinits; the plan it returns borrows from it.
+    pub fn newSolver(self: *const BuildContext) solver_mod.Solver {
+        var s = solver_mod.Solver.init(self.allocator, self.registry);
+        s.rebuild = self.flags.rebuild;
+        s.needed = self.flags.needed;
+        s.ignore = self.flags.ignore;
+        return s;
+    }
 };
 
 test {
     std.testing.refAllDecls(@This());
+}
+
+test "newSolver applies the flags that change the plan" {
+    var ctx: BuildContext = undefined;
+    ctx.allocator = std.testing.allocator;
+    ctx.registry = undefined;
+    ctx.flags = .{ .rebuild = true, .needed = true, .ignore = &.{"foo"} };
+
+    var s = ctx.newSolver();
+    defer s.deinit();
+    try std.testing.expect(s.rebuild);
+    try std.testing.expect(s.needed);
+    try std.testing.expectEqual(@as(usize, 1), s.ignore.len);
+    try std.testing.expectEqualStrings("foo", s.ignore[0]);
 }

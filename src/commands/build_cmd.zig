@@ -218,15 +218,11 @@ pub fn build(self: *BuildContext, targets: []const []const u8) !ExitCode {
 ///         build -> [install].  The final install phase runs only in .sync mode.
 pub fn runBuildPipeline(self: *BuildContext, filtered: []const []const u8, mode: BuildMode) !ExitCode {
     const ec = self.stderr_color;
-    const reg = self.registry;
     const repository = self.repository;
     const c_root = self.cache_root;
 
     // Phase 1: Resolve
-    var s = solver_mod.Solver.init(self.allocator, reg);
-    s.rebuild = self.flags.rebuild;
-    s.needed = self.flags.needed;
-    s.ignore = self.flags.ignore;
+    var s = self.newSolver();
     defer s.deinit();
 
     const plan = s.resolve(filtered) catch |err| {

@@ -36,4 +36,5 @@ test {
     _ = @import("registry/tests.zig");
     _ = @import("repo/tests.zig");
     _ = @import("solver/tests.zig");
+    _ = @import("commands/build_context.zig");
 }
