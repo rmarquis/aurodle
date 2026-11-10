@@ -20,7 +20,10 @@ const BuildContext = build_ctx.BuildContext;
 pub fn acquireAuth(self: *BuildContext) !?types.ExitCode {
     const auth = self.auth;
     const ec = self.stderr_color;
-    const cred_exit = auth.acquireCredentials() catch 0;
+    const cred_exit = auth.acquireCredentials() catch |err| {
+        self.err_writer.print("{s}error:{s} credential acquisition failed: {}\n", .{ ec.red, ec.reset, err }) catch {};
+        return .general_error;
+    };
     if (cred_exit != 0) {
         self.err_writer.print("{s}error:{s} credential acquisition failed\n", .{ ec.red, ec.reset }) catch {};
         return .general_error;
