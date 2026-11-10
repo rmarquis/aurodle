@@ -90,8 +90,8 @@ pub const Handle = struct {
     pub fn init(root: []const u8, dbpath: []const u8) AlpmError!Handle {
         var err: c.alpm_errno_t = 0;
 
-        const c_root = CStringBuf.init(root);
-        const c_dbpath = CStringBuf.init(dbpath);
+        const c_root = CStringBuf.init(root) catch return error.InvalidArgument;
+        const c_dbpath = CStringBuf.init(dbpath) catch return error.InvalidArgument;
 
         const handle = c.alpm_initialize(c_root.ptr(), c_dbpath.ptr(), &err);
         if (handle == null) return error.HandleInitFailed;
@@ -110,7 +110,7 @@ pub const Handle = struct {
 
     /// Register a sync database by name (e.g., "core", "extra", "aurpkgs").
     pub fn registerSyncDb(self: Handle, name: []const u8, siglevel: SigLevel) AlpmError!Database {
-        const c_name = CStringBuf.init(name);
+        const c_name = CStringBuf.init(name) catch return error.InvalidArgument;
         const db = c.alpm_register_syncdb(self.raw, c_name.ptr(), @intFromEnum(siglevel));
         if (db == null) return error.DatabaseRegistrationFailed;
         return .{ .raw = db.? };
@@ -142,9 +142,10 @@ pub const Database = struct {
         return std.mem.span(c.alpm_db_get_name(self.raw).?);
     }
 
-    /// Look up a package by exact name. Returns null if not found.
+    /// Look up a package by exact name. Returns null if not found
+    /// (including for names too long to be a package name).
     pub fn getPackage(self: Database, name: []const u8) ?AlpmPackage {
-        const c_name = CStringBuf.init(name);
+        const c_name = CStringBuf.init(name) catch return null;
         const pkg = c.alpm_db_get_pkg(self.raw, c_name.ptr());
         if (pkg == null) return null;
         return .{ .raw = pkg.? };
@@ -158,7 +159,7 @@ pub const Database = struct {
     /// Add a mirror server URL to this database.
     /// Required before dbUpdate() can download database files.
     pub fn addServer(self: Database, url: []const u8) AlpmError!void {
-        const c_url = CStringBuf.init(url);
+        const c_url = CStringBuf.init(url) catch return error.InvalidArgument;
         const ret = c.alpm_db_add_server(self.raw, c_url.ptr());
         if (ret != 0) return error.InvalidArgument;
     }
@@ -235,17 +236,27 @@ pub const AlpmPackage = struct {
 /// Returns: negative if a < b, 0 if equal, positive if a > b.
 /// Handles epochs, pkgrel, and alpha/beta suffixes correctly.
 /// Pure function — no handle needed.
+/// Strings too long for CStringBuf are never valid versions; they are
+/// compared bytewise so the result stays deterministic instead of crashing.
 pub fn vercmp(a: []const u8, b: []const u8) i32 {
-    const c_a = CStringBuf.init(a);
-    const c_b = CStringBuf.init(b);
+    const c_a = CStringBuf.init(a) catch return orderToInt(std.mem.order(u8, a, b));
+    const c_b = CStringBuf.init(b) catch return orderToInt(std.mem.order(u8, a, b));
     return c.alpm_pkg_vercmp(c_a.ptr(), c_b.ptr());
+}
+
+fn orderToInt(order: std.math.Order) i32 {
+    return switch (order) {
+        .lt => -1,
+        .eq => 0,
+        .gt => 1,
+    };
 }
 
 /// Find a package that satisfies a dependency string in a package list.
 /// Uses libalpm's native satisfier which checks both name and provides.
-/// Returns null if no satisfier found.
+/// Returns null if no satisfier found (including for an over-long depstring).
 pub fn findSatisfier(pkgcache: PackageIterator, depstring: []const u8) ?AlpmPackage {
-    const c_dep = CStringBuf.init(depstring);
+    const c_dep = CStringBuf.init(depstring) catch return null;
     const pkg = c.alpm_find_satisfier(pkgcache.current, c_dep.ptr());
     if (pkg == null) return null;
     return .{ .raw = pkg.? };
@@ -254,18 +265,20 @@ pub fn findSatisfier(pkgcache: PackageIterator, depstring: []const u8) ?AlpmPack
 // ── Internal Helpers ─────────────────────────────────────────────────────
 
 /// Null-terminated stack buffer for Zig slice → C string conversion.
-/// Package names and paths in the alpm API are always short (< 256 bytes).
+/// Sized for paths and URLs (PATH_MAX). Inputs can come from the command
+/// line or the AUR, so overflow is an error for the caller to handle, not
+/// a panic.
 const CStringBuf = struct {
-    buf: [256]u8 = @splat(0),
+    const capacity = 4096;
+
+    buf: [capacity]u8 = undefined,
     len: usize = 0,
 
-    fn init(s: []const u8) CStringBuf {
+    fn init(s: []const u8) error{NameTooLong}!CStringBuf {
+        if (s.len >= capacity) return error.NameTooLong;
         var result = CStringBuf{ .len = s.len };
-        if (s.len >= result.buf.len) {
-            @panic("string exceeds alpm CStringBuf buffer (256 bytes)");
-        }
         @memcpy(result.buf[0..s.len], s);
-        // buf is zero-initialized, so buf[s.len] is already 0
+        result.buf[s.len] = 0;
         return result;
     }
 
@@ -502,15 +515,27 @@ test "vercmp: transitivity property" {
 
 test "CStringBuf roundtrip preserves content" {
     const input = "test-package";
-    const cstr = CStringBuf.init(input);
+    const cstr = try CStringBuf.init(input);
     const back = std.mem.span(cstr.ptr());
     try std.testing.expectEqualStrings(input, back);
 }
 
 test "CStringBuf handles empty string" {
-    const cstr = CStringBuf.init("");
+    const cstr = try CStringBuf.init("");
     const back = std.mem.span(cstr.ptr());
     try std.testing.expectEqualStrings("", back);
+}
+
+test "CStringBuf rejects strings that don't fit" {
+    const long: [CStringBuf.capacity]u8 = @splat('x');
+    try std.testing.expectError(error.NameTooLong, CStringBuf.init(&long));
+    _ = try CStringBuf.init(long[0 .. CStringBuf.capacity - 1]);
+}
+
+test "vercmp does not crash on over-long input" {
+    const long: [CStringBuf.capacity + 1]u8 = @splat('1');
+    try std.testing.expect(vercmp(&long, "2") < 0);
+    try std.testing.expect(vercmp("2", &long) > 0);
 }
 
 test "findSatisfier finds package by name in local db" {
