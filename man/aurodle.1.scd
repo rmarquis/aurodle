@@ -288,6 +288,18 @@ Before building, aurodle shows the PKGBUILD and install scripts for each
 package. Use *--noshow* to skip this step or *--noconfirm* to also skip
 the confirmation prompt.
 
+Updates are fetched without being applied, so each clone stays at the
+version last accepted. A package cloned for the first time is shown in
+full. When the AUR has new commits, the review shows the diff from the
+version last accepted, even if they were fetched during an earlier,
+interrupted run; they are applied once the review is done. When nothing
+changed, aurodle says so and offers the local changes instead, such as
+the _pkgver_ that *makepkg*(8) rewrote for a VCS package. Use *show* to
+view all files.
+
+With *--devel*, version checks run on the version last accepted: new AUR
+commits are only applied after the review.
+
 ## Conflict detection
 
 Before building, aurodle checks for conflicts between packages being

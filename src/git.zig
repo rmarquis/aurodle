@@ -9,7 +9,19 @@ pub const DEFAULT_CACHE_SUBDIR = ".cache/aurodle";
 
 pub const CloneResult = enum { cloned, already_exists };
 pub const UpdateResult = enum { updated, up_to_date };
-pub const CloneOrUpdateResult = enum { cloned, updated, up_to_date, reCloned };
+/// Result of cloneOrFetch.
+pub const CloneOrFetchResult = enum {
+    /// Freshly cloned: there is no earlier version to compare with.
+    cloned,
+    /// The cached clone was invalid and has been cloned again.
+    reCloned,
+    /// The AUR has commits beyond HEAD. They are fetched but not applied:
+    /// HEAD stays at the version last accepted, so `HEAD..@{upstream}` is
+    /// what changed since. applyUpstream moves to them.
+    pending,
+    /// HEAD is the AUR's current state.
+    unchanged,
+};
 
 pub const FileEntry = struct {
     name: []const u8,
@@ -129,42 +141,50 @@ pub fn clone(allocator: Allocator, cache_root: []const u8, pkgbase: []const u8) 
     return .cloned;
 }
 
-/// Update an existing clone to the AUR's current state (fetch, then reset
-/// to the upstream branch if it moved). Local edits are kept when nothing
-/// changed and discarded otherwise.
-/// Returns .updated if HEAD changed, .up_to_date if unchanged.
+/// Update an existing clone to the AUR's current state: fetch, then
+/// applyUpstream. Returns .updated if HEAD changed, .up_to_date if not.
 pub fn update(allocator: Allocator, cache_root: []const u8, pkgbase: []const u8) !UpdateResult {
     const dest = try cloneDir(allocator, cache_root, pkgbase);
     defer allocator.free(dest);
 
     if (!dirExists(dest)) return error.NotCloned;
-    return updateIn(allocator, dest);
+    _ = try fetchIn(allocator, dest);
+    return if (try applyIn(allocator, dest)) .updated else .up_to_date;
 }
 
-/// Clone if not present, update if already cloned.
-/// If the existing directory is a corrupt/invalid repository, it is deleted and re-cloned.
-pub fn cloneOrUpdate(allocator: Allocator, cache_root: []const u8, pkgbase: []const u8) !CloneOrUpdateResult {
+/// Clone if not present, otherwise fetch the AUR's state without
+/// touching HEAD or the working tree (see CloneOrFetchResult.pending).
+/// If the existing directory is a corrupt/invalid repository, it is
+/// deleted and re-cloned.
+pub fn cloneOrFetch(allocator: Allocator, cache_root: []const u8, pkgbase: []const u8) !CloneOrFetchResult {
     const dest = try cloneDir(allocator, cache_root, pkgbase);
     defer allocator.free(dest);
 
-    if (dirExists(dest)) {
-        if (updateIn(allocator, dest)) |result| {
-            return switch (result) {
-                .updated => .updated,
-                .up_to_date => .up_to_date,
-            };
-        } else |err| switch (err) {
-            error.InvalidRepository => {
-                std.Io.Dir.deleteTree(std.Io.Dir.cwd(), std.Options.debug_io, dest) catch {};
-                _ = try clone(allocator, cache_root, pkgbase);
-                return .reCloned;
-            },
-            else => return err,
-        }
-    } else {
+    if (!dirExists(dest)) {
         _ = try clone(allocator, cache_root, pkgbase);
         return .cloned;
     }
+    if (fetchIn(allocator, dest)) |pending| {
+        return if (pending) .pending else .unchanged;
+    } else |err| switch (err) {
+        error.InvalidRepository => {
+            std.Io.Dir.deleteTree(std.Io.Dir.cwd(), std.Options.debug_io, dest) catch {};
+            _ = try clone(allocator, cache_root, pkgbase);
+            return .reCloned;
+        },
+        else => return err,
+    }
+}
+
+/// Move a clone to the fetched AUR state, once its changes have been
+/// accepted. Does nothing if HEAD is already there. Returns true if HEAD
+/// moved.
+pub fn applyUpstream(allocator: Allocator, cache_root: []const u8, pkgbase: []const u8) !bool {
+    const dest = try cloneDir(allocator, cache_root, pkgbase);
+    defer allocator.free(dest);
+
+    if (!dirExists(dest)) return error.NotCloned;
+    return applyIn(allocator, dest);
 }
 
 /// List all tracked files in the clone directory.
@@ -244,29 +264,39 @@ pub fn readFile(allocator: Allocator, cache_root: []const u8, pkgbase: []const u
 
 // ── Internal Helpers ────────────────────────────────────────────────────
 
-fn updateIn(allocator: Allocator, dest: []const u8) !UpdateResult {
+/// `git fetch`. Returns true if the upstream branch now has commits
+/// beyond HEAD.
+fn fetchIn(allocator: Allocator, dest: []const u8) !bool {
     const fetch = try utils.runCommandIn(allocator, &.{ "git", "fetch", "--quiet" }, dest);
     defer fetch.deinit(allocator);
     if (!fetch.success()) return error.PullFailed;
+    return !try headIsUpstream(allocator, dest);
+}
 
+/// Move HEAD and the working tree to the upstream branch, unless HEAD
+/// is already there. Returns true if HEAD moved.
+fn applyIn(allocator: Allocator, dest: []const u8) !bool {
+    // Nothing new: leave the working tree alone. makepkg rewrites pkgver
+    // in the PKGBUILD of VCS packages, and later --holdver/--noextract
+    // builds rely on that edit.
+    if (try headIsUpstream(allocator, dest)) return false;
+
+    // `git merge --ff-only` (or pull) refuses to update a file that was
+    // modified locally, which is always the case for a VCS package's
+    // PKGBUILD after a build. reset discards local edits instead (makepkg
+    // recreates the pkgver one) and follows a rewritten AUR history.
+    const reset = try utils.runCommandIn(allocator, &.{ "git", "reset", "--hard", "--quiet", "@{upstream}" }, dest);
+    defer reset.deinit(allocator);
+    if (!reset.success()) return error.PullFailed;
+    return true;
+}
+
+fn headIsUpstream(allocator: Allocator, dest: []const u8) !bool {
     const head = try getHead(allocator, dest);
     defer allocator.free(head);
     const upstream = getUpstream(allocator, dest) catch return error.PullFailed;
     defer allocator.free(upstream);
-
-    // Nothing new: leave the working tree alone. makepkg rewrites pkgver
-    // in the PKGBUILD of VCS packages, and later --holdver/--noextract
-    // builds rely on that edit.
-    if (std.mem.eql(u8, head, upstream)) return .up_to_date;
-
-    // Move to the AUR's version. `git pull --ff-only` refuses to when a
-    // file it updates was modified locally, which is always the case for
-    // a VCS package's PKGBUILD after a build. reset also sets ORIG_HEAD
-    // to the previous HEAD, as pull did.
-    const reset = try utils.runCommandIn(allocator, &.{ "git", "reset", "--hard", "--quiet", "@{upstream}" }, dest);
-    defer reset.deinit(allocator);
-    if (!reset.success()) return error.PullFailed;
-    return .updated;
+    return std.mem.eql(u8, head, upstream);
 }
 
 /// Commit id of the branch's upstream (the fetched AUR state).

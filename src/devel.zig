@@ -25,7 +25,7 @@ pub const VersionCheck = struct {
     prepared_stamp: ?i96,
 };
 
-/// Clone/update an AUR package, run `makepkg --nobuild` to execute pkgver(),
+/// Clone an AUR package if needed, run `makepkg --nobuild` to execute pkgver(),
 /// then run `makepkg --printsrcinfo` to get the resulting version string.
 ///
 /// Returns null on failure. Caller owns the returned version string.
@@ -34,8 +34,11 @@ pub fn checkVersion(
     cache_root: []const u8,
     pkgbase: []const u8,
 ) !?VersionCheck {
-    // Ensure clone exists and is up to date
-    _ = git.cloneOrUpdate(allocator, cache_root, pkgbase) catch {
+    // Check the version the user last accepted: AUR changes are fetched
+    // and reviewed by the build pipeline, not applied here, since makepkg
+    // runs the PKGBUILD's code. Only a missing clone is created (there is
+    // nothing older to run).
+    _ = git.clone(allocator, cache_root, pkgbase) catch {
         return null;
     };
 

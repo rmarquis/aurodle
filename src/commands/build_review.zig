@@ -20,64 +20,85 @@ pub fn getViewer() []const u8 {
     return "vim";
 }
 
-/// For each build entry: if the clone was just updated show an interactive diff,
-/// otherwise open all files in the viewer for fresh-clone review.
-/// `clone_results[i]` is the result of cloning/updating `entries[i]` in this
-/// run. ORIG_HEAD alone can't tell: git leaves it behind after every pull,
-/// so it exists for clones that did not change this time.
+/// Review each build entry's AUR files against the version last accepted
+/// (the clone's HEAD; see git.CloneOrFetchResult):
+/// - fresh clone: open all files in the viewer;
+/// - AUR changes pending: show `git diff HEAD @{upstream}`, every change
+///   since the last accepted version, however many runs ago it was fetched;
+/// - nothing new: say so, and offer the local changes (`git diff HEAD`),
+///   which for a VCS package is the pkgver line makepkg rewrote.
+/// `clone_results[i]` is the clone/fetch result for `entries[i]`.
 pub fn reviewPackages(
     self: *BuildContext,
     entries: []const plan_mod.BuildEntry,
-    clone_results: []const git.CloneOrUpdateResult,
+    clone_results: []const git.CloneOrFetchResult,
     c_root: []const u8,
 ) !void {
     std.debug.assert(entries.len == clone_results.len);
-    const stdout = types.getStdout();
-    const sc = self.stdout_color;
-    const editor = getViewer();
 
     for (entries, clone_results) |entry, clone_result| {
         const clone_dir = try git.cloneDir(self.allocator, c_root, entry.pkgbase);
         defer self.allocator.free(clone_dir);
 
-        const is_update = clone_result == .updated;
-
-        if (is_update) {
-            const msg = try std.fmt.allocPrint(self.allocator, "View {s} diff?", .{entry.pkgbase});
-            defer self.allocator.free(msg);
-
-            if (try utils.promptYesNoStyled(self.stdout_color, msg)) {
-                const exit_code = utils.runInteractive(
-                    self.allocator,
-                    &.{ "git", "diff", "--color=always", "ORIG_HEAD..HEAD" },
-                    clone_dir,
-                ) catch {
-                    stdout.writeAll("  (could not show diff)\n") catch {};
-                    continue;
-                };
-                _ = exit_code;
-                stdout.print("{s}::{s} {s} diff reviewed\n", .{ sc.blue, sc.reset, entry.pkgbase }) catch {};
-            }
-        } else {
-            const msg = try std.fmt.allocPrint(self.allocator, "Review {s} files?", .{entry.pkgbase});
-            defer self.allocator.free(msg);
-
-            if (try utils.promptYesNoStyled(self.stdout_color, msg)) {
-                const exit_code = utils.runInteractive(
-                    self.allocator,
-                    &.{ editor, clone_dir },
-                    null,
-                ) catch {
-                    stdout.writeAll("  (could not open editor)\n") catch {};
-                    continue;
-                };
-                if (exit_code != 0) {
-                    stdout.print("  editor exited with {d}\n", .{exit_code}) catch {};
+        switch (clone_result) {
+            .cloned, .reCloned => try reviewFiles(self, entry.pkgbase, clone_dir),
+            .pending => try reviewDiff(self, entry.pkgbase, clone_dir, "View {s} diff?", &.{ "git", "diff", "--color=always", "HEAD", "@{upstream}" }),
+            .unchanged => {
+                const sc = self.stdout_color;
+                types.getStdout().print("{s}::{s} {s}: no AUR changes since your last review (aurodle show {s} to view all files)\n", .{ sc.blue, sc.reset, entry.pkgbase, entry.pkgbase }) catch {};
+                if (try hasLocalChanges(self.allocator, clone_dir)) {
+                    try reviewDiff(self, entry.pkgbase, clone_dir, "View {s} local changes?", &.{ "git", "diff", "--color=always", "HEAD" });
                 }
-                stdout.print("{s}::{s} {s} files reviewed\n", .{ sc.blue, sc.reset, entry.pkgbase }) catch {};
-            }
+            },
         }
     }
+}
+
+/// Offer to open every file of a clone in the viewer.
+fn reviewFiles(self: *BuildContext, pkgbase: []const u8, clone_dir: []const u8) !void {
+    const stdout = types.getStdout();
+    const sc = self.stdout_color;
+    const msg = try std.fmt.allocPrint(self.allocator, "Review {s} files?", .{pkgbase});
+    defer self.allocator.free(msg);
+    if (!try utils.promptYesNoStyled(self.stdout_color, msg)) return;
+
+    const editor = getViewer();
+    const exit_code = utils.runInteractive(self.allocator, &.{ editor, clone_dir }, null) catch {
+        stdout.writeAll("  (could not open editor)\n") catch {};
+        return;
+    };
+    if (exit_code != 0) {
+        stdout.print("  editor exited with {d}\n", .{exit_code}) catch {};
+    }
+    stdout.print("{s}::{s} {s} files reviewed\n", .{ sc.blue, sc.reset, pkgbase }) catch {};
+}
+
+/// Offer to run a `git diff` command in the clone.
+fn reviewDiff(
+    self: *BuildContext,
+    pkgbase: []const u8,
+    clone_dir: []const u8,
+    comptime prompt: []const u8,
+    argv: []const []const u8,
+) !void {
+    const stdout = types.getStdout();
+    const sc = self.stdout_color;
+    const msg = try std.fmt.allocPrint(self.allocator, prompt, .{pkgbase});
+    defer self.allocator.free(msg);
+    if (!try utils.promptYesNoStyled(self.stdout_color, msg)) return;
+
+    _ = utils.runInteractive(self.allocator, argv, clone_dir) catch {
+        stdout.writeAll("  (could not show diff)\n") catch {};
+        return;
+    };
+    stdout.print("{s}::{s} {s} diff reviewed\n", .{ sc.blue, sc.reset, pkgbase }) catch {};
+}
+
+/// Do tracked files differ from HEAD (e.g. the pkgver makepkg rewrote)?
+fn hasLocalChanges(allocator: Allocator, clone_dir: []const u8) !bool {
+    const result = try utils.runCommandIn(allocator, &.{ "git", "diff", "--quiet", "HEAD" }, clone_dir);
+    defer result.deinit(allocator);
+    return result.exit_code == 1;
 }
 
 /// Prompt the user to resolve each detected conflict.

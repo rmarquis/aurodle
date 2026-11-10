@@ -167,17 +167,17 @@ pub fn clonePackages(self: *QueryContext, targets: []const []const u8) !ExitCode
 
 const BuildMode = enum { sync, build_only };
 
-/// One parallelFor job: clone or update `entries[i].pkgbase`.
+/// One parallelFor job: clone or fetch `entries[i].pkgbase`.
 const CloneJob = struct {
     allocator: std.mem.Allocator,
     cache_root: []const u8,
     entries: []const solver_mod.BuildEntry,
-    results: []git.CloneOrUpdateResult,
+    results: []git.CloneOrFetchResult,
     errors: []?anyerror,
 
     fn run(job: *const CloneJob, i: usize) void {
         job.errors[i] = null;
-        job.results[i] = git.cloneOrUpdate(job.allocator, job.cache_root, job.entries[i].pkgbase) catch |err| {
+        job.results[i] = git.cloneOrFetch(job.allocator, job.cache_root, job.entries[i].pkgbase) catch |err| {
             job.errors[i] = err;
             return;
         };
@@ -284,10 +284,10 @@ pub fn runBuildPipeline(self: *BuildContext, filtered: []const []const u8, mode:
         }
     }
 
-    // Phase 3: Clone/update every pkgbase in parallel (build_order holds
-    // one entry per pkgbase). Keep each result so the review knows which
-    // clones actually changed.
-    const clone_results = try self.allocator.alloc(git.CloneOrUpdateResult, plan.build_order.len);
+    // Phase 3: Clone or fetch every pkgbase in parallel (build_order holds
+    // one entry per pkgbase). Fetching leaves HEAD at the version last
+    // accepted; each result tells the review whether the AUR has more.
+    const clone_results = try self.allocator.alloc(git.CloneOrFetchResult, plan.build_order.len);
     defer self.allocator.free(clone_results);
     const clone_errors = try self.allocator.alloc(?anyerror, plan.build_order.len);
     defer self.allocator.free(clone_errors);
@@ -314,6 +314,17 @@ pub fn runBuildPipeline(self: *BuildContext, filtered: []const []const u8, mode:
     // Phase 4: Review (unless --noshow)
     if (!self.flags.noshow) {
         try review_phase.reviewPackages(self, plan.build_order, clone_results, c_root);
+    }
+
+    // Phase 4.2: Accept the reviewed AUR changes. Until now the clones
+    // stayed at the version last accepted, so an interrupted review shows
+    // the same diff next time.
+    for (plan.build_order, clone_results) |entry, clone_result| {
+        if (clone_result != .pending) continue;
+        _ = git.applyUpstream(self.allocator, c_root, entry.pkgbase) catch |err| {
+            self.err_writer.print("{s}error:{s} failed to update '{s}': {}\n", .{ ec.red, ec.reset, entry.pkgbase, err }) catch {};
+            return .general_error;
+        };
     }
 
     // Phase 4.5: Acquire credentials now that the user has committed

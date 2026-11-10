@@ -260,8 +260,8 @@ test "SortField-like: CloneResult enum values" {
     try testing.expect(UpdateResult.updated != UpdateResult.up_to_date);
 }
 
-test "cloneOrUpdate returns NotCloned-free result for existing repo" {
-    // cloneOrUpdate should never return NotCloned — it clones if missing.
+test "cloneOrFetch returns NotCloned-free result for existing repo" {
+    // cloneOrFetch should never return NotCloned — it clones if missing.
     // We test the clone path here (update path tested via update tests).
     // Note: actual network clone would fail, so we test with pre-existing repo.
     var tmp = std.testing.tmpDir(.{});
@@ -273,8 +273,8 @@ test "cloneOrUpdate returns NotCloned-free result for existing repo" {
     const repo_dir = try git.createTestGitRepo(testing.allocator, tmp_path, "cou-pkg");
     defer testing.allocator.free(repo_dir);
 
-    // cloneOrUpdate on existing repo → tries update → PullFailed (no remote)
-    const result = git.cloneOrUpdate(testing.allocator, tmp_path, "cou-pkg");
+    // cloneOrFetch on existing repo → tries fetch → PullFailed (no remote)
+    const result = git.cloneOrFetch(testing.allocator, tmp_path, "cou-pkg");
     try testing.expectError(error.PullFailed, result);
 }
 
@@ -365,4 +365,41 @@ test "update applies an AUR change over makepkg's pkgver edit" {
     defer testing.allocator.free(pkgbuild);
     try testing.expectEqualStrings("pkgname=test\npkgver=1.0\npkgrel=2\nsource=(new)\n", pkgbuild);
     try testing.expectEqual(UpdateResult.up_to_date, try git.update(testing.allocator, f.cache, "pkg-git"));
+}
+
+fn headOf(dir: []const u8, rev: []const u8) ![]u8 {
+    const result = try utils.runCommandIn(testing.allocator, &.{ "git", "rev-parse", rev }, dir);
+    defer result.deinit(testing.allocator);
+    return testing.allocator.dupe(u8, std.mem.trim(u8, result.stdout, "\n"));
+}
+
+test "cloneOrFetch leaves AUR changes pending until applyUpstream" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    try f.makepkgRewritesPkgver();
+    const accepted = try headOf(f.clone_dir, "HEAD");
+    defer testing.allocator.free(accepted);
+
+    try testing.expectEqual(git.CloneOrFetchResult.unchanged, try git.cloneOrFetch(testing.allocator, f.cache, "pkg-git"));
+
+    try f.pushPkgbuild("pkgname=test\npkgver=1.0\npkgrel=2\nsource=(new)\n");
+    // Fetched, not applied: HEAD and the working tree (with makepkg's
+    // edit) stay at the accepted version, run after run.
+    for (0..2) |_| {
+        try testing.expectEqual(git.CloneOrFetchResult.pending, try git.cloneOrFetch(testing.allocator, f.cache, "pkg-git"));
+        const head = try headOf(f.clone_dir, "HEAD");
+        defer testing.allocator.free(head);
+        try testing.expectEqualStrings(accepted, head);
+        const pkgbuild = try readIn(f.clone_dir, "PKGBUILD");
+        defer testing.allocator.free(pkgbuild);
+        try testing.expect(std.mem.indexOf(u8, pkgbuild, "pkgver=1.0.r42") != null);
+    }
+
+    try testing.expect(try git.applyUpstream(testing.allocator, f.cache, "pkg-git"));
+    const pkgbuild = try readIn(f.clone_dir, "PKGBUILD");
+    defer testing.allocator.free(pkgbuild);
+    try testing.expectEqualStrings("pkgname=test\npkgver=1.0\npkgrel=2\nsource=(new)\n", pkgbuild);
+
+    try testing.expectEqual(git.CloneOrFetchResult.unchanged, try git.cloneOrFetch(testing.allocator, f.cache, "pkg-git"));
+    try testing.expect(!try git.applyUpstream(testing.allocator, f.cache, "pkg-git"));
 }
