@@ -124,16 +124,16 @@ fn printStatus(data: MonitorList, sty: color_mod.Style) !u8 {
     // Line 1: summary status + secondary services inline
     const all_clear = std.mem.eql(u8, data.statistics.count_result, "All Clear");
     if (all_clear) {
-        try w.print("{s}{s}{s} All systems operational", .{ sty.green, ddot, sty.reset });
+        w.print("{s}{s}{s} All systems operational", .{ sty.green, ddot, sty.reset });
     } else if (data.statistics.counts.down > 0) {
-        try w.print("{s}{s}{s} {d} monitor(s) down", .{ sty.red, ddot, sty.reset, data.statistics.counts.down });
+        w.print("{s}{s}{s} {d} monitor(s) down", .{ sty.red, ddot, sty.reset, data.statistics.counts.down });
     } else {
-        try w.print("{s}{s}{s} Status unknown", .{ sty.yellow, ddot, sty.reset });
+        w.print("{s}{s}{s} Status unknown", .{ sty.yellow, ddot, sty.reset });
     }
     for (others_buf[0..others_len]) |monitor| {
-        try w.print("  {s}{s}{s}{s}", .{ monitorColor(sty, monitor), dot, sty.reset, monitor.name });
+        w.print("  {s}{s}{s}{s}", .{ monitorColor(sty, monitor), dot, sty.reset, monitor.name });
     }
-    try w.writeByte('\n');
+    w.writeByte('\n');
 
     // Line 2: AUR history as colored dots
     if (aur) |monitor| {
@@ -142,19 +142,19 @@ fn printStatus(data: MonitorList, sty: color_mod.Style) !u8 {
         const down = std.mem.eql(u8, monitor.statusClass, "danger");
         const status_label: []const u8 = if (operational) "Operational" else if (down) "Down" else "Unknown";
 
-        try w.print("{s}  ", .{monitor.name});
+        w.print("{s}  ", .{monitor.name});
 
         const ratios = monitor.dailyRatios;
         if (ratios.len > 0) {
             const start = if (ratios.len > history_days) ratios.len - history_days else 0;
             for (ratios[start..]) |day| {
                 const v = std.fmt.parseFloat(f64, day.ratio) catch 0.0;
-                try w.print("{s}{s}{s}", .{ ratioColor(sty, v), dot, sty.reset });
+                w.print("{s}{s}{s}", .{ ratioColor(sty, v), dot, sty.reset });
             }
         }
 
         const ratio_val = std.fmt.parseFloat(f64, monitor.@"90dRatio".ratio) catch 0.0;
-        try w.print("  {d:.3}%  {s}{s:>11}{s}\n", .{ ratio_val, status_color, status_label, sty.reset });
+        w.print("  {d:.3}%  {s}{s:>11}{s}\n", .{ ratio_val, status_color, status_label, sty.reset });
     }
 
     return 0;

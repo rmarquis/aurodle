@@ -21,11 +21,11 @@ pub fn acquireAuth(self: *BuildContext) !?types.ExitCode {
     const auth = self.auth;
     const ec = self.stderr_color;
     const cred_exit = auth.acquireCredentials() catch |err| {
-        self.err_writer.print("{s}error:{s} credential acquisition failed: {}\n", .{ ec.red, ec.reset, err }) catch {};
+        self.err_writer.print("{s}error:{s} credential acquisition failed: {}\n", .{ ec.red, ec.reset, err });
         return .general_error;
     };
     if (cred_exit != 0) {
-        self.err_writer.print("{s}error:{s} credential acquisition failed\n", .{ ec.red, ec.reset }) catch {};
+        self.err_writer.print("{s}error:{s} credential acquisition failed\n", .{ ec.red, ec.reset });
         return .general_error;
     }
     auth.startKeepalive();
@@ -122,7 +122,7 @@ pub fn installAllTargets(self: *BuildContext, aurpkgs_names: []const []const u8,
     const exit_code = try self.auth.runInteractive(argv.items, null);
     if (exit_code != 0) {
         const ec = self.stderr_color;
-        self.err_writer.print("{s}error:{s} installation failed (exit {d})\n", .{ ec.red, ec.reset, exit_code }) catch {};
+        self.err_writer.print("{s}error:{s} installation failed (exit {d})\n", .{ ec.red, ec.reset, exit_code });
         return false;
     }
     return true;
@@ -139,7 +139,7 @@ pub fn preInstallProviders(self: *BuildContext, pkg_names: []const []const u8) !
     const exit_code = try self.auth.runInteractive(argv.items, null);
     if (exit_code != 0) {
         const ec = self.stderr_color;
-        self.err_writer.print("{s}error:{s} failed to pre-install providers (exit {d})\n", .{ ec.red, ec.reset, exit_code }) catch {};
+        self.err_writer.print("{s}error:{s} failed to pre-install providers (exit {d})\n", .{ ec.red, ec.reset, exit_code });
         return false;
     }
     return true;

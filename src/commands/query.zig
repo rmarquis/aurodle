@@ -28,7 +28,7 @@ pub const checkDevelPackages = outdated_mod.checkDevelPackages;
 /// Display detailed info for AUR packages.
 pub fn info(self: *QueryContext, targets: []const []const u8) !ExitCode {
     const packages = self.aur_client.multiInfo(targets) catch |err| {
-        try printError(err, self.err_writer, self.stderr_color);
+        printError(err, self.err_writer, self.stderr_color);
         return .general_error;
     };
     defer self.allocator.free(packages);
@@ -44,7 +44,7 @@ pub fn info(self: *QueryContext, targets: []const []const u8) !ExitCode {
     var any_missing = false;
     for (targets) |target| {
         if (!found_names.contains(target)) {
-            self.err_writer.print("{s}error:{s} package '{s}' was not found\n", .{ ec.red, ec.reset, target }) catch {};
+            self.err_writer.print("{s}error:{s} package '{s}' was not found\n", .{ ec.red, ec.reset, target });
             any_missing = true;
         }
     }
@@ -66,7 +66,7 @@ pub fn info(self: *QueryContext, targets: []const []const u8) !ExitCode {
 pub fn search(self: *QueryContext, terms: []const []const u8) !ExitCode {
     const by_field = self.flags.by orelse .name_desc;
     const packages = self.aur_client.search(terms[0], by_field) catch |err| {
-        try printError(err, self.err_writer, self.stderr_color);
+        printError(err, self.err_writer, self.stderr_color);
         return .general_error;
     };
     defer self.allocator.free(packages);
@@ -158,37 +158,37 @@ fn displayInfo(pkg: *aur.Package, installed_version: ?[]const u8, c: color.Style
 
     const write = struct {
         fn field(writer: anytype, label: []const u8, value: []const u8) void {
-            writer.print("{s:<16}: {s}\n", .{ label, value }) catch {};
+            writer.print("{s:<16}: {s}\n", .{ label, value });
         }
 
         fn optionalField(writer: anytype, label: []const u8, value: ?[]const u8) void {
             const v = value orelse return;
-            writer.print("{s:<16}: {s}\n", .{ label, v }) catch {};
+            writer.print("{s:<16}: {s}\n", .{ label, v });
         }
 
         fn sliceField(writer: anytype, label: []const u8, values: []const []const u8) void {
             if (values.len == 0) {
                 return;
             } else {
-                writer.print("{s:<16}:", .{label}) catch {};
+                writer.print("{s:<16}:", .{label});
                 for (values, 0..) |v, i| {
                     if (i > 0) {
-                        writer.writeAll("  ") catch {};
+                        writer.writeAll("  ");
                     } else {
-                        writer.writeAll(" ") catch {};
+                        writer.writeAll(" ");
                     }
-                    writer.writeAll(v) catch {};
+                    writer.writeAll(v);
                 }
-                writer.writeAll("\n") catch {};
+                writer.writeAll("\n");
             }
         }
 
         fn numField(writer: anytype, label: []const u8, value: anytype) void {
-            writer.print("{s:<16}: {d}\n", .{ label, value }) catch {};
+            writer.print("{s:<16}: {d}\n", .{ label, value });
         }
 
         fn floatField(writer: anytype, label: []const u8, value: f64) void {
-            writer.print("{s:<16}: {d:.2}\n", .{ label, value }) catch {};
+            writer.print("{s:<16}: {d:.2}\n", .{ label, value });
         }
 
         fn timestampField(writer: anytype, label: []const u8, timestamp: i64) void {
@@ -207,11 +207,11 @@ fn displayInfo(pkg: *aur.Package, installed_version: ?[]const u8, c: color.Style
                 day_secs.getHoursIntoDay(),
                 day_secs.getMinutesIntoHour(),
                 day_secs.getSecondsIntoMinute(),
-            }) catch {};
+            });
         }
     };
 
-    stdout.print("{s:<16}: {s}aur{s}\n", .{ "Repository", c.magenta, c.reset }) catch {};
+    stdout.print("{s:<16}: {s}aur{s}\n", .{ "Repository", c.magenta, c.reset });
     write.field(stdout, "Name", pkg.name);
     if (!std.mem.eql(u8, pkg.name, pkg.pkgbase)) {
         write.field(stdout, "Package Base", pkg.pkgbase);
@@ -220,18 +220,18 @@ fn displayInfo(pkg: *aur.Package, installed_version: ?[]const u8, c: color.Style
     const ver_color = if (is_ood) c.red else c.green;
     if (installed_version) |iv| {
         if (std.mem.eql(u8, iv, pkg.version)) {
-            stdout.print("{s:<16}: {s}{s}{s} [installed]\n", .{ "Version", ver_color, pkg.version, c.reset }) catch {};
+            stdout.print("{s:<16}: {s}{s}{s} [installed]\n", .{ "Version", ver_color, pkg.version, c.reset });
         } else {
-            stdout.print("{s:<16}: {s}{s}{s} [installed: {s}{s}{s}]\n", .{ "Version", ver_color, pkg.version, c.reset, c.green, iv, c.reset }) catch {};
+            stdout.print("{s:<16}: {s}{s}{s} [installed: {s}{s}{s}]\n", .{ "Version", ver_color, pkg.version, c.reset, c.green, iv, c.reset });
         }
     } else {
-        stdout.print("{s:<16}: {s}{s}{s}\n", .{ "Version", ver_color, pkg.version, c.reset }) catch {};
+        stdout.print("{s:<16}: {s}{s}{s}\n", .{ "Version", ver_color, pkg.version, c.reset });
     }
     write.optionalField(stdout, "Description", pkg.description);
     if (pkg.url) |url| {
-        stdout.print("{s:<16}: {s}{s}{s}\n", .{ "URL", c.cyan, url, c.reset }) catch {};
+        stdout.print("{s:<16}: {s}{s}{s}\n", .{ "URL", c.cyan, url, c.reset });
     }
-    stdout.print("{s:<16}: {s}https://aur.archlinux.org/packages/{s}{s}\n", .{ "AUR Page", c.cyan, pkg.name, c.reset }) catch {};
+    stdout.print("{s:<16}: {s}https://aur.archlinux.org/packages/{s}{s}\n", .{ "AUR Page", c.cyan, pkg.name, c.reset });
     write.sliceField(stdout, "Licenses", pkg.licenses);
     write.sliceField(stdout, "Groups", pkg.groups);
     write.sliceField(stdout, "Provides", pkg.provides);
@@ -251,12 +251,12 @@ fn displayInfo(pkg: *aur.Package, installed_version: ?[]const u8, c: color.Style
     write.timestampField(stdout, "Last Modified", pkg.last_modified);
 
     if (pkg.out_of_date) |_| {
-        stdout.print("{s:<16}: {s}Yes{s}\n", .{ "Out Of Date", c.red, c.reset }) catch {};
+        stdout.print("{s:<16}: {s}Yes{s}\n", .{ "Out Of Date", c.red, c.reset });
     } else {
         write.field(stdout, "Out Of Date", "No");
     }
 
-    stdout.writeByte('\n') catch {};
+    stdout.writeByte('\n');
 }
 
 fn displaySearchResults(packages: []const *aur.Package, c: color.Style, pm: ?*pacman_mod.Pacman, quiet: bool) void {
@@ -264,7 +264,7 @@ fn displaySearchResults(packages: []const *aur.Package, c: color.Style, pm: ?*pa
 
     for (packages) |pkg| {
         if (quiet) {
-            stdout.print("{s}\n", .{pkg.name}) catch {};
+            stdout.print("{s}\n", .{pkg.name});
             continue;
         }
 
@@ -278,22 +278,22 @@ fn displaySearchResults(packages: []const *aur.Package, c: color.Style, pm: ?*pa
             c.reset,
             pkg.votes,
             pkg.popularity,
-        }) catch {};
+        });
 
         if (pm) |pacman| {
             if (pacman.installedVersion(pkg.name)) |iv| {
                 if (std.mem.eql(u8, iv, pkg.version)) {
-                    stdout.writeAll(" [installed]") catch {};
+                    stdout.writeAll(" [installed]");
                 } else {
-                    stdout.print(" [installed: {s}{s}{s}]", .{ c.green, iv, c.reset }) catch {};
+                    stdout.print(" [installed: {s}{s}{s}]", .{ c.green, iv, c.reset });
                 }
             }
         }
 
-        stdout.writeByte('\n') catch {};
+        stdout.writeByte('\n');
 
         if (pkg.description) |desc| {
-            stdout.print("    {s}\n", .{desc}) catch {};
+            stdout.print("    {s}\n", .{desc});
         }
     }
 }
@@ -302,7 +302,7 @@ pub fn formatOutdated(entries: []const OutdatedEntry, c: color.Style, quiet: boo
     const stdout = getStdout();
     for (entries) |entry| {
         if (quiet) {
-            stdout.print("{s}\n", .{entry.name}) catch {};
+            stdout.print("{s}\n", .{entry.name});
         } else if (entry.ignored) {
             stdout.print("{s} {s}{s}{s} -> {s}{s}{s} [ignored]\n", .{
                 entry.name,
@@ -312,7 +312,7 @@ pub fn formatOutdated(entries: []const OutdatedEntry, c: color.Style, quiet: boo
                 c.green,
                 entry.aur_version,
                 c.reset,
-            }) catch {};
+            });
         } else {
             stdout.print("{s} {s}{s}{s} -> {s}{s}{s}\n", .{
                 entry.name,
@@ -322,7 +322,7 @@ pub fn formatOutdated(entries: []const OutdatedEntry, c: color.Style, quiet: boo
                 c.green,
                 entry.aur_version,
                 c.reset,
-            }) catch {};
+            });
         }
     }
 }

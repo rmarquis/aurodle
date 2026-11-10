@@ -57,7 +57,7 @@ pub fn collectOutdated(self: *BuildContext, filter: []const []const u8, populate
     for (to_check) |pkg| names.appendAssumeCapacity(pkg.name);
 
     const aur_pkgs = self.aur_client.multiInfo(names.items) catch |err| {
-        try printError(err, self.err_writer, ec);
+        printError(err, self.err_writer, ec);
         return null;
     };
     defer self.allocator.free(aur_pkgs);
@@ -93,7 +93,7 @@ pub fn collectOutdated(self: *BuildContext, filter: []const []const u8, populate
                 try already_outdated.put(self.allocator, pkg.name, {});
             }
         } else if (!self.flags.quiet) {
-            self.err_writer.print("{s}warning:{s} {s} not found in AUR\n", .{ ec.yellow, ec.reset, pkg.name }) catch {};
+            self.err_writer.print("{s}warning:{s} {s} not found in AUR\n", .{ ec.yellow, ec.reset, pkg.name });
         }
     }
 
@@ -157,7 +157,7 @@ pub fn checkDevelPackages(
 ) !void {
     const ec2 = self.stderr_color;
     const cache = git.resolveCacheRoot(self.cache_root, self.allocator) catch {
-        self.err_writer.print("{s}warning:{s} could not determine cache directory for --devel check\n", .{ ec2.yellow, ec2.reset }) catch {};
+        self.err_writer.print("{s}warning:{s} could not determine cache directory for --devel check\n", .{ ec2.yellow, ec2.reset });
         return;
     };
     const c_root = cache.path;
@@ -167,7 +167,7 @@ pub fn checkDevelPackages(
         if (devel.isVcsPackage(pkg.name)) break true;
     } else false;
     if (has_vcs and !self.flags.quiet) {
-        self.err_writer.print("{s}::{s} checking VCS package(s)...\n", .{ ec2.blue, ec2.reset }) catch {};
+        self.err_writer.print("{s}::{s} checking VCS package(s)...\n", .{ ec2.blue, ec2.reset });
     }
 
     // Check each VCS pkgbase once (split packages share one), all in
@@ -197,7 +197,7 @@ pub fn checkDevelPackages(
         return err;
     };
     for (pkgbases, outcomes) |pkgbase, outcome| switch (outcome) {
-        .failed => self.err_writer.print("{s}warning:{s} failed to check VCS version for {s}\n", .{ ec2.yellow, ec2.reset, pkgbase }) catch {},
+        .failed => self.err_writer.print("{s}warning:{s} failed to check VCS version for {s}\n", .{ ec2.yellow, ec2.reset, pkgbase }),
         .no_version => {},
         .version => |v| devel_versions.appendAssumeCapacity(v.version),
     };

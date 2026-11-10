@@ -4,6 +4,7 @@ const pacman_mod = @import("../pacman.zig");
 const devel = @import("../devel.zig");
 const color = @import("../color.zig");
 const types = @import("types.zig");
+const StdWriter = types.StdWriter;
 
 const getStdout = types.getStdout;
 
@@ -94,14 +95,14 @@ pub fn displayPlan(plan: plan_mod.BuildPlan, repo_deps_full: []const []const u8,
                     ds.getSecondsIntoMinute(),
                     ec.reset,
                 },
-            ) catch {};
+            );
         }
         if (pm) |p| {
             for (entry.target_names) |tname| {
                 if (devel.isVcsPackage(tname)) continue;
                 if (p.installedVersion(tname)) |old| {
                     if (std.mem.eql(u8, old, entry.version)) {
-                        err_writer.print("{s}warning:{s} {s}-{s} is up to date -- reinstalling\n", .{ ec.yellow, ec.reset, tname, old }) catch {};
+                        err_writer.print("{s}warning:{s} {s}-{s} is up to date -- reinstalling\n", .{ ec.yellow, ec.reset, tname, old });
                     }
                 }
             }
@@ -112,7 +113,7 @@ pub fn displayPlan(plan: plan_mod.BuildPlan, repo_deps_full: []const []const u8,
             if (p.installedVersion(name)) |old| {
                 const new = p.syncVersion(name) orelse continue;
                 if (std.mem.eql(u8, old, new)) {
-                    err_writer.print("{s}warning:{s} {s}-{s} is up to date -- reinstalling\n", .{ ec.yellow, ec.reset, name, old }) catch {};
+                    err_writer.print("{s}warning:{s} {s}-{s} is up to date -- reinstalling\n", .{ ec.yellow, ec.reset, name, old });
                 }
             }
         }
@@ -125,32 +126,32 @@ pub fn displayPlan(plan: plan_mod.BuildPlan, repo_deps_full: []const []const u8,
             .aur_aur => err_writer.print(
                 "{s}warning:{s} {s} and {s} are in conflict\n",
                 .{ ec.yellow, ec.reset, conflict.package, conflict.conflicts_with },
-            ) catch {},
+            ),
             .aur_installed => err_writer.print(
                 "{s}warning:{s} {s} conflicts with installed package {s}\n",
                 .{ ec.yellow, ec.reset, conflict.package, conflict.conflicts_with },
-            ) catch {},
+            ),
             .repo_installed => err_writer.print(
                 "{s}warning:{s} new dependency {s} conflicts with installed package {s}\n",
                 .{ ec.yellow, ec.reset, conflict.package, conflict.conflicts_with },
-            ) catch {},
+            ),
             .aur_replaces => err_writer.print(
                 "{s}warning:{s} aur/{s} replaces installed package {s}\n",
                 .{ ec.yellow, ec.reset, conflict.package, conflict.conflicts_with },
-            ) catch {},
+            ),
             .repo_replaces => err_writer.print(
                 "{s}warning:{s} {s} replaces installed package {s}\n",
                 .{ ec.yellow, ec.reset, conflict.package, conflict.conflicts_with },
-            ) catch {},
+            ),
         }
     }
 
     // Display provider selections (informational)
     for (plan.provider_selections) |sel| {
-        err_writer.print("{s}::{s} {s} provider: {s}\n", .{ ec.blue, ec.reset, sel.dep_name, sel.chosen }) catch {};
+        err_writer.print("{s}::{s} {s} provider: {s}\n", .{ ec.blue, ec.reset, sel.dep_name, sel.chosen });
     }
 
-    stdout.writeAll("resolving dependencies...\n") catch {};
+    stdout.writeAll("resolving dependencies...\n");
 
     if (verbose) {
         displayPlanVerbose(plan, repo_deps_full, pm, removals, stdout, c, hint);
@@ -167,7 +168,7 @@ pub fn displayPlan(plan: plan_mod.BuildPlan, repo_deps_full: []const []const u8,
             sizes.net_upgrade += target_sizes.net_upgrade;
             if (target_sizes.has_upgrades) sizes.has_upgrades = true;
 
-            stdout.writeByte('\n') catch {};
+            stdout.writeByte('\n');
             if (sizes.download > 0) {
                 printSize(stdout, "Total Download Size:  ", sizes.download);
             }
@@ -178,7 +179,7 @@ pub fn displayPlan(plan: plan_mod.BuildPlan, repo_deps_full: []const []const u8,
         }
     }
 
-    stdout.writeByte('\n') catch {};
+    stdout.writeByte('\n');
 }
 
 /// Display an install-only package list (all packages from sync dbs),
@@ -194,7 +195,7 @@ pub fn displayInstallList(names: []const []const u8, pm: ?*pacman_mod.Pacman, er
             if (p.installedVersion(name)) |old| {
                 const new = p.syncVersion(name) orelse continue;
                 if (std.mem.eql(u8, old, new)) {
-                    err_writer.print("{s}warning:{s} {s}-{s} is up to date -- reinstalling\n", .{ ec.yellow, ec.reset, name, old }) catch {};
+                    err_writer.print("{s}warning:{s} {s}-{s} is up to date -- reinstalling\n", .{ ec.yellow, ec.reset, name, old });
                 }
             }
         }
@@ -206,14 +207,14 @@ pub fn displayInstallList(names: []const []const u8, pm: ?*pacman_mod.Pacman, er
         emitTableHeader(stdout, widths, names.len);
         for (names) |name| emitRepoPkgRow(stdout, pm, name, widths, c);
     } else {
-        stdout.print("\nPackages ({d})", .{names.len}) catch {};
+        stdout.print("\nPackages ({d})", .{names.len});
         for (names) |name| {
             printCompactRepoPkg(pm, name, stdout, c);
         }
-        stdout.writeByte('\n') catch {};
+        stdout.writeByte('\n');
     }
 
-    stdout.writeByte('\n') catch {};
+    stdout.writeByte('\n');
 }
 
 // ── Private Helpers ───────────────────────────────────────────────────
@@ -222,7 +223,7 @@ fn displayPlanCompact(
     plan: plan_mod.BuildPlan,
     repo_deps_full: []const []const u8,
     pm: ?*pacman_mod.Pacman,
-    stdout: anytype,
+    stdout: StdWriter,
     c: color.Style,
     hint: *const std.StringHashMapUnmanaged([]const u8),
 ) void {
@@ -233,11 +234,11 @@ fn displayPlanCompact(
     const total = aur_count + repo_deps_full.len + plan.repo_targets.len;
     if (total == 0) return;
 
-    stdout.print("\nPackages ({d})", .{total}) catch {};
+    stdout.print("\nPackages ({d})", .{total});
     for (plan.build_order) |entry| {
         const display_names: []const []const u8 = if (entry.target_names.len > 0) entry.target_names else &.{entry.name};
         for (display_names) |tname| {
-            stdout.print(" {s}aur/{s}{s}-{s}", .{ c.magenta, c.reset, tname, displayVersion(entry, hint) }) catch {};
+            stdout.print(" {s}aur/{s}{s}-{s}", .{ c.magenta, c.reset, tname, displayVersion(entry, hint) });
         }
     }
     for (plan.repo_targets) |name| {
@@ -246,57 +247,57 @@ fn displayPlanCompact(
     for (repo_deps_full) |dep| {
         printCompactRepoPkg(pm, dep, stdout, c);
     }
-    stdout.writeByte('\n') catch {};
+    stdout.writeByte('\n');
 }
 
-fn printCompactRepoPkg(pm: ?*pacman_mod.Pacman, name: []const u8, stdout: anytype, c: color.Style) void {
+fn printCompactRepoPkg(pm: ?*pacman_mod.Pacman, name: []const u8, stdout: StdWriter, c: color.Style) void {
     const repo = if (pm) |p| p.syncDbFor(name) else null;
     const ver = if (pm) |p| p.syncVersion(name) orelse "?" else "?";
     if (repo) |r| {
-        stdout.print(" {s}{s}/{s}{s}-{s}", .{ c.magenta, r, c.reset, name, ver }) catch {};
+        stdout.print(" {s}{s}/{s}{s}-{s}", .{ c.magenta, r, c.reset, name, ver });
     } else {
-        stdout.print(" {s}-{s}", .{ name, ver }) catch {};
+        stdout.print(" {s}-{s}", .{ name, ver });
     }
 }
 
-fn emitTableHeader(writer: anytype, widths: ColWidths, total: usize) void {
-    writer.writeByte('\n') catch {};
-    writer.print(hdr_pkg[0 .. hdr_pkg.len - 1] ++ "{d})", .{total}) catch {};
+fn emitTableHeader(writer: StdWriter, widths: ColWidths, total: usize) void {
+    writer.writeByte('\n');
+    writer.print(hdr_pkg[0 .. hdr_pkg.len - 1] ++ "{d})", .{total});
     pad(writer, countDigits(total) + hdr_pkg.len, widths.name);
     if (widths.has_old) {
-        writer.writeAll(hdr_old_ver) catch {};
+        writer.writeAll(hdr_old_ver);
         pad(writer, hdr_old_ver.len, widths.old);
     }
-    writer.writeAll(hdr_new_ver) catch {};
+    writer.writeAll(hdr_new_ver);
     if (widths.show_sizes) {
         pad(writer, hdr_new_ver.len, widths.ver);
         rightAlign(writer, hdr_net_change, widths.nc);
         rightAlign(writer, hdr_dl_size, widths.dl);
     }
-    writer.writeAll("\n\n") catch {};
+    writer.writeAll("\n\n");
 }
 
-fn emitRepoPkgRow(writer: anytype, pm: ?*pacman_mod.Pacman, name: []const u8, widths: ColWidths, c: color.Style) void {
+fn emitRepoPkgRow(writer: StdWriter, pm: ?*pacman_mod.Pacman, name: []const u8, widths: ColWidths, c: color.Style) void {
     const repo = if (pm) |p| p.syncDbFor(name) else null;
     const ver = if (pm) |p| p.syncVersion(name) orelse "?" else "?";
     const w = if (repo) |r| blk: {
-        writer.print("{s}{s}/{s}{s}", .{ c.magenta, r, c.reset, name }) catch {};
+        writer.print("{s}{s}/{s}{s}", .{ c.magenta, r, c.reset, name });
         break :blk r.len + 1 + name.len;
     } else blk: {
-        writer.writeAll(name) catch {};
+        writer.writeAll(name);
         break :blk name.len;
     };
     pad(writer, w, widths.name);
     if (widths.has_old) {
         const old_ver = if (pm) |p| p.installedVersion(name) orelse "-" else "-";
         if (!std.mem.eql(u8, old_ver, "-")) {
-            writer.print("{s}{s}{s}", .{ c.red, old_ver, c.reset }) catch {};
+            writer.print("{s}{s}{s}", .{ c.red, old_ver, c.reset });
         } else {
-            writer.writeAll(old_ver) catch {};
+            writer.writeAll(old_ver);
         }
         pad(writer, old_ver.len, widths.old);
     }
-    writer.print("{s}{s}{s}", .{ c.green, ver, c.reset }) catch {};
+    writer.print("{s}{s}{s}", .{ c.green, ver, c.reset });
     if (widths.show_sizes) {
         pad(writer, ver.len, widths.ver);
         if (pm.?.repoPkgSizeInfo(name)) |si| {
@@ -306,7 +307,7 @@ fn emitRepoPkgRow(writer: anytype, pm: ?*pacman_mod.Pacman, name: []const u8, wi
             rightAlign(writer, fmtSize(si.download, &b2), widths.dl);
         }
     }
-    writer.writeByte('\n') catch {};
+    writer.writeByte('\n');
 }
 
 fn displayPlanVerbose(
@@ -314,7 +315,7 @@ fn displayPlanVerbose(
     repo_deps_full: []const []const u8,
     pm: ?*pacman_mod.Pacman,
     removals: []const []const u8,
-    stdout: anytype,
+    stdout: StdWriter,
     c: color.Style,
     hint: *const std.StringHashMapUnmanaged([]const u8),
 ) void {
@@ -363,31 +364,31 @@ fn displayPlanVerbose(
     emitTableHeader(stdout, widths, total);
 
     for (removals) |name| {
-        stdout.writeAll(name) catch {};
+        stdout.writeAll(name);
         pad(stdout, name.len, widths.name);
         if (widths.has_old) {
             const old_ver = if (pm) |p| p.installedVersion(name) orelse "?" else "?";
-            stdout.print("{s}{s}{s}", .{ c.red, old_ver, c.reset }) catch {};
+            stdout.print("{s}{s}{s}", .{ c.red, old_ver, c.reset });
             pad(stdout, old_ver.len, widths.old);
         }
-        stdout.writeByte('\n') catch {};
+        stdout.writeByte('\n');
     }
 
     for (plan.build_order) |entry| {
         const display_names: []const []const u8 = if (entry.target_names.len > 0) entry.target_names else &.{entry.name};
         for (display_names) |tname| {
-            stdout.print("{s}{s}{s}{s}", .{ c.magenta, aur_prefix, c.reset, tname }) catch {};
+            stdout.print("{s}{s}{s}{s}", .{ c.magenta, aur_prefix, c.reset, tname });
             pad(stdout, aur_prefix.len + tname.len, widths.name);
             if (widths.has_old) {
                 const old_ver = if (pm) |p| p.installedVersion(tname) orelse "" else "";
                 if (old_ver.len > 0) {
-                    stdout.print("{s}{s}{s}", .{ c.red, old_ver, c.reset }) catch {};
+                    stdout.print("{s}{s}{s}", .{ c.red, old_ver, c.reset });
                     pad(stdout, old_ver.len, widths.old);
                 } else {
                     pad(stdout, 0, widths.old);
                 }
             }
-            stdout.print("{s}{s}{s}\n", .{ c.green, displayVersion(entry, hint), c.reset }) catch {};
+            stdout.print("{s}{s}{s}\n", .{ c.green, displayVersion(entry, hint), c.reset });
         }
     }
 
@@ -401,9 +402,9 @@ fn displayVersion(entry: plan_mod.BuildEntry, hint: *const std.StringHashMapUnma
     return if (devel.isVcsPackage(entry.name)) "latest" else entry.version;
 }
 
-fn pad(writer: anytype, current: usize, col: usize) void {
+fn pad(writer: StdWriter, current: usize, col: usize) void {
     const spaces = (col + 2) -| current;
-    writer.writeByteNTimes(' ', if (spaces < 2) 2 else spaces) catch {};
+    writer.writeByteNTimes(' ', if (spaces < 2) 2 else spaces);
 }
 
 fn fmtSize(bytes: i64, buf: *[32]u8) []const u8 {
@@ -417,10 +418,10 @@ fn fmtSize(bytes: i64, buf: *[32]u8) []const u8 {
         std.fmt.bufPrint(buf, "{s}{d} B", .{ sign, abs }) catch "";
 }
 
-fn rightAlign(writer: anytype, str: []const u8, col: usize) void {
+fn rightAlign(writer: StdWriter, str: []const u8, col: usize) void {
     const spaces = (col + 2) -| str.len;
-    writer.writeByteNTimes(' ', if (spaces < 2) 2 else spaces) catch {};
-    writer.writeAll(str) catch {};
+    writer.writeByteNTimes(' ', if (spaces < 2) 2 else spaces);
+    writer.writeAll(str);
 }
 
 fn countDigits(n: usize) usize {
@@ -433,14 +434,14 @@ fn countDigits(n: usize) usize {
     return digits;
 }
 
-fn printSize(writer: anytype, label: []const u8, bytes: i64) void {
+fn printSize(writer: StdWriter, label: []const u8, bytes: i64) void {
     const abs = if (bytes < 0) -bytes else bytes;
     const sign: []const u8 = if (bytes < 0) "-" else "";
     if (abs >= 1024 * 1024) {
-        writer.print("{s}{s}{d:.2} MiB\n", .{ label, sign, @as(f64, @floatFromInt(abs)) / (1024.0 * 1024.0) }) catch {};
+        writer.print("{s}{s}{d:.2} MiB\n", .{ label, sign, @as(f64, @floatFromInt(abs)) / (1024.0 * 1024.0) });
     } else if (abs >= 1024) {
-        writer.print("{s}{s}{d:.2} KiB\n", .{ label, sign, @as(f64, @floatFromInt(abs)) / 1024.0 }) catch {};
+        writer.print("{s}{s}{d:.2} KiB\n", .{ label, sign, @as(f64, @floatFromInt(abs)) / 1024.0 });
     } else {
-        writer.print("{s}{s}{d} B\n", .{ label, sign, abs }) catch {};
+        writer.print("{s}{s}{d} B\n", .{ label, sign, abs });
     }
 }

@@ -37,7 +37,7 @@ pub const hasFailedDep = build_phase.hasFailedDep;
 pub fn show(self: *QueryContext, target: []const u8) !ExitCode {
     const ec = self.stderr_color;
     const cache = git.resolveCacheRoot(self.cache_root, self.allocator) catch {
-        self.err_writer.print("{s}error:{s} could not determine cache directory (HOME not set)\n", .{ ec.red, ec.reset }) catch {};
+        self.err_writer.print("{s}error:{s} could not determine cache directory (HOME not set)\n", .{ ec.red, ec.reset });
         return .general_error;
     };
     const c_root = cache.path;
@@ -51,7 +51,7 @@ pub fn show(self: *QueryContext, target: []const u8) !ExitCode {
     };
 
     if (!try git.isCloned(self.allocator, c_root, pkgbase)) {
-        self.err_writer.print("{s}error:{s} {s} is not cloned. Run 'aurodle sync {s}' first.\n", .{ ec.red, ec.reset, target, target }) catch {};
+        self.err_writer.print("{s}error:{s} {s} is not cloned. Run 'aurodle sync {s}' first.\n", .{ ec.red, ec.reset, target, target });
         return .general_error;
     }
 
@@ -60,7 +60,7 @@ pub fn show(self: *QueryContext, target: []const u8) !ExitCode {
 
     const viewer = review_phase.getViewer();
     const exit_code = utils.runInteractive(self.allocator, &.{ viewer, clone_dir }, null) catch |err| {
-        self.err_writer.print("{s}error:{s} could not open viewer ({s}): {}\n", .{ ec.red, ec.reset, viewer, err }) catch {};
+        self.err_writer.print("{s}error:{s} could not open viewer ({s}): {}\n", .{ ec.red, ec.reset, viewer, err });
         return .general_error;
     };
 
@@ -75,7 +75,7 @@ pub fn clonePackages(self: *QueryContext, targets: []const []const u8) !ExitCode
     const stdout = getStdout();
 
     const packages = self.aur_client.multiInfo(targets) catch |err| {
-        try printError(err, self.err_writer, ec);
+        printError(err, self.err_writer, ec);
         return .general_error;
     };
     defer self.allocator.free(packages);
@@ -89,13 +89,13 @@ pub fn clonePackages(self: *QueryContext, targets: []const []const u8) !ExitCode
     var any_error = false;
     for (targets) |target| {
         if (!pkgbase_map.contains(target)) {
-            self.err_writer.print("{s}error:{s} package '{s}' was not found\n", .{ ec.red, ec.reset, target }) catch {};
+            self.err_writer.print("{s}error:{s} package '{s}' was not found\n", .{ ec.red, ec.reset, target });
             any_error = true;
         }
     }
 
     const cache = git.resolveCacheRoot(self.cache_root, self.allocator) catch {
-        self.err_writer.print("{s}error:{s} could not determine cache directory (HOME not set)\n", .{ ec.red, ec.reset }) catch {};
+        self.err_writer.print("{s}error:{s} could not determine cache directory (HOME not set)\n", .{ ec.red, ec.reset });
         return .general_error;
     };
     const c_root = cache.path;
@@ -106,7 +106,7 @@ pub fn clonePackages(self: *QueryContext, targets: []const []const u8) !ExitCode
 
     if (self.flags.recurse) {
         const reg = self.registry orelse {
-            self.err_writer.print("{s}error:{s} registry not initialized (--recurse requires full stack)\n", .{ ec.red, ec.reset }) catch {};
+            self.err_writer.print("{s}error:{s} registry not initialized (--recurse requires full stack)\n", .{ ec.red, ec.reset });
             return .general_error;
         };
 
@@ -147,15 +147,15 @@ pub fn clonePackages(self: *QueryContext, targets: []const []const u8) !ExitCode
 
     for (pkgbases, results) |pkgbase, maybe_result| {
         const result = maybe_result orelse {
-            self.err_writer.print("{s}error:{s} failed to clone '{s}'\n", .{ ec.red, ec.reset, pkgbase }) catch {};
+            self.err_writer.print("{s}error:{s} failed to clone '{s}'\n", .{ ec.red, ec.reset, pkgbase });
             any_error = true;
             continue;
         };
 
         if (!self.flags.quiet) {
             switch (result) {
-                .cloned => stdout.print("cloned '{s}'\n", .{pkgbase}) catch {},
-                .already_exists => stdout.print("'{s}' already cloned\n", .{pkgbase}) catch {},
+                .cloned => stdout.print("cloned '{s}'\n", .{pkgbase}),
+                .already_exists => stdout.print("'{s}' already cloned\n", .{pkgbase}),
             }
         }
     }
@@ -234,7 +234,7 @@ pub fn runBuildPipeline(self: *BuildContext, filtered: []const []const u8, mode:
     var removals: []const []const u8 = &.{};
     if (plan.conflicts.len > 0 and !self.flags.noconfirm) {
         removals = try review_phase.resolveConflicts(self.allocator, plan.conflicts, self.stdout_color) orelse {
-            self.err_writer.print("{s}::{s} unresolvable package conflicts detected\n", .{ ec.red, ec.reset }) catch {};
+            self.err_writer.print("{s}::{s} unresolvable package conflicts detected\n", .{ ec.red, ec.reset });
             return .general_error;
         };
     }
@@ -299,10 +299,10 @@ pub fn runBuildPipeline(self: *BuildContext, filtered: []const []const u8, mode:
     var clone_failed = false;
     for (plan.build_order, clone_results, clone_errors) |entry, clone_result, clone_err| {
         if (clone_err) |err| {
-            self.err_writer.print("{s}error:{s} failed to clone/update '{s}': {}\n", .{ ec.red, ec.reset, entry.pkgbase, err }) catch {};
+            self.err_writer.print("{s}error:{s} failed to clone/update '{s}': {}\n", .{ ec.red, ec.reset, entry.pkgbase, err });
             clone_failed = true;
         } else if (clone_result == .reCloned) {
-            self.err_writer.print("{s}warning:{s} cached repository for '{s}' was invalid and has been re-cloned\n", .{ ec.yellow, ec.reset, entry.pkgbase }) catch {};
+            self.err_writer.print("{s}warning:{s} cached repository for '{s}' was invalid and has been re-cloned\n", .{ ec.yellow, ec.reset, entry.pkgbase });
         }
     }
     if (clone_failed) return .general_error;
@@ -318,7 +318,7 @@ pub fn runBuildPipeline(self: *BuildContext, filtered: []const []const u8, mode:
     for (plan.build_order, clone_results) |entry, clone_result| {
         if (clone_result != .pending) continue;
         _ = git.applyUpstream(self.allocator, c_root, entry.pkgbase) catch |err| {
-            self.err_writer.print("{s}error:{s} failed to update '{s}': {}\n", .{ ec.red, ec.reset, entry.pkgbase, err }) catch {};
+            self.err_writer.print("{s}error:{s} failed to update '{s}': {}\n", .{ ec.red, ec.reset, entry.pkgbase, err });
             return .general_error;
         };
     }
@@ -343,7 +343,7 @@ pub fn runBuildPipeline(self: *BuildContext, filtered: []const []const u8, mode:
 
     if (build_result.succeeded.len > 0) {
         repo_mod.refreshAurpkgsSyncDb(self.allocator, repository, self.auth) catch |err| {
-            self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err }) catch {};
+            self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err });
         };
     }
 
@@ -384,7 +384,7 @@ pub fn runBuildPipeline(self: *BuildContext, filtered: []const []const u8, mode:
 
 fn handleEmptyBuildOrder(self: *BuildContext, plan: solver_mod.BuildPlan, mode: BuildMode) !ExitCode {
     if (mode == .build_only) {
-        getStdout().writeAll(" nothing to do -- all targets are up to date\n") catch {};
+        getStdout().writeAll(" nothing to do -- all targets are up to date\n");
         return .success;
     }
 
@@ -402,7 +402,7 @@ fn handleEmptyBuildOrder(self: *BuildContext, plan: solver_mod.BuildPlan, mode: 
     }
 
     if (aurpkgs_targets.items.len == 0 and plan.repo_targets.len == 0) {
-        getStdout().writeAll(" nothing to do -- all targets are up to date\n") catch {};
+        getStdout().writeAll(" nothing to do -- all targets are up to date\n");
         return .success;
     }
 
@@ -431,7 +431,7 @@ pub fn upgrade(self: *BuildContext, targets: []const []const u8) !ExitCode {
     const ec = self.stderr_color;
     const sc = self.stdout_color;
 
-    getStdout().print("{s}::{s} Starting AUR upgrade...\n", .{ sc.blue, sc.reset }) catch {};
+    getStdout().print("{s}::{s} Starting AUR upgrade...\n", .{ sc.blue, sc.reset });
 
     const result = (try outdated_mod.collectOutdated(self, targets, true)) orelse return .general_error;
     defer result.deinit(self.allocator);
@@ -446,14 +446,14 @@ pub fn upgrade(self: *BuildContext, targets: []const []const u8) !ExitCode {
             self.err_writer.print(
                 "{s}warning:{s} {s}: ignoring package upgrade\n",
                 .{ ec.yellow, ec.reset, entry.name },
-            ) catch {};
+            );
             continue;
         }
         to_upgrade.appendAssumeCapacity(entry.name);
     }
 
     if (to_upgrade.items.len == 0) {
-        getStdout().writeAll(" there is nothing to do\n") catch {};
+        getStdout().writeAll(" there is nothing to do\n");
         return .success;
     }
 
@@ -472,7 +472,7 @@ pub fn clean(self: *BuildContext) !ExitCode {
     } else blk: {
         const uninstalled = self.pacman.uninstalledAurpkgs() catch |err| switch (err) {
             error.AurDbNotConfigured => {
-                self.err_writer.print("{s}error:{s} local AUR repository not configured in pacman.conf\n", .{ ec.red, ec.reset }) catch {};
+                self.err_writer.print("{s}error:{s} local AUR repository not configured in pacman.conf\n", .{ ec.red, ec.reset });
                 return .general_error;
             },
             else => return err,
@@ -486,7 +486,7 @@ pub fn clean(self: *BuildContext) !ExitCode {
     if (plan.removed_clones.len == 0 and plan.removed_packages.len == 0 and
         plan.unreferenced_packages.len == 0 and plan.dangling_entries.len == 0)
     {
-        if (!self.flags.quiet) getStdout().writeAll(" nothing to clean\n") catch {};
+        if (!self.flags.quiet) getStdout().writeAll(" nothing to clean\n");
         return .success;
     }
 
@@ -497,23 +497,23 @@ pub fn clean(self: *BuildContext) !ExitCode {
     const clone_label = if (self.flags.all) "Clone directories" else "Stale clone directories";
 
     if (plan.removed_packages.len > 0) {
-        stdout.print("{s}::{s} {s} ({d}):\n", .{ c.blue, c.reset, pkg_label, plan.removed_packages.len }) catch {};
-        for (plan.removed_packages) |filename| stdout.print("  {s}\n", .{filename}) catch {};
+        stdout.print("{s}::{s} {s} ({d}):\n", .{ c.blue, c.reset, pkg_label, plan.removed_packages.len });
+        for (plan.removed_packages) |filename| stdout.print("  {s}\n", .{filename});
     }
 
     if (plan.unreferenced_packages.len > 0) {
-        stdout.print("{s}::{s} Old package files ({d}):\n", .{ c.blue, c.reset, plan.unreferenced_packages.len }) catch {};
-        for (plan.unreferenced_packages) |filename| stdout.print("  {s}\n", .{filename}) catch {};
+        stdout.print("{s}::{s} Old package files ({d}):\n", .{ c.blue, c.reset, plan.unreferenced_packages.len });
+        for (plan.unreferenced_packages) |filename| stdout.print("  {s}\n", .{filename});
     }
 
     if (plan.dangling_entries.len > 0) {
-        stdout.print("{s}::{s} Database entries with no package file ({d}):\n", .{ c.blue, c.reset, plan.dangling_entries.len }) catch {};
-        for (plan.dangling_entries) |name| stdout.print("  {s}\n", .{name}) catch {};
+        stdout.print("{s}::{s} Database entries with no package file ({d}):\n", .{ c.blue, c.reset, plan.dangling_entries.len });
+        for (plan.dangling_entries) |name| stdout.print("  {s}\n", .{name});
     }
 
     if (plan.removed_clones.len > 0) {
-        stdout.print("{s}::{s} {s} ({d}):\n", .{ c.blue, c.reset, clone_label, plan.removed_clones.len }) catch {};
-        for (plan.removed_clones) |name| stdout.print("  {s}/\n", .{name}) catch {};
+        stdout.print("{s}::{s} {s} ({d}):\n", .{ c.blue, c.reset, clone_label, plan.removed_clones.len });
+        for (plan.removed_clones) |name| stdout.print("  {s}/\n", .{name});
     }
 
     if (!self.flags.noconfirm) {
@@ -528,7 +528,7 @@ pub fn clean(self: *BuildContext) !ExitCode {
 
     if (plan.removed_packages.len > 0 or plan.dangling_entries.len > 0) {
         repo_mod.refreshAurpkgsSyncDb(self.allocator, repository, self.auth) catch |err| {
-            self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err }) catch {};
+            self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err });
         };
     }
 
@@ -538,12 +538,12 @@ pub fn clean(self: *BuildContext) !ExitCode {
 fn printBuildSummary(result: BuildResult, err_writer: types.ErrWriter, ec: color.Style) void {
     err_writer.print("\n{s}::{s} Build summary: {d} succeeded, {d} failed\n", .{
         ec.blue, ec.reset, result.succeeded.len, result.failed.len,
-    }) catch {};
+    });
     for (result.failed) |f| {
         if (f.skipped) {
-            err_writer.print("  {s}SKIPPED:{s} {s} (dependency failed)\n", .{ ec.yellow, ec.reset, f.pkgbase }) catch {};
+            err_writer.print("  {s}SKIPPED:{s} {s} (dependency failed)\n", .{ ec.yellow, ec.reset, f.pkgbase });
         } else {
-            err_writer.print("  {s}FAILED:{s} {s} (exit {d})\n", .{ ec.red, ec.reset, f.pkgbase, f.exit_code }) catch {};
+            err_writer.print("  {s}FAILED:{s} {s} (exit {d})\n", .{ ec.red, ec.reset, f.pkgbase, f.exit_code });
         }
     }
 }

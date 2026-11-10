@@ -25,7 +25,7 @@ fn chrootDir() []const u8 {
 /// Ensure a clean chroot exists, creating it with mkarchroot if needed.
 fn ensureChroot(allocator: Allocator, auth: *auth_mod.Auth, err_writer: anytype, ec: color.Style) !bool {
     if (!utils.findOnPath("makechrootpkg")) {
-        err_writer.print("{s}error:{s} makechrootpkg not found -- install devtools: pacman -S devtools\n", .{ ec.red, ec.reset }) catch {};
+        err_writer.print("{s}error:{s} makechrootpkg not found -- install devtools: pacman -S devtools\n", .{ ec.red, ec.reset });
         return false;
     }
 
@@ -34,13 +34,13 @@ fn ensureChroot(allocator: Allocator, auth: *auth_mod.Auth, err_writer: anytype,
     defer allocator.free(root_path);
 
     std.Io.Dir.accessAbsolute(utils.currentIo(), root_path, .{}) catch {
-        err_writer.print("{s}::{s} creating chroot at {s}...\n", .{ ec.blue, ec.reset, chroot_path }) catch {};
+        err_writer.print("{s}::{s} creating chroot at {s}...\n", .{ ec.blue, ec.reset, chroot_path });
         const exit_code = try auth.runInteractive(
             &.{ "mkarchroot", root_path, "base-devel" },
             null,
         );
         if (exit_code != 0) {
-            err_writer.print("{s}error:{s} failed to create chroot (exit {d})\n", .{ ec.red, ec.reset, exit_code }) catch {};
+            err_writer.print("{s}error:{s} failed to create chroot (exit {d})\n", .{ ec.red, ec.reset, exit_code });
             return false;
         }
     };
@@ -195,7 +195,7 @@ fn runVcsBuild(
     const stdout = types.getStdout();
 
     if (!prepared) {
-        stdout.print("{s}::{s} Preparing {s} sources...\n", .{ sc.blue, sc.reset, entry.name }) catch {};
+        stdout.print("{s}::{s} Preparing {s} sources...\n", .{ sc.blue, sc.reset, entry.name });
         const prep_code = try utils.runInteractive(self.allocator, &.{ "makepkg", "-s", "--nobuild", "--noconfirm" }, clone_dir);
         if (prep_code != 0) return prep_code;
     }
@@ -209,11 +209,11 @@ fn runVcsBuild(
     }
     if (!prepared and allPackagesBuilt(pkglist.*)) {
         skipped.* = true;
-        stdout.print("{s}::{s} {s} {s} already built, skipping (use --rebuild to force)\n", .{ sc.yellow, sc.reset, entry.name, ver }) catch {};
+        stdout.print("{s}::{s} {s} {s} already built, skipping (use --rebuild to force)\n", .{ sc.yellow, sc.reset, entry.name, ver });
         return 0;
     }
 
-    stdout.print("{s}::{s} Building {s} {s}...\n", .{ sc.blue, sc.reset, entry.name, ver }) catch {};
+    stdout.print("{s}::{s} Building {s} {s}...\n", .{ sc.blue, sc.reset, entry.name, ver });
     return utils.runInteractive(self.allocator, &.{ "makepkg", "-s", "--noextract", "--holdver", "--noconfirm" }, clone_dir);
 }
 
@@ -302,7 +302,7 @@ pub fn buildLoop(
 
     for (plan.build_order, 0..) |entry, i| {
         if (hasFailedDep(entry, &failed_bases)) {
-            self.err_writer.print("{s}::{s} skipping {s} -- a dependency failed to build\n", .{ ec.yellow, ec.reset, entry.name }) catch {};
+            self.err_writer.print("{s}::{s} skipping {s} -- a dependency failed to build\n", .{ ec.yellow, ec.reset, entry.name });
             try failed_bases.put(self.allocator, entry.pkgbase, {});
             try failed.append(self.allocator, .{ .pkgbase = entry.pkgbase, .exit_code = 0, .skipped = true });
             continue;
@@ -342,11 +342,11 @@ pub fn buildLoop(
         const build_start = std.Io.Timestamp.now(self.io, .real).nanoseconds - std.time.ns_per_s;
 
         if (already_built) {
-            types.getStdout().print("{s}::{s} {s} {s} already built, skipping (use --rebuild to force)\n", .{ sc.yellow, sc.reset, entry.name, ver }) catch {};
+            types.getStdout().print("{s}::{s} {s} {s} already built, skipping (use --rebuild to force)\n", .{ sc.yellow, sc.reset, entry.name, ver });
         } else {
             const split_vcs = is_vcs and !self.flags.chroot and !self.flags.rebuild;
             if (!split_vcs) {
-                types.getStdout().print("{s}::{s} Building {s} {s}...\n", .{ sc.blue, sc.reset, entry.name, ver }) catch {};
+                types.getStdout().print("{s}::{s} Building {s} {s}...\n", .{ sc.blue, sc.reset, entry.name, ver });
             }
 
             const exit_code = if (self.flags.chroot) blk: {
@@ -386,7 +386,7 @@ pub fn buildLoop(
 
                 self.err_writer.print("{s}error:{s} build failed for {s} (exit {d})\n", .{
                     ec.red, ec.reset, entry.pkgbase, exit_code,
-                }) catch {};
+                });
 
                 try failed.append(self.allocator, .{ .pkgbase = entry.pkgbase, .exit_code = exit_code });
                 try failed_bases.put(self.allocator, entry.pkgbase, {});
@@ -409,7 +409,7 @@ pub fn buildLoop(
         else
             repository.addBuiltPackages();
         const added_files = added catch |err| {
-            self.err_writer.print("{s}error:{s} failed to add built packages for {s}: {}\n", .{ ec.red, ec.reset, entry.pkgbase, err }) catch {};
+            self.err_writer.print("{s}error:{s} failed to add built packages for {s}: {}\n", .{ ec.red, ec.reset, entry.pkgbase, err });
             try failed.append(self.allocator, .{ .pkgbase = entry.pkgbase, .exit_code = 0 });
             try failed_bases.put(self.allocator, entry.pkgbase, {});
             continue;
@@ -434,7 +434,7 @@ pub fn buildLoop(
         // (/var/lib/pacman/sync/aurpkgs.db) is root-owned and separate.
         if (anySubsequentEntryNeeds(plan.build_order[i + 1 ..], entry.pkgbase)) {
             repo_mod.refreshAurpkgsSyncDb(self.allocator, repository, self.auth) catch |err| {
-                self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err }) catch {};
+                self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err });
             };
         }
 

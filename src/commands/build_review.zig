@@ -45,7 +45,7 @@ pub fn reviewPackages(
             .pending => try reviewDiff(self, entry.pkgbase, clone_dir, "View {s} diff?", &.{ "git", "diff", "--color=always", "HEAD", "@{upstream}" }),
             .unchanged => {
                 const sc = self.stdout_color;
-                types.getStdout().print("{s}::{s} {s}: no AUR changes since your last review (aurodle show {s} to view all files)\n", .{ sc.blue, sc.reset, entry.pkgbase, entry.pkgbase }) catch {};
+                types.getStdout().print("{s}::{s} {s}: no AUR changes since your last review (aurodle show {s} to view all files)\n", .{ sc.blue, sc.reset, entry.pkgbase, entry.pkgbase });
                 if (try hasLocalChanges(self.allocator, clone_dir)) {
                     try reviewDiff(self, entry.pkgbase, clone_dir, "View {s} local changes?", &.{ "git", "diff", "--color=always", "HEAD" });
                 }
@@ -64,13 +64,13 @@ fn reviewFiles(self: *BuildContext, pkgbase: []const u8, clone_dir: []const u8) 
 
     const editor = getViewer();
     const exit_code = utils.runInteractive(self.allocator, &.{ editor, clone_dir }, null) catch {
-        stdout.writeAll("  (could not open editor)\n") catch {};
+        stdout.writeAll("  (could not open editor)\n");
         return;
     };
     if (exit_code != 0) {
-        stdout.print("  editor exited with {d}\n", .{exit_code}) catch {};
+        stdout.print("  editor exited with {d}\n", .{exit_code});
     }
-    stdout.print("{s}::{s} {s} files reviewed\n", .{ sc.blue, sc.reset, pkgbase }) catch {};
+    stdout.print("{s}::{s} {s} files reviewed\n", .{ sc.blue, sc.reset, pkgbase });
 }
 
 /// Offer to run a `git diff` command in the clone.
@@ -88,10 +88,10 @@ fn reviewDiff(
     if (!try utils.promptYesNoStyled(self.stdout_color, msg)) return;
 
     _ = utils.runInteractive(self.allocator, argv, clone_dir) catch {
-        stdout.writeAll("  (could not show diff)\n") catch {};
+        stdout.writeAll("  (could not show diff)\n");
         return;
     };
-    stdout.print("{s}::{s} {s} diff reviewed\n", .{ sc.blue, sc.reset, pkgbase }) catch {};
+    stdout.print("{s}::{s} {s} diff reviewed\n", .{ sc.blue, sc.reset, pkgbase });
 }
 
 /// Do tracked files differ from HEAD (e.g. the pkgver makepkg rewrote)?

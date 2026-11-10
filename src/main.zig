@@ -498,11 +498,11 @@ fn printHelp() void {
         \\  --sort <field>         Sort by: name, votes, popularity
         \\  --rsort <field>        Reverse sort
         \\
-    ) catch {};
+    );
 }
 
 fn printVersion() void {
-    cmd_types.getStdout().writeAll("aurodle " ++ version_string ++ "\n") catch {};
+    cmd_types.getStdout().writeAll("aurodle " ++ version_string ++ "\n");
 }
 
 fn printUsageError(message: []const u8) void {

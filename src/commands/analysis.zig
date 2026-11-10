@@ -88,9 +88,9 @@ pub fn buildorder(self: *BuildContext, targets: []const []const u8) !ExitCode {
             .unknown => "UNKNOWN",
         };
         if (dep.pkgbase) |pkgbase| {
-            stdout.print("{s} {s} {s}\n", .{ prefix, pkgbase, dep.name }) catch {};
+            stdout.print("{s} {s} {s}\n", .{ prefix, pkgbase, dep.name });
         } else {
-            stdout.print("{s} {s}\n", .{ prefix, dep.name }) catch {};
+            stdout.print("{s} {s}\n", .{ prefix, dep.name });
         }
     }
     return .success;
