@@ -35,10 +35,13 @@ pub fn checkVersion(
     // Run makepkg --nobuild to fetch/update VCS sources and execute pkgver().
     // --noextract must NOT be used here: it skips the VCS fetch (git pull),
     // causing pkgver() to report the stale version already on disk.
-    // Non-zero exit (e.g. missing build deps) is tolerated — pkgver() still ran.
+    // --nodeps is required: makepkg checks dependencies before fetching
+    // sources, so missing makedepends would make it exit before pkgver()
+    // runs. pkgver() runs before prepare(), so a later failure (e.g. in
+    // prepare()) is tolerated: the PKGBUILD's pkgver is already updated.
     const nobuild_result = try utils.runCommandIn(
         allocator,
-        &.{ "makepkg", "--nobuild", "--noconfirm" },
+        &.{ "makepkg", "--nobuild", "--nodeps", "--noconfirm" },
         clone_dir,
     );
     defer nobuild_result.deinit(allocator);
