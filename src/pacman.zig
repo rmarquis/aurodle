@@ -478,8 +478,7 @@ pub const Pacman = struct {
         defer seen.deinit(allocator);
 
         for (root_names) |name| {
-            if (!seen.contains(name)) {
-                try seen.put(allocator, name, {});
+            if (!(try seen.getOrPut(allocator, name)).found_existing) {
                 try queue.append(allocator, name);
             }
         }
@@ -499,19 +498,15 @@ pub const Pacman = struct {
                 self.findSyncPkgForDep(dep_str)) orelse continue;
             const pkg_name = pkg.getName();
 
-            if (!seen.contains(pkg_name)) {
-                try seen.put(allocator, pkg_name, {});
-            }
+            try seen.put(allocator, pkg_name, {});
 
             if (self.isInstalled(pkg_name)) continue;
 
-            if (!result.contains(pkg_name)) {
-                try result.put(allocator, pkg_name, {});
+            if (!(try result.getOrPut(allocator, pkg_name)).found_existing) {
 
                 var dep_it = pkg.getDepends();
                 while (dep_it.next()) |dep| {
-                    if (!seen.contains(dep.name)) {
-                        try seen.put(allocator, dep.name, {});
+                    if (!(try seen.getOrPut(allocator, dep.name)).found_existing) {
                         try queue.append(allocator, dep.name);
                     }
                 }
@@ -549,8 +544,7 @@ pub const Pacman = struct {
         defer seen.deinit(allocator);
 
         for (root_names) |name| {
-            if (!seen.contains(name)) {
-                try seen.put(allocator, name, {});
+            if (!(try seen.getOrPut(allocator, name)).found_existing) {
                 try queue.append(allocator, name);
             }
         }
@@ -579,9 +573,7 @@ pub const Pacman = struct {
             if (uninstalled.items.len == 0) continue;
 
             const first_name = uninstalled.items[0].provider_name;
-            if (!seen.contains(first_name)) {
-                try seen.put(allocator, first_name, {});
-            }
+            try seen.put(allocator, first_name, {});
 
             if (uninstalled.items.len > 1) {
                 var claimed = false;
@@ -596,8 +588,7 @@ pub const Pacman = struct {
 
             var dep_it = pkg.getDepends();
             while (dep_it.next()) |dep| {
-                if (!seen.contains(dep.name)) {
-                    try seen.put(allocator, dep.name, {});
+                if (!(try seen.getOrPut(allocator, dep.name)).found_existing) {
                     try queue.append(allocator, dep.name);
                 }
             }

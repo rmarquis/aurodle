@@ -72,8 +72,7 @@ pub fn selectRepoDepsProviders(
 
         const chosen_name = choice.candidates[chosen_idx].provider_name;
         try chosen_providers.put(allocator, choice.dep_name, chosen_name);
-        if (!chosen_pkgs.contains(chosen_name)) {
-            try chosen_pkgs.put(allocator, chosen_name, {});
+        if (!(try chosen_pkgs.getOrPut(allocator, chosen_name)).found_existing) {
             try providers_to_install.append(allocator, chosen_name);
         }
     }
