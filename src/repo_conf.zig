@@ -3,13 +3,8 @@ const Allocator = std.mem.Allocator;
 
 pub const DEFAULT_REPO_NAME = "aur";
 
-/// Check if [repo_name] is configured in a pacman.conf file.
-pub fn isConfiguredFromPath(path: []const u8) bool {
-    return isConfiguredFromPathWithName(path, DEFAULT_REPO_NAME);
-}
-
 /// Check if [name] is configured in a pacman.conf file.
-fn isConfiguredFromPathWithName(path: []const u8, name: []const u8) bool {
+pub fn isConfiguredFromPathWithName(path: []const u8, name: []const u8) bool {
     // pacman.conf is small — read entire file
     var buf: [64 * 1024]u8 = undefined;
     const content = std.Io.Dir.readFile(std.Io.Dir.cwd(), std.Options.debug_io, path, &buf) catch return false;

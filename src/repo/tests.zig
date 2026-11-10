@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const repo = @import("../repo.zig");
+const repo_conf = @import("../repo_conf.zig");
 const utils = @import("../utils.zig");
 
 const Repository = repo.Repository;
@@ -58,6 +59,39 @@ test "configInstructions contains required elements" {
     try testing.expect(std.mem.indexOf(u8, instructions, "SigLevel") != null);
     try testing.expect(std.mem.indexOf(u8, instructions, "Server = file://") != null);
     try testing.expect(std.mem.indexOf(u8, instructions, "PKGDEST=") != null);
+}
+
+test "isConfiguredFromPathWithName finds the repo section" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const tmp_path = try getTmpPath(tmp);
+    defer testing.allocator.free(tmp_path);
+
+    try std.Io.Dir.writeFile(tmp.dir, testing.io, .{
+        .sub_path = "pacman.conf",
+        .data = "[options]\nArchitecture = auto\n\n[aurpkgs]\nServer = file:///srv/aurpkgs\n",
+    });
+    const conf_path = try std.fs.path.join(testing.allocator, &.{ tmp_path, "pacman.conf" });
+    defer testing.allocator.free(conf_path);
+
+    try testing.expect(repo_conf.isConfiguredFromPathWithName(conf_path, "aurpkgs"));
+    try testing.expect(!repo_conf.isConfiguredFromPathWithName(conf_path, "aur"));
+}
+
+test "isConfigured reads the system pacman.conf without error" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const tmp_path = try getTmpPath(tmp);
+    defer testing.allocator.free(tmp_path);
+
+    var r = try Repository.initWithRoot(testing.allocator, testing.io, tmp_path);
+    defer r.deinit();
+
+    // The result depends on the host; this makes sure the body compiles
+    // and runs (it once called a private function unnoticed).
+    _ = try r.isConfigured();
 }
 
 test "ensureExists creates directories" {
