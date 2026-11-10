@@ -99,14 +99,14 @@ pub const Auth = struct {
     /// Spawn a background thread that refreshes credentials periodically.
     /// No-op if the auth tool doesn't support credential caching (e.g. su).
     pub fn startKeepalive(self: *Auth) void {
-        const argv = self.validationArgv() orelse return;
+        const argv = self.refreshArgv() orelse return;
         self.stop_keepalive.store(false, .release);
         self.keepalive_thread = std.Thread.spawn(.{}, keepaliveLoop, .{ self, argv }) catch return;
     }
 
-    /// Immediately refresh credentials without prompting (no-op if the session
-    /// has already expired).  Used by the keepalive thread to ensure the
-    /// timestamp is reset to a known-fresh state right after startKeepalive.
+    /// Refresh credentials without prompting (fails quietly if the session
+    /// has already expired, since `argv` comes from refreshArgv).  Used by
+    /// the keepalive thread to keep the cached timestamp fresh.
     fn refreshSilent(self: *Auth, argv: []const []const u8) void {
         const result = utils.runCommand(self.allocator, argv) catch return;
         result.deinit(self.allocator);
@@ -127,6 +127,18 @@ pub const Auth = struct {
         const tool = self.prefix[0];
         if (std.mem.eql(u8, tool, "sudo")) return &.{ "sudo", "-v" };
         if (std.mem.eql(u8, tool, "doas")) return &.{ "doas", "true" };
+        return null;
+    }
+
+    /// Like validationArgv, but non-interactive (-n): refreshes the cached
+    /// credentials if still valid and fails instead of prompting. Used by
+    /// the background keepalive so an expired session can never put a
+    /// password prompt in the middle of build output.
+    fn refreshArgv(self: Auth) ?[]const []const u8 {
+        if (self.prefix.len == 0) return null;
+        const tool = self.prefix[0];
+        if (std.mem.eql(u8, tool, "sudo")) return &.{ "sudo", "-n", "-v" };
+        if (std.mem.eql(u8, tool, "doas")) return &.{ "doas", "-n", "true" };
         return null;
     }
 
@@ -454,6 +466,27 @@ test "validationArgv returns null for su" {
     var auth = try Auth.init(alloc, &.{ "su", "-c", "%c" });
     defer auth.deinit();
     try std.testing.expectEqual(@as(?[]const []const u8, null), auth.validationArgv());
+}
+
+test "refreshArgv never prompts" {
+    const alloc = std.testing.allocator;
+    var sudo = try Auth.init(alloc, &.{"sudo"});
+    defer sudo.deinit();
+    const sudo_argv = sudo.refreshArgv().?;
+    try std.testing.expectEqual(@as(usize, 3), sudo_argv.len);
+    try std.testing.expectEqualStrings("-n", sudo_argv[1]);
+    try std.testing.expectEqualStrings("-v", sudo_argv[2]);
+
+    var doas = try Auth.init(alloc, &.{"doas"});
+    defer doas.deinit();
+    const doas_argv = doas.refreshArgv().?;
+    try std.testing.expectEqual(@as(usize, 3), doas_argv.len);
+    try std.testing.expectEqualStrings("-n", doas_argv[1]);
+    try std.testing.expectEqualStrings("true", doas_argv[2]);
+
+    var su = try Auth.init(alloc, &.{ "su", "-c", "%c" });
+    defer su.deinit();
+    try std.testing.expectEqual(@as(?[]const []const u8, null), su.refreshArgv());
 }
 
 test "stopKeepalive is safe when no thread started" {
