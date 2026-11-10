@@ -375,7 +375,14 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
                 }
             }
 
-            const results = self.aur_client.search(name, .provides) catch return null;
+            const results = self.aur_client.search(name, .provides) catch |err| switch (err) {
+                // The AUR rejects some queries (too short, too many results):
+                // that means no usable provider, not a failure. Network and
+                // rate-limit errors must propagate, or the dependency would be
+                // reported as unresolvable.
+                error.ApiError => return null,
+                else => |e| return e,
+            };
             defer self.allocator.free(results);
 
             if (results.len == 0) return null;

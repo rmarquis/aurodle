@@ -171,6 +171,10 @@ pub fn handleResolveError(err: anyerror, err_writer: ErrWriter, ec: color.Style)
         err_writer.print("{s}error:{s} unresolvable dependency\n", .{ ec.red, ec.reset }) catch {};
     } else if (err == error.IgnoredDependency) {
         err_writer.print("{s}error:{s} a required dependency is in the ignore list\n", .{ ec.red, ec.reset }) catch {};
+    } else if (err == error.NetworkError or err == error.RateLimited or
+        err == error.ApiError or err == error.MalformedResponse)
+    {
+        printError(err, err_writer, ec) catch {};
     } else {
         err_writer.print("{s}error:{s} dependency resolution failed: {}\n", .{ ec.red, ec.reset, err }) catch {};
     }

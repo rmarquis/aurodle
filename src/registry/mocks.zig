@@ -131,6 +131,8 @@ pub const MockAurClient = struct {
     info_call_count: usize,
     search_call_count: usize,
     should_error: bool,
+    /// When set, only search() fails, with this error.
+    search_error: ?anyerror = null,
     arena: std.heap.ArenaAllocator,
 
     pub fn initEmpty() MockAurClient {
@@ -218,6 +220,7 @@ pub const MockAurClient = struct {
     pub fn search(self: *MockAurClient, query: []const u8, by: aur.SearchField) ![]const *aur.Package {
         self.search_call_count += 1;
         if (self.should_error) return error.NetworkError;
+        if (self.search_error) |err| return err;
 
         _ = by;
         var results: std.ArrayList(*aur.Package) = .empty;

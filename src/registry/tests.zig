@@ -322,6 +322,35 @@ test "resolve propagates NetworkError from AUR client" {
     try testing.expectError(error.NetworkError, reg.resolve("any-pkg"));
 }
 
+test "resolve propagates network errors from AUR provider search" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+    ac.search_error = error.RateLimited;
+
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+
+    try testing.expectError(error.RateLimited, reg.resolve("some-virtual-dep"));
+}
+
+test "resolve treats an AUR-rejected provider search as not found" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+    ac.search_error = error.ApiError;
+
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+
+    const res = try reg.resolve("x");
+    try testing.expectEqual(Source.unknown, res.source);
+}
+
 test "resolve does not error on package not found" {
     var pm = MockPacman.initEmpty();
     defer pm.deinitMock();
