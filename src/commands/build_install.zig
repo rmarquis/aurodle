@@ -49,7 +49,7 @@ pub fn selectRepoDepsProviders(
     for (choices) |choice| {
         var auto_idx: ?usize = null;
         for (choice.candidates, 0..) |m, i| {
-            if (chosen_pkgs.contains(m.provider_name)) {
+            if (chosen_pkgs.contains(m.name)) {
                 auto_idx = i;
                 break;
             }
@@ -57,20 +57,11 @@ pub fn selectRepoDepsProviders(
 
         const chosen_idx = if (auto_idx) |i| i else blk: {
             if (noconfirm) break :blk @as(usize, 0);
-            var candidates: std.ArrayListUnmanaged(registry_mod.ProviderCandidate) = .empty;
-            defer candidates.deinit(allocator);
-            for (choice.candidates) |m| {
-                try candidates.append(allocator, .{
-                    .name = m.provider_name,
-                    .version = m.provider_version,
-                    .db_name = m.db_name,
-                });
-            }
-            const idx = utils.promptProviderChoice(choice.dep_name, candidates.items, c);
+            const idx = utils.promptProviderChoice(choice.dep_name, choice.candidates, c);
             break :blk idx orelse 0;
         };
 
-        const chosen_name = choice.candidates[chosen_idx].provider_name;
+        const chosen_name = choice.candidates[chosen_idx].name;
         try chosen_providers.put(allocator, choice.dep_name, chosen_name);
         if (!(try chosen_pkgs.getOrPut(allocator, chosen_name)).found_existing) {
             try providers_to_install.append(allocator, chosen_name);

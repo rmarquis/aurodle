@@ -10,9 +10,9 @@ const pacman_mod = @import("../pacman.zig");
 pub const MockPacman = struct {
     installed: std.StringHashMapUnmanaged([]const u8), // name → version
     sync: std.StringHashMapUnmanaged(SyncEntry), // name → {version, db_name}
-    providers: std.StringHashMapUnmanaged(pacman_mod.ProviderMatch),
+    providers: std.StringHashMapUnmanaged(pacman_mod.ProviderCandidate),
     /// Multi-provider map: dep_name → list of all providers
-    all_providers: std.StringHashMapUnmanaged([]const pacman_mod.ProviderMatch) = .empty,
+    all_providers: std.StringHashMapUnmanaged([]const pacman_mod.ProviderCandidate) = .empty,
     aur_repo_name: []const u8 = "aurpkgs",
 
     const SyncEntry = struct {
@@ -43,11 +43,11 @@ pub const MockPacman = struct {
         self.sync.put(testing.allocator, name, .{ .version = version, .db_name = db_name }) catch unreachable;
     }
 
-    pub fn addProvider(self: *MockPacman, dep: []const u8, match: pacman_mod.ProviderMatch) void {
+    pub fn addProvider(self: *MockPacman, dep: []const u8, match: pacman_mod.ProviderCandidate) void {
         self.providers.put(testing.allocator, dep, match) catch unreachable;
     }
 
-    pub fn addProviders(self: *MockPacman, dep: []const u8, matches: []const pacman_mod.ProviderMatch) void {
+    pub fn addProviders(self: *MockPacman, dep: []const u8, matches: []const pacman_mod.ProviderCandidate) void {
         self.all_providers.put(testing.allocator, dep, matches) catch unreachable;
         if (matches.len > 0) {
             self.providers.put(testing.allocator, dep, matches[0]) catch unreachable;
@@ -101,25 +101,25 @@ pub const MockPacman = struct {
     pub fn findLocalSatisfier(self: MockPacman, dep: []const u8) ?[]const u8 {
         if (self.installed.contains(dep)) return dep;
         if (self.providers.get(dep)) |match| {
-            if (self.installed.contains(match.provider_name)) return match.provider_name;
+            if (self.installed.contains(match.name)) return match.name;
         }
         return null;
     }
 
-    pub fn findProvider(self: MockPacman, dep: []const u8) ?pacman_mod.ProviderMatch {
+    pub fn findProvider(self: MockPacman, dep: []const u8) ?pacman_mod.ProviderCandidate {
         return self.providers.get(dep);
     }
 
-    pub fn findAllProviders(self: *MockPacman, allocator: Allocator, dep: []const u8) ![]pacman_mod.ProviderMatch {
+    pub fn findAllProviders(self: *MockPacman, allocator: Allocator, dep: []const u8) ![]pacman_mod.ProviderCandidate {
         if (self.all_providers.get(dep)) |matches| {
-            return try allocator.dupe(pacman_mod.ProviderMatch, matches);
+            return try allocator.dupe(pacman_mod.ProviderCandidate, matches);
         }
         if (self.providers.get(dep)) |match| {
-            const result = try allocator.alloc(pacman_mod.ProviderMatch, 1);
+            const result = try allocator.alloc(pacman_mod.ProviderCandidate, 1);
             result[0] = match;
             return result;
         }
-        return try allocator.alloc(pacman_mod.ProviderMatch, 0);
+        return try allocator.alloc(pacman_mod.ProviderCandidate, 0);
     }
 };
 

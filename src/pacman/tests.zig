@@ -100,7 +100,7 @@ test "findProvider finds package providing dependency" {
     // glibc is a direct package name — should be found
     const result = pm.findProvider("glibc");
     try testing.expect(result != null);
-    try testing.expectEqualStrings("glibc", result.?.provider_name);
+    try testing.expectEqualStrings("glibc", result.?.name);
 
     // Nonexistent provider
     try testing.expect(pm.findProvider("zzz-nonexistent-virtual-dep") == null);

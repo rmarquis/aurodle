@@ -79,14 +79,14 @@ pub const MockPacman = struct {
         self: MockPacman,
         allocator: Allocator,
         dep: []const u8,
-    ) ![]pacman_mod.ProviderMatch {
-        var matches: std.ArrayList(pacman_mod.ProviderMatch) = .empty;
+    ) ![]pacman_mod.ProviderCandidate {
+        var matches: std.ArrayList(pacman_mod.ProviderCandidate) = .empty;
         errdefer matches.deinit(allocator);
         for (self.sync_pkgs) |pkg| {
             if (pkgProvides(pkg, dep)) {
                 try matches.append(allocator, .{
-                    .provider_name = pkg.name,
-                    .provider_version = pkg.version,
+                    .name = pkg.name,
+                    .version = pkg.version,
                     .db_name = pkg.db_name,
                 });
             }

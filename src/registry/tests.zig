@@ -209,7 +209,7 @@ test "provider tier does not bring back the rejected package itself" {
     defer pm.deinitMock();
     pm.addInstalled("foo", "1.0");
     // libalpm's provider search also matches a package by its own name.
-    pm.addProvider("foo", .{ .provider_name = "foo", .provider_version = "1.0", .db_name = "extra" });
+    pm.addProvider("foo", .{ .name = "foo", .version = "1.0", .db_name = "extra" });
 
     var ac = MockAurClient.initEmpty();
     defer ac.deinitMock();
@@ -223,7 +223,7 @@ test "provider tier does not bring back the rejected package itself" {
 test "provider tier still accepts another package providing the name" {
     var pm = MockPacman.initEmpty();
     defer pm.deinitMock();
-    pm.addProvider("foo", .{ .provider_name = "foo-ng", .provider_version = "1.0", .db_name = "extra" });
+    pm.addProvider("foo", .{ .name = "foo-ng", .version = "1.0", .db_name = "extra" });
 
     var ac = MockAurClient.initEmpty();
     defer ac.deinitMock();
@@ -489,8 +489,8 @@ test "resolve falls through to pacman provider when direct lookups fail" {
     defer pm.deinitMock();
     pm.addInstalled("jre-openjdk", "21.0.1");
     pm.addProvider("java-runtime", .{
-        .provider_name = "jre-openjdk",
-        .provider_version = "21.0.1",
+        .name = "jre-openjdk",
+        .version = "21.0.1",
         .db_name = "extra",
     });
 
@@ -511,8 +511,8 @@ test "resolve returns Source.repo_aur for uninstalled provider in aurpkgs" {
     defer pm.deinitMock();
     // auracle-git is in aurpkgs (not installed), provides "auracle"
     pm.addProvider("auracle", .{
-        .provider_name = "auracle-git",
-        .provider_version = "r427-1",
+        .name = "auracle-git",
+        .version = "r427-1",
         .db_name = "aurpkgs",
     });
 
@@ -553,8 +553,8 @@ test "resolve prefers pacman provider over AUR provider" {
     defer pm.deinitMock();
     pm.addInstalled("auracle-local", "1.0");
     pm.addProvider("auracle", .{
-        .provider_name = "auracle-local",
-        .provider_version = "1.0",
+        .name = "auracle-local",
+        .version = "1.0",
         .db_name = "extra",
     });
 
@@ -611,8 +611,8 @@ test "single provider does not invoke chooser" {
     var pm = MockPacman.initEmpty();
     defer pm.deinitMock();
     pm.addProvider("java-runtime", .{
-        .provider_name = "jre-openjdk",
-        .provider_version = "21.0.1",
+        .name = "jre-openjdk",
+        .version = "21.0.1",
         .db_name = "extra",
     });
 
@@ -632,9 +632,9 @@ test "single provider does not invoke chooser" {
 test "multiple providers invoke chooser and select correct one" {
     var pm = MockPacman.initEmpty();
     defer pm.deinitMock();
-    const providers = [_]pacman_mod.ProviderMatch{
-        .{ .provider_name = "jdk-openjdk", .provider_version = "21.0.1", .db_name = "extra" },
-        .{ .provider_name = "jre-openjdk", .provider_version = "21.0.1", .db_name = "extra" },
+    const providers = [_]pacman_mod.ProviderCandidate{
+        .{ .name = "jdk-openjdk", .version = "21.0.1", .db_name = "extra" },
+        .{ .name = "jre-openjdk", .version = "21.0.1", .db_name = "extra" },
     };
     pm.addProviders("java-runtime", &providers);
 
@@ -657,10 +657,10 @@ test "installed provider auto-selected without chooser" {
     var pm = MockPacman.initEmpty();
     defer pm.deinitMock();
     pm.addInstalled("jre-openjdk", "21.0.1");
-    const providers = [_]pacman_mod.ProviderMatch{
-        .{ .provider_name = "jdk-openjdk", .provider_version = "21.0.1", .db_name = "extra" },
-        .{ .provider_name = "jre-openjdk", .provider_version = "21.0.1", .db_name = "extra" },
-        .{ .provider_name = "jdk17-openjdk", .provider_version = "17.0.9", .db_name = "extra" },
+    const providers = [_]pacman_mod.ProviderCandidate{
+        .{ .name = "jdk-openjdk", .version = "21.0.1", .db_name = "extra" },
+        .{ .name = "jre-openjdk", .version = "21.0.1", .db_name = "extra" },
+        .{ .name = "jdk17-openjdk", .version = "17.0.9", .db_name = "extra" },
     };
     pm.addProviders("java-runtime", &providers);
 
@@ -682,9 +682,9 @@ test "installed provider auto-selected without chooser" {
 test "provider choice is cached across resolve calls" {
     var pm = MockPacman.initEmpty();
     defer pm.deinitMock();
-    const providers = [_]pacman_mod.ProviderMatch{
-        .{ .provider_name = "jdk-openjdk", .provider_version = "21.0.1", .db_name = "extra" },
-        .{ .provider_name = "jre-openjdk", .provider_version = "21.0.1", .db_name = "extra" },
+    const providers = [_]pacman_mod.ProviderCandidate{
+        .{ .name = "jdk-openjdk", .version = "21.0.1", .db_name = "extra" },
+        .{ .name = "jre-openjdk", .version = "21.0.1", .db_name = "extra" },
     };
     pm.addProviders("java-runtime", &providers);
 
@@ -708,9 +708,9 @@ test "provider choice is cached across resolve calls" {
 test "multiple providers without chooser uses first" {
     var pm = MockPacman.initEmpty();
     defer pm.deinitMock();
-    const providers = [_]pacman_mod.ProviderMatch{
-        .{ .provider_name = "jdk-openjdk", .provider_version = "21.0.1", .db_name = "extra" },
-        .{ .provider_name = "jre-openjdk", .provider_version = "21.0.1", .db_name = "extra" },
+    const providers = [_]pacman_mod.ProviderCandidate{
+        .{ .name = "jdk-openjdk", .version = "21.0.1", .db_name = "extra" },
+        .{ .name = "jre-openjdk", .version = "21.0.1", .db_name = "extra" },
     };
     pm.addProviders("java-runtime", &providers);
 

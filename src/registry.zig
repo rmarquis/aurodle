@@ -301,14 +301,14 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
                 var installed_idx: ?usize = null;
                 var installed_count: usize = 0;
                 for (all, 0..) |match, i| {
-                    if (self.pacman.isInstalled(match.provider_name)) {
+                    if (self.pacman.isInstalled(match.name)) {
                         installed_idx = i;
                         installed_count += 1;
                     }
                 }
                 if (installed_count == 1) {
                     const provider = all[installed_idx.?];
-                    try self.cacheProviderChoice(name, provider.provider_name);
+                    try self.cacheProviderChoice(name, provider.name);
                     return self.makeProviderResolution(name, provider);
                 }
             }
@@ -317,32 +317,22 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
             if (all.len == 1 or self.provider_chooser == null) {
                 const provider = all[0];
                 if (all.len > 1) {
-                    try self.cacheProviderChoice(name, provider.provider_name);
+                    try self.cacheProviderChoice(name, provider.name);
                 }
                 return self.makeProviderResolution(name, provider);
             }
 
             // Multiple matches + chooser — prompt user
-            var candidates: std.ArrayListUnmanaged(ProviderCandidate) = .empty;
-            defer candidates.deinit(self.allocator);
-            for (all) |match| {
-                try candidates.append(self.allocator, .{
-                    .name = match.provider_name,
-                    .version = match.provider_version,
-                    .db_name = match.db_name,
-                });
-            }
-
-            const idx = self.provider_chooser.?(name, candidates.items, self.stderr_color) orelse 0;
+            const idx = self.provider_chooser.?(name, all, self.stderr_color) orelse 0;
             const provider = all[idx];
-            try self.cacheProviderChoice(name, provider.provider_name);
+            try self.cacheProviderChoice(name, provider.name);
             return self.makeProviderResolution(name, provider);
         }
 
-        fn makeProviderResolution(self: *Self, name: []const u8, provider: pacman_mod.ProviderMatch) Resolution {
+        fn makeProviderResolution(self: *Self, name: []const u8, provider: pacman_mod.ProviderCandidate) Resolution {
             const from_aurpkgs = self.pacman.isAurRepo(provider.db_name);
-            const source: Source = if (self.pacman.isInstalled(provider.provider_name))
-                if (self.pacman.isInOfficialSyncDb(provider.provider_name)) .satisfied_repos else .satisfied_aur
+            const source: Source = if (self.pacman.isInstalled(provider.name))
+                if (self.pacman.isInOfficialSyncDb(provider.name)) .satisfied_repos else .satisfied_aur
             else if (from_aurpkgs)
                 .repo_aur
             else
@@ -350,22 +340,22 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
             return .{
                 .name = name,
                 .source = source,
-                .version = provider.provider_version,
-                .provider = provider.provider_name,
+                .version = provider.version,
+                .provider = provider.name,
             };
         }
 
         fn resolveProviderByName(self: *Self, dep_name: []const u8, provider_name: []const u8) ?Resolution {
             // Look up the chosen provider in pacman
             const provider = self.pacman.findProvider(dep_name) orelse return null;
-            if (std.mem.eql(u8, provider.provider_name, provider_name)) {
+            if (std.mem.eql(u8, provider.name, provider_name)) {
                 return self.makeProviderResolution(dep_name, provider);
             }
             // If the cached name doesn't match the first provider, scan all
             const all = self.pacman.findAllProviders(self.allocator, dep_name) catch return null;
             defer self.allocator.free(all);
             for (all) |match| {
-                if (std.mem.eql(u8, match.provider_name, provider_name)) {
+                if (std.mem.eql(u8, match.name, provider_name)) {
                     return self.makeProviderResolution(dep_name, match);
                 }
             }
@@ -462,10 +452,10 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
 
         /// Move matches not named `name` to the front of `matches` and
         /// return that prefix (in original order).
-        fn removeSelf(matches: []pacman_mod.ProviderMatch, name: []const u8) []pacman_mod.ProviderMatch {
+        fn removeSelf(matches: []pacman_mod.ProviderCandidate, name: []const u8) []pacman_mod.ProviderCandidate {
             var n: usize = 0;
             for (matches) |m| {
-                if (std.mem.eql(u8, m.provider_name, name)) continue;
+                if (std.mem.eql(u8, m.name, name)) continue;
                 matches[n] = m;
                 n += 1;
             }

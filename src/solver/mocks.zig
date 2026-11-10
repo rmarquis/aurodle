@@ -24,9 +24,9 @@ pub const MockInstalledSet = struct {
         return self.installed.contains(name);
     }
 
-    pub fn findProvider(self: MockInstalledSet, dep: []const u8) ?pacman_mod.ProviderMatch {
+    pub fn findProvider(self: MockInstalledSet, dep: []const u8) ?pacman_mod.ProviderCandidate {
         const provider_name = self.providers.get(dep) orelse return null;
-        return .{ .provider_name = provider_name, .provider_version = "", .db_name = "aurpkgs" };
+        return .{ .name = provider_name, .version = "", .db_name = "aurpkgs" };
     }
 
     fn deinit(self: *MockInstalledSet) void {

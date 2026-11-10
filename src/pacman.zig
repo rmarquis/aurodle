@@ -12,12 +12,8 @@ pub const checkVersion = version.checkVersion;
 
 // ── Public Types ─────────────────────────────────────────────────────────
 
-/// Result of a provider search.
-pub const ProviderMatch = struct {
-    provider_name: []const u8,
-    provider_version: []const u8,
-    db_name: []const u8,
-};
+/// A package providing a dependency, as found by a provider search.
+pub const ProviderCandidate = @import("provider.zig").ProviderCandidate;
 
 /// A locally installed package's identity.
 pub const InstalledPackage = struct {
@@ -36,7 +32,7 @@ pub const DbSet = enum {
 /// Returned by findTransitiveProviderChoices for interactive selection.
 pub const SyncProviderChoice = struct {
     dep_name: []const u8, // virtual dep name, borrowed from alpm memory
-    candidates: []ProviderMatch, // all uninstalled providers; caller owns slice
+    candidates: []ProviderCandidate, // all uninstalled providers; caller owns slice
 };
 
 // ── Pacman Struct ────────────────────────────────────────────────────────
@@ -341,7 +337,7 @@ pub const Pacman = struct {
     /// Find a package that provides the given dependency.
     /// Checks official repos first (priority), then aurpkgs.
     /// Returns null if no provider found.
-    pub fn findProvider(self: Pacman, dep: []const u8) ?ProviderMatch {
+    pub fn findProvider(self: Pacman, dep: []const u8) ?ProviderCandidate {
         if (self.readyIndex()) |index| {
             const entries = index.get(dep);
             return if (entries.len > 0) entries[0].match else null;
@@ -363,10 +359,10 @@ pub const Pacman = struct {
     /// Find ALL packages that provide the given dependency across all sync databases.
     /// Official repos are listed first, then aurpkgs.
     /// Returns empty slice if none found. Caller owns the returned slice.
-    pub fn findAllProviders(self: Pacman, allocator: Allocator, dep: []const u8) ![]ProviderMatch {
+    pub fn findAllProviders(self: Pacman, allocator: Allocator, dep: []const u8) ![]ProviderCandidate {
         if (self.readyIndex()) |index| return index.collect(allocator, dep, false);
 
-        var matches: std.ArrayList(ProviderMatch) = .empty;
+        var matches: std.ArrayList(ProviderCandidate) = .empty;
         errdefer matches.deinit(allocator);
 
         // Official repos first
@@ -437,10 +433,10 @@ pub const Pacman = struct {
 
     /// Find ALL packages in official sync dbs (no aurpkgs) that satisfy `dep`.
     /// Caller owns the returned slice.
-    fn findAllOfficialProviders(self: Pacman, allocator: Allocator, dep: []const u8) ![]ProviderMatch {
+    fn findAllOfficialProviders(self: Pacman, allocator: Allocator, dep: []const u8) ![]ProviderCandidate {
         if (self.readyIndex()) |index| return index.collect(allocator, dep, true);
 
-        var matches: std.ArrayList(ProviderMatch) = .empty;
+        var matches: std.ArrayList(ProviderCandidate) = .empty;
         errdefer matches.deinit(allocator);
         for (self.official_dbs) |db| {
             try findAllProvidersInDb(allocator, db, dep, &matches);
@@ -562,17 +558,17 @@ pub const Pacman = struct {
             const all = try self.findAllOfficialProviders(allocator, dep_str);
             defer allocator.free(all);
 
-            var uninstalled: std.ArrayListUnmanaged(ProviderMatch) = .empty;
+            var uninstalled: std.ArrayListUnmanaged(ProviderCandidate) = .empty;
             defer uninstalled.deinit(allocator);
             for (all) |p| {
-                if (!self.isInstalled(p.provider_name)) {
+                if (!self.isInstalled(p.name)) {
                     try uninstalled.append(allocator, p);
                 }
             }
 
             if (uninstalled.items.len == 0) continue;
 
-            const first_name = uninstalled.items[0].provider_name;
+            const first_name = uninstalled.items[0].name;
             try seen.put(allocator, first_name, {});
 
             if (uninstalled.items.len > 1) {
@@ -725,10 +721,10 @@ fn packageMatchesDep(pkg: alpm.AlpmPackage, dep: []const u8) bool {
     return false;
 }
 
-fn providerMatchFromPkg(pkg: alpm.AlpmPackage, db: alpm.Database) ProviderMatch {
+fn providerMatchFromPkg(pkg: alpm.AlpmPackage, db: alpm.Database) ProviderCandidate {
     return .{
-        .provider_name = pkg.getName(),
-        .provider_version = pkg.getVersion(),
+        .name = pkg.getName(),
+        .version = pkg.getVersion(),
         .db_name = db.getName(),
     };
 }
@@ -753,7 +749,7 @@ const ProvidesIndex = struct {
     const scan_lookups = 8;
 
     const Entry = struct {
-        match: ProviderMatch,
+        match: ProviderCandidate,
         /// False for the local AUR repository.
         official: bool,
     };
@@ -799,7 +795,7 @@ const ProvidesIndex = struct {
         const list = gop.value_ptr;
         // A package listing a name twice (or providing its own name)
         // is still one provider.
-        if (list.items.len > 0 and list.items[list.items.len - 1].match.provider_name.ptr == entry.match.provider_name.ptr) return;
+        if (list.items.len > 0 and list.items[list.items.len - 1].match.name.ptr == entry.match.name.ptr) return;
         try list.append(arena, entry);
     }
 
@@ -810,8 +806,8 @@ const ProvidesIndex = struct {
 
     /// Providers of `name`, optionally official ones only. Caller owns
     /// the slice.
-    fn collect(self: *const ProvidesIndex, allocator: Allocator, name: []const u8, official_only: bool) ![]ProviderMatch {
-        var matches: std.ArrayList(ProviderMatch) = .empty;
+    fn collect(self: *const ProvidesIndex, allocator: Allocator, name: []const u8, official_only: bool) ![]ProviderCandidate {
+        var matches: std.ArrayList(ProviderCandidate) = .empty;
         errdefer matches.deinit(allocator);
         for (self.get(name)) |entry| {
             if (official_only and !entry.official) continue;
@@ -822,7 +818,7 @@ const ProvidesIndex = struct {
 };
 
 /// Search a single database for a package that provides `dep`.
-fn findProviderInDb(db: alpm.Database, dep: []const u8) ?ProviderMatch {
+fn findProviderInDb(db: alpm.Database, dep: []const u8) ?ProviderCandidate {
     var it = db.getPkgcache();
     while (it.next()) |pkg| {
         if (packageMatchesDep(pkg, dep)) return providerMatchFromPkg(pkg, db);
@@ -831,7 +827,7 @@ fn findProviderInDb(db: alpm.Database, dep: []const u8) ?ProviderMatch {
 }
 
 /// Collect ALL packages in a single database that provide `dep`.
-fn findAllProvidersInDb(allocator: Allocator, db: alpm.Database, dep: []const u8, matches: *std.ArrayList(ProviderMatch)) !void {
+fn findAllProvidersInDb(allocator: Allocator, db: alpm.Database, dep: []const u8, matches: *std.ArrayList(ProviderCandidate)) !void {
     var it = db.getPkgcache();
     while (it.next()) |pkg| {
         if (packageMatchesDep(pkg, dep)) {
@@ -867,8 +863,8 @@ test "depMatches: versioned dep is not satisfied by an unversioned provision" {
 const testing = std.testing;
 
 /// The scan the provides index replaces, kept as the reference for tests.
-fn scanAllProviders(pm: Pacman, allocator: Allocator, dep: []const u8, official_only: bool) ![]ProviderMatch {
-    var matches: std.ArrayList(ProviderMatch) = .empty;
+fn scanAllProviders(pm: Pacman, allocator: Allocator, dep: []const u8, official_only: bool) ![]ProviderCandidate {
+    var matches: std.ArrayList(ProviderCandidate) = .empty;
     errdefer matches.deinit(allocator);
     for (pm.official_dbs) |db| try findAllProvidersInDb(allocator, db, dep, &matches);
     if (!official_only) {
@@ -886,7 +882,7 @@ fn expectSameProviders(pm: Pacman, name: []const u8) !void {
         defer a.free(got);
         try testing.expectEqual(want.len, got.len);
         for (want, got) |w, g| {
-            try testing.expectEqualStrings(w.provider_name, g.provider_name);
+            try testing.expectEqualStrings(w.name, g.name);
             try testing.expectEqualStrings(w.db_name, g.db_name);
         }
     }
@@ -896,7 +892,7 @@ fn expectSameProviders(pm: Pacman, name: []const u8) !void {
     if (all.len == 0) {
         try testing.expect(first == null);
     } else {
-        try testing.expectEqualStrings(all[0].provider_name, first.?.provider_name);
+        try testing.expectEqualStrings(all[0].name, first.?.name);
     }
 }
 

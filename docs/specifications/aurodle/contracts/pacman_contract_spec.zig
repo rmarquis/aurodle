@@ -135,7 +135,7 @@ test "satisfiesDep parses dependency string and checks satisfaction" {
 test "findProvider returns provider for virtual dependency" {
     // Contract: findProvider(dep) searches all databases for a package
     // that provides the given dependency string.
-    // Returns ProviderMatch with package name and source database.
+    // Returns ProviderCandidate with package name and source database.
     //
     // const provider = pm.findProvider("sh");
     // try testing.expect(provider != null);

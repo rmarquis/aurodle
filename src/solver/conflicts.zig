@@ -129,11 +129,11 @@ fn checkInstalledConflict(
         });
     } else if (@hasDecl(PacmanT, "findProvider")) {
         if (pacman.findProvider(dep_name)) |provider| {
-            if (std.mem.eql(u8, provider.provider_name, pkg_name)) return;
-            if (pacman.isInstalled(provider.provider_name)) {
+            if (std.mem.eql(u8, provider.name, pkg_name)) return;
+            if (pacman.isInstalled(provider.name)) {
                 try conflicts.append(allocator, .{
                     .package = pkg_name,
-                    .conflicts_with = provider.provider_name,
+                    .conflicts_with = provider.name,
                     .kind = kind,
                 });
             }
