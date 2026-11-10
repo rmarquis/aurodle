@@ -253,6 +253,9 @@ pub const Pacman = struct {
     const DepListKind = enum { conflicts, replaces };
 
     /// Shared implementation for conflict/replaces checking against installed packages.
+    /// Mirrors libalpm's conflict semantics: the dependency's version
+    /// constraint is honoured, and the package never conflicts with (or
+    /// replaces) an installed copy of itself.
     fn syncPkgDepViolatesInstalled(self: Pacman, name: []const u8, kind: DepListKind) ?[]const u8 {
         const sync_pkg = self.findInOfficialDbs(name) orelse return null;
 
@@ -261,10 +264,11 @@ pub const Pacman = struct {
             .replaces => sync_pkg.getReplaces(),
         };
         while (it.next()) |dep| {
-            if (self.isInstalled(dep.name)) return dep.name;
-            const local_pkgs = self.local_db.getPkgcache();
-            if (alpm.findSatisfier(local_pkgs, dep.name)) |satisfier| {
-                return satisfier.getName();
+            var local_it = self.local_db.getPkgcache();
+            while (local_it.next()) |local_pkg| {
+                const local_name = local_pkg.getName();
+                if (std.mem.eql(u8, local_name, name)) continue;
+                if (pkgSatisfiesDep(local_pkg, dep)) return local_name;
             }
         }
         return null;
@@ -623,6 +627,35 @@ fn buildOfficialDbs(allocator: Allocator, sync_dbs: []alpm.Database, aur_repo_na
 }
 
 /// Check if a package matches a dependency by name or provides list.
+/// libalpm's dependency match (_alpm_depcmp): `pkg` satisfies `dep` by
+/// name with a matching version, or through a provision. A versioned dep
+/// is only satisfied by a provision that carries a version (`foo=1.2`).
+fn pkgSatisfiesDep(pkg: alpm.AlpmPackage, dep: alpm.Dependency) bool {
+    if (depMatches(dep, pkg.getName(), pkg.getVersion())) return true;
+    var prov_it = pkg.getProvides();
+    while (prov_it.next()) |prov| {
+        const prov_version: ?[]const u8 = if (prov.mod == .eq) prov.version else null;
+        if (depMatches(dep, prov.name, prov_version)) return true;
+    }
+    return false;
+}
+
+/// Does a package or provision called `name` at `version` satisfy `dep`?
+/// `ver` is null for an unversioned provision.
+fn depMatches(dep: alpm.Dependency, name: []const u8, ver: ?[]const u8) bool {
+    if (!std.mem.eql(u8, dep.name, name)) return false;
+    const op: CmpOp = switch (dep.mod) {
+        .any => return true,
+        .eq => .eq,
+        .ge => .ge,
+        .le => .le,
+        .gt => .gt,
+        .lt => .lt,
+    };
+    const v = ver orelse return false;
+    return checkVersion(v, .{ .op = op, .version = dep.version });
+}
+
 fn packageMatchesDep(pkg: alpm.AlpmPackage, dep: []const u8) bool {
     if (std.mem.eql(u8, pkg.getName(), dep)) return true;
     var dep_it = pkg.getProvides();
@@ -657,4 +690,28 @@ fn findAllProvidersInDb(allocator: Allocator, db: alpm.Database, dep: []const u8
             try matches.append(allocator, providerMatchFromPkg(pkg, db));
         }
     }
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────
+
+fn testDep(name: []const u8, mod: alpm.DepMod, ver: []const u8) alpm.Dependency {
+    return .{ .name = name, .version = ver, .desc = null, .name_hash = 0, .mod = mod };
+}
+
+test "depMatches: unversioned dep matches any version or provision" {
+    const dep = testDep("jack", .any, "");
+    try std.testing.expect(depMatches(dep, "jack", "0.126"));
+    try std.testing.expect(depMatches(dep, "jack", null));
+    try std.testing.expect(!depMatches(dep, "jack2", "1.9"));
+}
+
+test "depMatches: versioned dep honours the constraint" {
+    const dep = testDep("foo", .lt, "2");
+    try std.testing.expect(depMatches(dep, "foo", "1.5"));
+    try std.testing.expect(!depMatches(dep, "foo", "3"));
+}
+
+test "depMatches: versioned dep is not satisfied by an unversioned provision" {
+    const dep = testDep("foo", .ge, "1");
+    try std.testing.expect(!depMatches(dep, "foo", null));
 }
