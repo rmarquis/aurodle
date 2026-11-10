@@ -119,35 +119,32 @@ pub const ErrWriter = struct {
 
     pub fn print(self: ErrWriter, comptime fmt: []const u8, args: anytype) error{WriteFailed}!void {
         if (self.discard) return;
+        // Keep stderr messages in order with buffered stdout.
+        utils.flushStdout();
         std.debug.print(fmt, args);
     }
 };
 
+/// Handle to the process-wide buffered stdout (utils.stdout()).
 pub const StdWriter = struct {
     pub fn print(self: StdWriter, comptime fmt: []const u8, args: anytype) error{WriteFailed}!void {
         _ = self;
-        var buf: [8192]u8 = undefined;
-        const s = std.fmt.bufPrint(&buf, fmt, args) catch return error.WriteFailed;
-        _ = std.os.linux.write(std.posix.STDOUT_FILENO, s.ptr, s.len);
+        try utils.stdout().print(fmt, args);
     }
 
     pub fn writeAll(self: StdWriter, bytes: []const u8) error{WriteFailed}!void {
         _ = self;
-        if (bytes.len == 0) return;
-        _ = std.os.linux.write(std.posix.STDOUT_FILENO, bytes.ptr, bytes.len);
+        try utils.stdout().writeAll(bytes);
     }
 
     pub fn writeByte(self: StdWriter, byte: u8) error{WriteFailed}!void {
         _ = self;
-        _ = std.os.linux.write(std.posix.STDOUT_FILENO, &.{byte}, 1);
+        try utils.stdout().writeByte(byte);
     }
 
     pub fn writeByteNTimes(self: StdWriter, byte: u8, n: usize) error{WriteFailed}!void {
         _ = self;
-        var i: usize = 0;
-        while (i < n) : (i += 1) {
-            _ = std.os.linux.write(std.posix.STDOUT_FILENO, &.{byte}, 1);
-        }
+        try utils.stdout().splatByteAll(byte, n);
     }
 };
 

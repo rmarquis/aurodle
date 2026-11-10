@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const color_mod = @import("../color.zig");
+const utils = @import("../utils.zig");
 const cmd_types = @import("../commands/types.zig");
 
 const MONITOR_URL = "https://status.archlinux.org/api/getMonitorList/vmM5ruWEAB";
@@ -88,6 +89,7 @@ pub fn run(allocator: Allocator, sty: color_mod.Style) !u8 {
 }
 
 fn writeError(msg: []const u8) void {
+    utils.flushStdout();
     std.debug.print("{s}", .{msg});
 }
 

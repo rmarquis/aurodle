@@ -11,6 +11,28 @@ fn currentIo() std.Io {
     return if (@import("builtin").is_test) std.testing.io else global_io;
 }
 
+// ── Buffered stdout ─────────────────────────────────────────────────────
+
+var stdout_buffer: [4096]u8 = undefined;
+var stdout_file_writer: ?std.Io.File.Writer = null;
+
+/// Process-wide buffered stdout. Output is only written when the buffer
+/// fills or flushStdout() is called, so call it before anything else
+/// reaches the terminal: prompts and stdin reads, child processes, stderr
+/// messages, and exit.
+pub fn stdout() *std.Io.Writer {
+    if (stdout_file_writer == null) {
+        stdout_file_writer = std.Io.File.stdout().writerStreaming(currentIo(), &stdout_buffer);
+    }
+    return &stdout_file_writer.?.interface;
+}
+
+/// Write out anything buffered by stdout(). Errors (e.g. a closed pipe)
+/// are ignored: there is nowhere left to report them.
+pub fn flushStdout() void {
+    if (stdout_file_writer) |*w| w.interface.flush() catch {};
+}
+
 /// Max output size we'll capture from a child process.
 const MAX_OUTPUT = 10 * 1024 * 1024;
 
@@ -55,6 +77,8 @@ pub fn runCommandIn(
     cwd: ?[]const u8,
 ) !ProcessResult {
     if (argv.len == 0) return error.SpawnFailed;
+    // The child may still talk to the terminal (e.g. a sudo prompt).
+    flushStdout();
 
     const io = currentIo();
     const result = try std.process.run(allocator, io, .{
@@ -79,6 +103,7 @@ pub fn runInteractive(
 ) !u8 {
     if (argv.len == 0) return error.SpawnFailed;
     _ = allocator;
+    flushStdout();
 
     const io = currentIo();
     var child = try std.process.spawn(io, .{
@@ -110,9 +135,8 @@ pub fn promptNoYesStyled(c: color.Style, message: []const u8) !bool {
 fn promptConfirm(c: color.Style, message: []const u8, default: bool) !bool {
     if (!isTerminalFd(std.posix.STDIN_FILENO)) return false;
     const hint = if (default) "[Y/n]" else "[y/N]";
-    var prompt_buf: [256]u8 = undefined;
-    const prompt = std.fmt.bufPrint(&prompt_buf, "{s}::{s} {s} {s} ", .{ c.blue, c.reset, message, hint }) catch "";
-    _ = std.os.linux.write(std.posix.STDOUT_FILENO, prompt.ptr, prompt.len);
+    stdout().print("{s}::{s} {s} {s} ", .{ c.blue, c.reset, message, hint }) catch {};
+    flushStdout();
 
     var buf: [16]u8 = undefined;
     const n = std.posix.read(std.posix.STDIN_FILENO, &buf) catch return default;
@@ -161,6 +185,7 @@ pub fn promptProviderChoice(
     c: color.Style,
 ) ?usize {
     if (!isTerminalFd(std.posix.STDIN_FILENO)) return 0;
+    flushStdout();
     std.debug.print("{s}::{s} There are {d} providers available for {s}:\n", .{ c.blue, c.reset, candidates.len, dep_name });
 
     // Group by db_name and display

@@ -231,6 +231,7 @@ pub const Repository = struct {
 
         if (!result.success()) {
             if (result.stderr.len > 0) {
+                utils.flushStdout();
                 std.debug.print("{s}", .{result.stderr});
             }
             return error.RepoAddFailed;
