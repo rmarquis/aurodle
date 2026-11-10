@@ -125,6 +125,38 @@ fn runChrootBuild(
     return self.auth.runInteractive(argv.items, clone_dir);
 }
 
+/// Build a VCS package in two makepkg passes so a package already in PKGDEST
+/// is detected cleanly. A single `makepkg` run can only discover this after
+/// pkgver(), and then aborts with "ERROR: A package has already been built"
+/// (exit 13).
+///   1. `makepkg -s --nobuild`: fetch, extract, prepare(), pkgver(). --nobuild
+///      also disables makepkg's own already-built check.
+///   2. If every `--packagelist` file exists, skip. Otherwise
+///      `makepkg -s --noextract --holdver` builds the prepared tree:
+///      --noextract skips download, extraction and prepare(); --holdver is
+///      redundant with it but guards against VCS sources moving between passes.
+/// Returns the makepkg exit code (0 when skipped as already built).
+fn runVcsBuild(self: *const BuildContext, entry: plan_mod.BuildEntry, clone_dir: []const u8) !u8 {
+    const sc = self.stdout_color;
+    const stdout = types.getStdout();
+
+    stdout.print("{s}::{s} Preparing {s} sources...\n", .{ sc.blue, sc.reset, entry.name }) catch {};
+    const prep_code = try utils.runInteractive(self.allocator, &.{ "makepkg", "-s", "--nobuild", "--noconfirm" }, clone_dir);
+    if (prep_code != 0) return prep_code;
+
+    const version = devel.srcinfoVersion(self.allocator, clone_dir) catch null;
+    defer if (version) |v| self.allocator.free(v);
+    const ver = version orelse "latest";
+
+    if (allPackagesBuilt(self.allocator, clone_dir) catch false) {
+        stdout.print("{s}::{s} {s} {s} already built, skipping (use --rebuild to force)\n", .{ sc.yellow, sc.reset, entry.name, ver }) catch {};
+        return 0;
+    }
+
+    stdout.print("{s}::{s} Building {s} {s}...\n", .{ sc.blue, sc.reset, entry.name, ver }) catch {};
+    return utils.runInteractive(self.allocator, &.{ "makepkg", "-s", "--noextract", "--holdver", "--noconfirm" }, clone_dir);
+}
+
 /// True if any of `entry`'s AUR dep pkgbases is in the failed set.
 pub fn hasFailedDep(
     entry: plan_mod.BuildEntry,
@@ -207,12 +239,13 @@ pub fn buildLoop(
         // Pre-check: skip the build if the output is already available.
         // VCS packages: use the devel-computed version hint to check the local
         // repo directly. makepkg --packagelist is useless before pkgver() runs
-        // (it reports the stale cached pkgver). Without a hint the check is
-        // skipped and exit 13 handling acts as the safety net instead.
+        // (it reports the stale cached pkgver). Without a hint, runVcsBuild
+        // performs the check between its two makepkg passes instead.
         // Non-VCS packages: check PKGDEST via makepkg --packagelist as usual.
+        const is_vcs = devel.isVcsPackage(entry.name);
         const already_built = !self.flags.rebuild and
             !self.flags.chroot and
-            if (devel.isVcsPackage(entry.name)) blk: {
+            if (is_vcs) blk: {
                 const hint = self.devel_version_hint.get(entry.name) orelse break :blk false;
                 break :blk repository.hasPackageVersion(entry.name, hint);
             } else (allPackagesBuilt(self.allocator, clone_dir) catch false);
@@ -220,10 +253,15 @@ pub fn buildLoop(
         if (already_built) {
             types.getStdout().print("{s}::{s} {s} {s} already built, skipping (use --rebuild to force)\n", .{ sc.yellow, sc.reset, entry.name, ver }) catch {};
         } else {
-            types.getStdout().print("{s}::{s} Building {s} {s}...\n", .{ sc.blue, sc.reset, entry.name, ver }) catch {};
+            const split_vcs = is_vcs and !self.flags.chroot and !self.flags.rebuild;
+            if (!split_vcs) {
+                types.getStdout().print("{s}::{s} Building {s} {s}...\n", .{ sc.blue, sc.reset, entry.name, ver }) catch {};
+            }
 
             const exit_code = if (self.flags.chroot) blk: {
                 break :blk try runChrootBuild(self, entry, &built_pkg_paths, clone_dir);
+            } else if (split_vcs) blk: {
+                break :blk try runVcsBuild(self, entry, clone_dir);
             } else blk: {
                 const args: []const []const u8 = if (self.flags.rebuild)
                     &.{ "makepkg", "-sf", "--noconfirm" }
@@ -234,7 +272,9 @@ pub fn buildLoop(
 
             // exit 13 = E_ALREADY_BUILT: pkgver() ran and updated the PKGBUILD,
             // but the output file already exists in PKGDEST. Fall through to
-            // addPackageFiles so the repo DB stays consistent.
+            // addPackageFiles so the repo DB stays consistent. Mostly avoided
+            // by runVcsBuild; kept as a safety net (chroot, pkgver() in
+            // packages without a VCS suffix).
             if (exit_code != 0 and exit_code != 13) {
                 if (exit_code >= 128) {
                     try failed.append(self.allocator, .{ .pkgbase = entry.pkgbase, .exit_code = exit_code });

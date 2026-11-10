@@ -43,18 +43,23 @@ pub fn checkVersion(
     );
     defer nobuild_result.deinit(allocator);
 
-    // Run makepkg --printsrcinfo to get the updated version
-    const srcinfo_result = try utils.runCommandIn(
+    return srcinfoVersion(allocator, clone_dir);
+}
+
+/// Run `makepkg --printsrcinfo` in clone_dir and return the full version
+/// string (epoch:pkgver-pkgrel). For VCS packages this reflects pkgver()
+/// only after a prior makepkg run has rewritten the PKGBUILD.
+/// Returns null on failure. Caller owns the returned string.
+pub fn srcinfoVersion(allocator: Allocator, clone_dir: []const u8) !?[]const u8 {
+    const result = try utils.runCommandIn(
         allocator,
         &.{ "makepkg", "--printsrcinfo" },
         clone_dir,
     );
-    defer srcinfo_result.deinit(allocator);
+    defer result.deinit(allocator);
 
-    if (!srcinfo_result.success()) return null;
-
-    // Parse the version from SRCINFO output
-    return parseSrcinfoVersion(allocator, srcinfo_result.stdout) catch null;
+    if (!result.success()) return null;
+    return parseSrcinfoVersion(allocator, result.stdout) catch null;
 }
 
 /// Parse a full version string (epoch:pkgver-pkgrel) from SRCINFO content.
