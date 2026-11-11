@@ -38,11 +38,11 @@ been adopted by various AUR helpers.
 - Clear build order visualization before execution
 - Modular architecture with specialized commands
 
-**Improvements Over Existing Tools**:
+**Design Goals**:
 
 - Unified tool (no multiple script learning curve)
 - Automated repository setup and management
 - Robust error handling with clear messages
 - Full versioned dependency resolution
 - Consistent exit codes and status reporting
-- Modern memory-safe implementation in Zig
+- Modern implementation in Zig with runtime safety checks
