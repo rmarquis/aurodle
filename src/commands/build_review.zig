@@ -25,7 +25,7 @@ pub fn getViewer() []const u8 {
 /// - fresh clone: open all files in the viewer;
 /// - AUR changes pending: show `git diff HEAD @{upstream}`, every change
 ///   since the last accepted version, however many runs ago it was fetched;
-/// - nothing new: say so, and offer the local changes (`git diff HEAD`),
+/// - nothing new: offer only the local changes (`git diff HEAD`), if any,
 ///   which for a VCS package is the pkgver line makepkg rewrote.
 /// `clone_results[i]` is the clone/fetch result for `entries[i]`.
 pub fn reviewPackages(
@@ -43,12 +43,8 @@ pub fn reviewPackages(
         switch (clone_result) {
             .cloned, .reCloned => try reviewFiles(self, entry.pkgbase, clone_dir),
             .pending => try reviewDiff(self, entry.pkgbase, clone_dir, "View {s} diff?", &.{ "git", "diff", "--color=always", "HEAD", "@{upstream}" }),
-            .unchanged => {
-                const sc = self.stdout_color;
-                types.getStdout().print("{s}::{s} {s}: no AUR changes since your last review (aurodle show {s} to view all files)\n", .{ sc.blue, sc.reset, entry.pkgbase, entry.pkgbase });
-                if (try hasLocalChanges(self.allocator, clone_dir)) {
-                    try reviewDiff(self, entry.pkgbase, clone_dir, "View {s} local changes?", &.{ "git", "diff", "--color=always", "HEAD" });
-                }
+            .unchanged => if (try hasLocalChanges(self.allocator, clone_dir)) {
+                try reviewDiff(self, entry.pkgbase, clone_dir, "View {s} local changes?", &.{ "git", "diff", "--color=always", "HEAD" });
             },
         }
     }

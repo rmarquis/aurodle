@@ -293,7 +293,7 @@ version last accepted. A package cloned for the first time is shown in
 full. When the AUR has new commits, the review shows the diff from the
 version last accepted, even if they were fetched during an earlier,
 interrupted run; they are applied once the review is done. When nothing
-changed, aurodle says so and offers the local changes instead, such as
+changed, aurodle only offers the local changes, if any, such as
 the _pkgver_ that *makepkg*(8) rewrote for a VCS package. Use *show* to
 view all files.
 
