@@ -167,7 +167,7 @@ fn runVcsBuild(
     }
     if (!prepared and allPackagesBuilt(pkglist.*)) {
         skipped.* = true;
-        stdout.print("{s}::{s} {s} {s} already built, skipping (use --rebuild to force)\n", .{ sc.yellow, sc.reset, entry.name, ver });
+        stdout.print("{s}::{s} {s} {s} already built, skipping\n", .{ sc.yellow, sc.reset, entry.name, ver });
         return 0;
     }
 
@@ -286,7 +286,7 @@ pub fn buildLoop(
         const build_start = std.Io.Timestamp.now(self.io, .real).nanoseconds - std.time.ns_per_s;
 
         if (already_built) {
-            types.getStdout().print("{s}::{s} {s} {s} already built, skipping (use --rebuild to force)\n", .{ sc.yellow, sc.reset, entry.name, ver });
+            types.getStdout().print("{s}::{s} {s} {s} already built, skipping\n", .{ sc.yellow, sc.reset, entry.name, ver });
         } else {
             const split_vcs = is_vcs and !self.flags.chroot and !self.flags.rebuild;
             if (!split_vcs) {
