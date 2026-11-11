@@ -158,22 +158,6 @@ test "repoDepSizes returns zeros for unknown packages" {
     try testing.expect(!sizes.has_upgrades);
 }
 
-test "refreshAurDb errors when aurpkgs not configured" {
-    if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
-
-    // Create a handle without aurpkgs
-    const handle = try alpm.Handle.init("/", "/var/lib/pacman/");
-    // Register only core, not aurpkgs
-    const core_db = try handle.registerSyncDb("core", .use_default);
-    var dbs = [_]alpm.Database{core_db};
-
-    var pm = try Pacman.initWithHandle(testing.allocator, handle, &dbs);
-    defer pm.deinit();
-
-    try testing.expect(pm.aurpkgs_db == null);
-    try testing.expectError(error.AurDbNotConfigured, pm.refreshAurDb());
-}
-
 // ── Transitive dep BFS (mock pacman, no libalpm handle) ────────────────────
 
 const mocks_mod = @import("mocks.zig");

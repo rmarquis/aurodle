@@ -36,9 +36,7 @@ pub const SyncProviderChoice = struct {
 /// "which repo provides this?", "does version X satisfy constraint Y?"
 ///
 /// All returned string slices are borrowed from libalpm internal memory
-/// and are valid until Pacman.deinit(). refreshAurDb also frees the local
-/// AUR repository's package cache, so strings from that database are
-/// invalid after it.
+/// and are valid until Pacman.deinit().
 pub const Pacman = struct {
     allocator: Allocator,
     handle: alpm.Handle,
@@ -564,19 +562,6 @@ pub const Pacman = struct {
         return try choices.toOwnedSlice(allocator);
     }
 
-    // ── Database Refresh ─────────────────────────────────────────────────
-
-    /// Refresh only the aurpkgs database.
-    /// Safe because aurpkgs is our local repo — refreshing it
-    /// cannot cause a partial system update.
-    pub fn refreshAurDb(self: Pacman) !void {
-        const db = self.aurpkgs_db orelse return error.AurDbNotConfigured;
-        // The update frees the database's package cache, which the
-        // provides index points into.
-        if (self.provides_index) |index| index.reset();
-        try self.handle.dbUpdate(&.{db}, false);
-    }
-
     // ── Aurpkgs Database Queries ────────────────────────────────────────
 
     /// List all package names in the aurpkgs database that are NOT installed locally.
@@ -705,7 +690,7 @@ fn providerMatchFromPkg(pkg: alpm.AlpmPackage, db: alpm.Database) ProviderCandid
 /// all ~15k packages and their provides lists. Entries for a name keep the
 /// scan order: official databases in pacman.conf order, then the AUR repo,
 /// each in package cache order. Strings are borrowed from libalpm and stay
-/// valid until its package cache is freed (Pacman.deinit, refreshAurDb).
+/// valid until Pacman.deinit.
 /// Not thread-safe.
 const ProvidesIndex = struct {
     allocator: Allocator,
@@ -889,7 +874,7 @@ test "provides index answers like a database scan" {
     }
     try testing.expect(pm.provides_index.?.built);
 
-    // Dropping the index (as refreshAurDb does) falls back to scanning,
+    // Dropping the index (as a failed index build does) falls back to scanning,
     // then rebuilds it once lookups pile up again.
     pm.provides_index.?.reset();
     try testing.expect(!pm.provides_index.?.built);

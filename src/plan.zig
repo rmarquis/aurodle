@@ -64,7 +64,7 @@ pub const Unresolved = struct {
 /// - the target names passed to resolve (argv);
 /// - aur.Client's arena (AUR names, versions, pkgbases, dependency lists);
 /// - libalpm memory through Pacman (repo package names, versions and
-///   dependency lists), valid until Pacman.deinit or refreshAurDb.
+///   dependency lists), valid until Pacman.deinit.
 /// The plan does not borrow from the solver itself, so it may outlive it,
 /// but not the AUR client, the Pacman instance or argv.
 pub const BuildPlan = struct {

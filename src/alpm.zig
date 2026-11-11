@@ -40,7 +40,6 @@ pub const Dependency = struct {
 pub const AlpmError = error{
     HandleInitFailed,
     DatabaseRegistrationFailed,
-    DatabaseUpdateFailed,
     InvalidArgument,
 };
 
@@ -116,20 +115,6 @@ pub const Handle = struct {
         if (db == null) return error.DatabaseRegistrationFailed;
         return .{ .raw = db.? };
     }
-
-    /// Refresh (update) a list of databases.
-    /// For selective refresh of a single db, pass a one-element slice.
-    pub fn dbUpdate(self: Handle, dbs: []const Database, force: bool) AlpmError!void {
-        // Build an alpm_list_t from the slice
-        var list: ?*c.alpm_list_t = null;
-        for (dbs) |db| {
-            list = c.alpm_list_add(list, db.raw);
-        }
-        defer c.alpm_list_free(list);
-
-        const ret = c.alpm_db_update(self.raw, list, if (force) 1 else 0);
-        if (ret < 0) return error.DatabaseUpdateFailed;
-    }
 };
 
 // ── Database ─────────────────────────────────────────────────────────────
@@ -158,7 +143,6 @@ pub const Database = struct {
     }
 
     /// Add a mirror server URL to this database.
-    /// Required before dbUpdate() can download database files.
     pub fn addServer(self: Database, url: []const u8) AlpmError!void {
         const c_url = CStringBuf.init(url) catch return error.InvalidArgument;
         const ret = c.alpm_db_add_server(self.raw, c_url.ptr());
