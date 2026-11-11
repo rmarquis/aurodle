@@ -2,15 +2,13 @@ aurodle(1)
 
 # NAME
 
-aurodle - a minimal AUR helper with a local package repository
+aurodle - an AUR helper that builds packages into a local pacman repository
 
 # SYNOPSIS
 
 *aurodle* <command> [options] [targets...]
 
 # DESCRIPTION
-
-The newts and bolts between the AUR and pacman.
 
 Aurodle builds Arch User Repository (AUR) packages with *makepkg*(8) into a
 local pacman repository via *repo-add*(8), after which *pacman*(8) installs

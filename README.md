@@ -1,8 +1,8 @@
 # aurodle
 
-The newts and bolts between the AUR and pacman.
+An AUR helper that builds packages into a local pacman repository.
 
-aurodle builds AUR packages with makepkg into a local pacman repository, so pacman handles installs and upgrades natively.
+Packages are built with makepkg, and pacman then installs and upgrades them like any other package.
 
 Named after Urodela, the salamander order, as a nod to Zig's mascot Suzie.
 

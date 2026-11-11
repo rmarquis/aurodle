@@ -453,7 +453,7 @@ fn mergeIgnore(allocator: Allocator, cli: []const []const u8, conf: []const []co
 
 fn printHelp() void {
     cmd_types.getStdout().writeAll(
-        \\aurodle: the newts and bolts between the AUR and pacman
+        \\aurodle: an AUR helper that builds packages into a local pacman repository
         \\
         \\Usage: aurodle <command> [options] [targets...]
         \\
