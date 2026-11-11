@@ -166,7 +166,13 @@ This document is a living specification: it describes aurodle's current behavior
 - Skips packages whose built files already exist in `$PKGDEST` (checked via `makepkg --packagelist`)
 - VCS packages build in two passes: `makepkg --nobuild` runs `pkgver()`, then the build is skipped if that version is already in the repository, otherwise `makepkg --noextract --holdver` builds it
 - `--rebuild` forces rebuild even if up to date (`makepkg -f`)
-- `--chroot` builds in a clean chroot via `makechrootpkg -c -u`, creating it with `mkarchroot` if needed (requires devtools). AUR dependencies built earlier in the same run are installed into the chroot via `makechrootpkg -I`
+- `--chroot` builds in a clean chroot via `makechrootpkg -c -u` (requires devtools), in `$CHROOT_DIR` (default `/var/lib/aurodle/chroot`):
+  - the chroot gets its own `pacman.conf`, generated once from the host's repositories (including the local repository) and never overwritten afterwards
+  - the chroot is created with `mkarchroot` on first use, and its root is upgraded once per run
+  - AUR dependencies are installed from the local repository inside the chroot, so they work whether they were built in this run or earlier
+  - makechrootpkg runs as the user (`-U`, `SUDO_USER`) whatever the `PACMAN_AUTH` tool, with `PKGDEST` and makepkg's environment variables passed on
+  - fails with a clear error when `$CHROOT_DIR` is on a `nosuid` mount
+  - nothing is installed on the host, including chosen providers
 
 **Priority**: Must Have (build + repo-add), Should Have (rebuild), Nice to Have (chroot)
 
@@ -476,6 +482,8 @@ This document is a living specification: it describes aurodle's current behavior
 12. **Credential keepalive**: Aurodle keeps the privilege escalation session alive during builds. A long build would otherwise outlast the sudo timestamp and stop at an authentication prompt or fail at install time, which goes against the upfront-prompting goal. See FR-16.
 
 13. **Review after confirmation**: The plan is confirmed before cloning, and the review happens after fetching, so the review can show exactly what will be built. AUR commits are applied only after the review, so an interrupted run shows the same diff again. See FR-10 and FR-11.
+
+14. **Clean chroot builds**: Follow aurutils. The chroot's own `pacman.conf` includes the local repository; arch-nspawn bind-mounts `file://` repositories read-only, so makepkg in the chroot resolves AUR dependencies itself. Injecting built packages with `makechrootpkg -I` was dropped: it could not provide dependencies of dependencies or AUR packages built in earlier runs. The configuration is generated once and left for the user to edit, as with aurutils. See FR-9.
 
 ## Traceability Matrix
 

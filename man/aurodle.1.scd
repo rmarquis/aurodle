@@ -165,7 +165,8 @@ use.
 	_pacman.conf_ *IgnorePkg* are also honored.
 
 *--chroot*
-	Build packages inside a clean chroot using *makechrootpkg*(1).
+	Build packages inside a clean chroot using *makechrootpkg*(1), from
+	the *devtools* package. See *Clean chroot builds* under *NOTES*.
 
 ## Clone options
 
@@ -195,6 +196,11 @@ use.
 	Sort results in descending order by _field_.
 
 # ENVIRONMENT
+
+*CHROOT\_DIR*
+	Directory of the clean chroot used by *--chroot*. Defaults to
+	_/var/lib/aurodle/chroot_. Must not be on a *nosuid* mount, such as a
+	tmpfs _/tmp_.
 
 *AURDEST*
 	Directory where AUR package repositories are cloned. Defaults to
@@ -300,6 +306,31 @@ view all files.
 
 With *--devel*, version checks run on the version last accepted: new AUR
 commits are only applied after the review.
+
+## Clean chroot builds
+
+With *--chroot*, packages are built with *makechrootpkg*(1) in a clean
+chroot instead of on the host, so build dependencies never get installed
+on the host and a PKGBUILD that forgets a dependency fails to build.
+
+The chroot directory (*CHROOT\_DIR*) holds:
+
+_pacman.conf_
+	The chroot's pacman configuration, generated on first use from the
+	host's repositories, including the local AUR repository and its
+	*file://* server. The repository directories are made available
+	read-only inside the chroot, so AUR dependencies are installed from
+	the local repository like any other package. Aurodle never overwrites
+	this file: edit it to change the repositories used for builds, or
+	delete it to generate it again, for example after changing mirrors.
+
+_root_
+	The pristine chroot, created with *mkarchroot*(1) on first use and
+	upgraded once at the start of each run.
+
+Each package is built in a fresh copy of _root_. Repository dependencies
+are chosen by makepkg inside the chroot, so provider choices made before
+the build do not apply to chroot builds.
 
 ## Conflict detection
 
