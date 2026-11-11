@@ -6,7 +6,18 @@ _aurodle_search_fields() {
     local fields=(
         'name:Search by package name'
         'name-desc:Search by name and description'
+        'depends:Search by depends'
+        'makedepends:Search by makedepends'
+        'checkdepends:Search by checkdepends'
+        'optdepends:Search by optdepends'
         'maintainer:Search by maintainer'
+        'submitter:Search by submitter'
+        'provides:Search by provides'
+        'conflicts:Search by conflicts'
+        'replaces:Search by replaces'
+        'keywords:Search by keywords'
+        'groups:Search by groups'
+        'comaintainers:Search by co-maintainers'
     )
     _describe 'search field' fields
 }

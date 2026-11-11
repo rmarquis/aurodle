@@ -87,7 +87,7 @@ end
 
 # Search options
 for cmd in search '-Ss'
-    complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l by -d 'Search by field' -xa 'name name-desc maintainer'
+    complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l by -d 'Search by field' -xa 'name name-desc depends makedepends checkdepends optdepends maintainer submitter provides conflicts replaces keywords groups comaintainers'
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l sort -d 'Sort results' -xa 'name votes popularity'
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l rsort -d 'Reverse sort' -xa 'name votes popularity'
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l raw -d 'Output raw JSON'

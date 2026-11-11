@@ -114,8 +114,9 @@ use.
 	*UNKNOWN*        not found in any source
 
 *status*
-	Check connectivity to the AUR RPC endpoint and the local repository
-	configuration.
+	Show the status of Arch Linux infrastructure from status.archlinux.org:
+	each service's current state, daily uptime over the last 30 days, and
+	90-day uptime ratio.
 
 # OPTIONS
 
@@ -182,7 +183,9 @@ use.
 
 *--by* <field>
 	Search by _field_. Valid values: *name*, *name-desc* (default),
-	*maintainer*.
+	*depends*, *makedepends*, *checkdepends*, *optdepends*, *maintainer*,
+	*submitter*, *provides*, *conflicts*, *replaces*, *keywords*, *groups*,
+	*comaintainers*.
 
 *--sort* <field>
 	Sort results in ascending order by _field_. Valid values: *name*,

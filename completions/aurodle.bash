@@ -40,7 +40,7 @@ _aurodle() {
     # Handle --flag value completions
     case "$prev" in
         --by)
-            COMPREPLY=($(compgen -W "name name-desc maintainer" -- "$cur"))
+            COMPREPLY=($(compgen -W "name name-desc depends makedepends checkdepends optdepends maintainer submitter provides conflicts replaces keywords groups comaintainers" -- "$cur"))
             return
             ;;
         --sort|--rsort)
