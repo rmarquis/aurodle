@@ -11,41 +11,11 @@ const auth_mod = @import("../auth.zig");
 const color = @import("../color.zig");
 const types = @import("types.zig");
 const build_ctx = @import("build_context.zig");
+const chroot = @import("../chroot.zig");
 
 const BuildContext = build_ctx.BuildContext;
 const BuildResult = types.BuildResult;
 const FailedBuild = types.FailedBuild;
-
-const DEFAULT_CHROOT_DIR = "/var/lib/aurodle/chroot";
-
-fn chrootDir() []const u8 {
-    return if (std.c.getenv("CHROOT_DIR")) |p| std.mem.span(p) else DEFAULT_CHROOT_DIR;
-}
-
-/// Ensure a clean chroot exists, creating it with mkarchroot if needed.
-fn ensureChroot(allocator: Allocator, auth: *auth_mod.Auth, err_writer: anytype, ec: color.Style) !bool {
-    if (!utils.findOnPath("makechrootpkg")) {
-        err_writer.print("{s}error:{s} makechrootpkg not found -- install devtools: pacman -S devtools\n", .{ ec.red, ec.reset });
-        return false;
-    }
-
-    const chroot_path = chrootDir();
-    const root_path = std.fmt.allocPrint(allocator, "{s}/root", .{chroot_path}) catch return false;
-    defer allocator.free(root_path);
-
-    std.Io.Dir.accessAbsolute(utils.currentIo(), root_path, .{}) catch {
-        err_writer.print("{s}::{s} creating chroot at {s}...\n", .{ ec.blue, ec.reset, chroot_path });
-        const exit_code = try auth.runInteractive(
-            &.{ "mkarchroot", root_path, "base-devel" },
-            null,
-        );
-        if (exit_code != 0) {
-            err_writer.print("{s}error:{s} failed to create chroot (exit {d})\n", .{ ec.red, ec.reset, exit_code });
-            return false;
-        }
-    };
-    return true;
-}
 
 /// Package file paths reported by `makepkg --packagelist` for clone_dir,
 /// whether or not they exist yet. Null when the command fails or lists
@@ -136,35 +106,23 @@ fn collectBuiltPackagePaths(
     return existingPaths(allocator, fresh, null);
 }
 
-/// Build a package inside a clean chroot using makechrootpkg.
-/// Injects previously-built AUR dependencies via -I flags so the
-/// isolated chroot can satisfy AUR-to-AUR dependency chains.
-fn runChrootBuild(
-    self: *const BuildContext,
-    entry: plan_mod.BuildEntry,
-    built_pkg_paths: *const std.StringHashMapUnmanaged([]const []const u8),
-    clone_dir: []const u8,
-) !u8 {
-    const chroot_path = chrootDir();
+/// Build a package inside the clean chroot (see chroot.zig). AUR
+/// dependencies come from the local repository, which the chroot's
+/// pacman.conf includes, so packages built earlier in the run are found.
+fn runChrootBuild(self: *const BuildContext, clone_dir: []const u8) !u8 {
+    var arena = std.heap.ArenaAllocator.init(self.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
 
-    var argv: std.ArrayListUnmanaged([]const u8) = .empty;
-    defer argv.deinit(self.allocator);
-
-    try argv.appendSlice(self.allocator, &.{ "makechrootpkg", "-c", "-u", "-r", chroot_path });
-
-    for (entry.aur_dep_bases) |dep_base| {
-        if (built_pkg_paths.get(dep_base)) |paths| {
-            for (paths) |pkg_path| {
-                try argv.appendSlice(self.allocator, &.{ "-I", pkg_path });
-            }
-        }
-    }
-
-    if (self.flags.rebuild) {
-        try argv.appendSlice(self.allocator, &.{ "--", "--force" });
-    }
-
-    return self.auth.runInteractive(argv.items, clone_dir);
+    const user = chroot.currentUser() orelse return error.UnknownUser;
+    const argv = try chroot.buildArgv(a, .{
+        .chroot_dir = chroot.dir(),
+        .user = user,
+        .pkgdest = self.repository.repo_dir,
+        .env = try chroot.forwardedEnv(a),
+        .rebuild = self.flags.rebuild,
+    });
+    return self.auth.runInteractive(argv, clone_dir);
 }
 
 /// Build a VCS package in two makepkg passes so a package already in PKGDEST
@@ -276,22 +234,9 @@ pub fn buildLoop(
         // Nothing can be built without a chroot. Returning an empty result
         // here would look like "no failures" and let the caller install
         // every target, so fail the whole build instead.
-        if (!try ensureChroot(self.allocator, self.auth, self.err_writer, ec)) {
+        if (!try chroot.prepare(self.allocator, self.auth, self.cache_root, repository.repo_name, self.err_writer, ec)) {
             return error.ChrootUnavailable;
         }
-    }
-
-    // Track built package paths per pkgbase for chroot -I injection.
-    // In chroot mode, built AUR deps must be explicitly installed into the
-    // clean chroot via makechrootpkg -I since it has no aurpkgs repo.
-    var built_pkg_paths: std.StringHashMapUnmanaged([]const []const u8) = .empty;
-    defer {
-        var it = built_pkg_paths.iterator();
-        while (it.next()) |kv| {
-            for (kv.value_ptr.*) |p| self.allocator.free(p);
-            self.allocator.free(kv.value_ptr.*);
-        }
-        built_pkg_paths.deinit(self.allocator);
     }
 
     // Package files already in the repo, for the VCS pre-check below.
@@ -325,11 +270,10 @@ pub fn buildLoop(
         const is_vcs = devel.isVcsPackage(entry.name);
         var pkglist: ?[]const []const u8 = null;
         defer freePaths(self.allocator, pkglist);
-        if (!is_vcs and !self.flags.rebuild and !self.flags.chroot) {
+        if (!is_vcs and !self.flags.rebuild) {
             pkglist = packageList(self.allocator, clone_dir) catch null;
         }
         var already_built = !self.flags.rebuild and
-            !self.flags.chroot and
             if (is_vcs) blk: {
                 const hint = self.devel_version_hint.get(entry.name) orelse break :blk false;
                 if (repo_versions == null) repo_versions = repository.packageVersions() catch break :blk false;
@@ -350,7 +294,7 @@ pub fn buildLoop(
             }
 
             const exit_code = if (self.flags.chroot) blk: {
-                break :blk try runChrootBuild(self, entry, &built_pkg_paths, clone_dir);
+                break :blk try runChrootBuild(self, clone_dir);
             } else if (split_vcs) blk: {
                 const prepared = sourcesStillPrepared(self, entry.name, clone_dir);
                 break :blk try runVcsBuild(self, entry, clone_dir, prepared, &pkglist, &already_built);
@@ -420,19 +364,14 @@ pub fn buildLoop(
             try all_built_basenames.append(self.allocator, try self.allocator.dupe(u8, basename));
         }
 
-        if (self.flags.chroot) {
-            try built_pkg_paths.put(self.allocator, entry.pkgbase, added_files);
-        } else {
-            defer {
-                for (added_files) |p| self.allocator.free(p);
-                self.allocator.free(added_files);
-            }
-        }
+        for (added_files) |p| self.allocator.free(p);
+        self.allocator.free(added_files);
 
-        // Refresh aurpkgs sync DB only when a subsequent build needs this package.
-        // repo-add updated the repo dir DB, but pacman's sync cache
-        // (/var/lib/pacman/sync/aurpkgs.db) is root-owned and separate.
-        if (anySubsequentEntryNeeds(plan.build_order[i + 1 ..], entry.pkgbase)) {
+        // Refresh aurpkgs sync DB only when a subsequent host build needs
+        // this package. repo-add updated the repo dir DB, but pacman's sync
+        // cache (/var/lib/pacman/sync/aurpkgs.db) is root-owned and
+        // separate. Chroot builds read the repo dir directly (-u).
+        if (!self.flags.chroot and anySubsequentEntryNeeds(plan.build_order[i + 1 ..], entry.pkgbase)) {
             repo_mod.refreshAurpkgsSyncDb(self.allocator, repository, self.auth) catch |err| {
                 self.err_writer.print("{s}warning:{s} failed to refresh aurpkgs sync db: {}\n", .{ ec.yellow, ec.reset, err });
             };

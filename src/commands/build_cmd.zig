@@ -324,8 +324,10 @@ pub fn runBuildPipeline(self: *BuildContext, filtered: []const []const u8, mode:
     // Phase 4.5: Acquire credentials now that the user has committed
     if (try install_phase.acquireAuth(self)) |exit| return exit;
 
-    // Pre-install chosen providers so makepkg -s finds them already installed
-    if (providers_to_install.items.len > 0) {
+    // Pre-install chosen providers so makepkg -s finds them already installed.
+    // Not for chroot builds: they must not install anything on the host,
+    // and makepkg in the chroot cannot see what is installed here.
+    if (providers_to_install.items.len > 0 and !self.flags.chroot) {
         if (!try install_phase.preInstallProviders(self, providers_to_install.items)) return .general_error;
     }
 
