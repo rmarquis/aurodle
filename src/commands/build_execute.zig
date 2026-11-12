@@ -109,7 +109,8 @@ fn collectBuiltPackagePaths(
 /// Build a package inside the clean chroot (see chroot.zig). AUR
 /// dependencies come from the local repository, which the chroot's
 /// pacman.conf includes, so packages built earlier in the run are found.
-fn runChrootBuild(self: *const BuildContext, clone_dir: []const u8) !u8 {
+/// The packages land in `staging`, not in the repository.
+fn runChrootBuild(self: *const BuildContext, clone_dir: []const u8, staging: []const u8) !u8 {
     var arena = std.heap.ArenaAllocator.init(self.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -118,7 +119,7 @@ fn runChrootBuild(self: *const BuildContext, clone_dir: []const u8) !u8 {
     const argv = try chroot.buildArgv(a, .{
         .chroot_dir = chroot.dir(),
         .user = user,
-        .pkgdest = self.repository.repo_dir,
+        .pkgdest = staging,
         .env = try chroot.forwardedEnv(a),
         .rebuild = self.flags.rebuild,
     });
@@ -280,6 +281,10 @@ pub fn buildLoop(
                 break :blk repo_versions.?.contains(entry.name, hint);
             } else allPackagesBuilt(pkglist);
 
+        // Chroot builds write their packages here (see runChrootBuild).
+        var staging: ?[]u8 = null;
+        defer if (staging) |p| self.allocator.free(p);
+
         // Built files are written after this point. The margin absorbs
         // coarse filesystem timestamps; files left by an earlier run are
         // far older.
@@ -294,7 +299,8 @@ pub fn buildLoop(
             }
 
             const exit_code = if (self.flags.chroot) blk: {
-                break :blk try runChrootBuild(self, clone_dir);
+                staging = try chroot.resetStaging(self.allocator, self.io, self.cache_root);
+                break :blk try runChrootBuild(self, clone_dir, staging.?);
             } else if (split_vcs) blk: {
                 const prepared = sourcesStillPrepared(self, entry.name, clone_dir);
                 break :blk try runVcsBuild(self, entry, clone_dir, prepared, &pkglist, &already_built);
@@ -344,8 +350,17 @@ pub fn buildLoop(
         // specific build, avoiding stale old-version files in PKGDEST that
         // would cause repo-add -R to fail (it deletes the old file then can't
         // find it when it also appears in the argument list).
+        // Chroot builds: exactly what landed in the staging PKGDEST.
         const since: ?i96 = if (already_built) null else build_start;
-        const built_paths = collectBuiltPackagePaths(self.allocator, clone_dir, pkglist, since) catch null;
+        const built_paths = if (staging) |dir|
+            chroot.moveStaged(self.allocator, self.io, dir, repository.repo_dir) catch |err| {
+                self.err_writer.print("{s}error:{s} failed to move built packages for {s} into {s}: {}\n", .{ ec.red, ec.reset, entry.pkgbase, repository.repo_dir, err });
+                try failed.append(self.allocator, .{ .pkgbase = entry.pkgbase, .exit_code = 0 });
+                try failed_bases.put(self.allocator, entry.pkgbase, {});
+                continue;
+            }
+        else
+            collectBuiltPackagePaths(self.allocator, clone_dir, pkglist, since) catch null;
         defer freePaths(self.allocator, built_paths);
 
         const added = if (built_paths) |paths|

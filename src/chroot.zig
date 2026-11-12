@@ -9,6 +9,10 @@
 //!   pacman.conf  generated once, never overwritten, so users can edit it
 //!   root/        the pristine chroot, updated once per run
 //!   <user>/      makechrootpkg's working copy, reset from root per build
+//!
+//! Like `aur build`, each package is built into an empty staging PKGDEST
+//! and what lands there is moved into the repository, so the files to add
+//! are exactly the ones this build produced.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const utils = @import("utils.zig");
@@ -153,9 +157,74 @@ pub fn forwardedEnv(arena: Allocator) ![]const []const u8 {
     return out.toOwnedSlice(arena);
 }
 
+/// Name of the staging PKGDEST under the cache root.
+const staging_name = "chroot-pkgdest";
+
+/// Create the staging PKGDEST under `cache_root`, or empty it if a failed
+/// build left files there. Returns its absolute path, which makechrootpkg
+/// needs. Caller frees.
+pub fn resetStaging(allocator: Allocator, io: std.Io, cache_root: []const u8) ![]u8 {
+    const cwd = std.Io.Dir.cwd();
+    const path = try std.fs.path.join(allocator, &.{ cache_root, staging_name });
+    defer allocator.free(path);
+    cwd.deleteTree(io, path) catch {};
+    try cwd.createDirPath(io, path);
+    const abs = try cwd.realPathFileAlloc(io, path, allocator);
+    defer allocator.free(abs);
+    return allocator.dupe(u8, abs);
+}
+
+/// Move every file in `staging` into `repo_dir`, replacing files of the
+/// same name (a rebuild). Returns the repo_dir paths of the package files,
+/// without signatures (repo-add finds those itself), in name order.
+/// Caller frees each path and the slice.
+pub fn moveStaged(allocator: Allocator, io: std.Io, staging: []const u8, repo_dir: []const u8) ![]const []const u8 {
+    const cwd = std.Io.Dir.cwd();
+    var src = try cwd.openDir(io, staging, .{ .iterate = true });
+    defer src.close(io);
+    var dst = try cwd.openDir(io, repo_dir, .{});
+    defer dst.close(io);
+
+    var names: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer {
+        for (names.items) |n| allocator.free(n);
+        names.deinit(allocator);
+    }
+    var it = src.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind != .file) continue;
+        try names.append(allocator, try allocator.dupe(u8, entry.name));
+    }
+    std.mem.sort([]const u8, names.items, {}, lessThan);
+
+    var paths: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer {
+        for (paths.items) |p| allocator.free(p);
+        paths.deinit(allocator);
+    }
+    for (names.items) |name| {
+        src.rename(name, dst, name, io) catch |err| switch (err) {
+            // The cache and the repository may be on different filesystems.
+            error.CrossDevice => {
+                try src.copyFile(name, dst, name, io, .{});
+                try src.deleteFile(io, name);
+            },
+            else => |e| return e,
+        };
+        if (std.mem.endsWith(u8, name, ".sig")) continue;
+        try paths.append(allocator, try std.fs.path.join(allocator, &.{ repo_dir, name }));
+    }
+    return paths.toOwnedSlice(allocator);
+}
+
+fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.lessThan(u8, a, b);
+}
+
 pub const BuildOptions = struct {
     chroot_dir: []const u8,
     user: []const u8,
+    /// The staging PKGDEST (see resetStaging).
     pkgdest: []const u8,
     /// From forwardedEnv.
     env: []const []const u8 = &.{},
@@ -369,11 +438,11 @@ test "buildArgv passes the user and PKGDEST and builds without -I" {
     const argv = try buildArgv(arena.allocator(), .{
         .chroot_dir = "/var/lib/aurodle/chroot",
         .user = "alice",
-        .pkgdest = "/var/lib/aurodle/aur",
+        .pkgdest = "/home/alice/.cache/aurodle/chroot-pkgdest",
         .env = &.{"MAKEFLAGS=-j8"},
     });
     const expected = [_][]const u8{
-        "env",           "SUDO_USER=alice", "PKGDEST=/var/lib/aurodle/aur", "MAKEFLAGS=-j8",
+        "env",           "SUDO_USER=alice", "PKGDEST=/home/alice/.cache/aurodle/chroot-pkgdest", "MAKEFLAGS=-j8",
         "makechrootpkg", "-c",              "-u",                           "-U",
         "alice",         "-r",              "/var/lib/aurodle/chroot",
     };
@@ -392,4 +461,58 @@ test "buildArgv forwards --force to makepkg on rebuild" {
     });
     try testing.expectEqualStrings("--", argv[argv.len - 2]);
     try testing.expectEqualStrings("--force", argv[argv.len - 1]);
+}
+
+test "resetStaging empties the staging directory" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+
+    const first = try resetStaging(testing.allocator, testing.io, root);
+    defer testing.allocator.free(first);
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = staging_name ++ "/left-over.pkg.tar.zst", .data = "x" });
+
+    const again = try resetStaging(testing.allocator, testing.io, root);
+    defer testing.allocator.free(again);
+    try testing.expectEqualStrings(first, again);
+    try testing.expect(std.fs.path.isAbsolute(again));
+    try testing.expectError(error.FileNotFound, tmp.dir.access(testing.io, staging_name ++ "/left-over.pkg.tar.zst", .{}));
+}
+
+test "moveStaged moves every file and returns the packages without signatures" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(testing.io, "staging");
+    try tmp.dir.createDirPath(testing.io, "repo");
+    for ([_][]const u8{ "foo-1-1-x86_64.pkg.tar.zst", "foo-1-1-x86_64.pkg.tar.zst.sig", "foo-debug-1-1-x86_64.pkg.tar.zst" }) |name| {
+        const sub = try std.fs.path.join(testing.allocator, &.{ "staging", name });
+        defer testing.allocator.free(sub);
+        try tmp.dir.writeFile(testing.io, .{ .sub_path = sub, .data = "new" });
+    }
+    // A rebuild replaces the file already in the repository.
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "repo/foo-1-1-x86_64.pkg.tar.zst", .data = "old" });
+
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    const staging = try std.fs.path.join(testing.allocator, &.{ root, "staging" });
+    defer testing.allocator.free(staging);
+    const repo = try std.fs.path.join(testing.allocator, &.{ root, "repo" });
+    defer testing.allocator.free(repo);
+
+    const paths = try moveStaged(testing.allocator, testing.io, staging, repo);
+    defer {
+        for (paths) |p| testing.allocator.free(p);
+        testing.allocator.free(paths);
+    }
+    try testing.expectEqual(@as(usize, 2), paths.len);
+    try testing.expectEqualStrings("foo-1-1-x86_64.pkg.tar.zst", std.fs.path.basename(paths[0]));
+    try testing.expectEqualStrings("foo-debug-1-1-x86_64.pkg.tar.zst", std.fs.path.basename(paths[1]));
+    try testing.expectEqualStrings(repo, std.fs.path.dirname(paths[0]).?);
+
+    var buf: [8]u8 = undefined;
+    const data = try tmp.dir.readFile(testing.io, "repo/foo-1-1-x86_64.pkg.tar.zst", &buf);
+    try testing.expectEqualStrings("new", data);
+    try tmp.dir.access(testing.io, "repo/foo-1-1-x86_64.pkg.tar.zst.sig", .{});
+    try testing.expectError(error.FileNotFound, tmp.dir.access(testing.io, "staging/foo-1-1-x86_64.pkg.tar.zst", .{}));
 }

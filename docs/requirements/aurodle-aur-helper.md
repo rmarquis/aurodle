@@ -171,7 +171,8 @@ This document is a living specification: it describes aurodle's current behavior
   - the chroot is created with `mkarchroot` on first use, and its root is upgraded once per run
   - AUR dependencies are installed from the local repository inside the chroot, so they work whether they were built in this run or earlier
   - AUR packages installed on the host do not satisfy dependencies: one missing from the local repository is built (the chroot cannot see the host)
-  - makechrootpkg runs as the user (`-U`, `SUDO_USER`) whatever the `PACMAN_AUTH` tool, with `PKGDEST` and makepkg's environment variables passed on
+  - makechrootpkg runs as the user (`-U`, `SUDO_USER`) whatever the `PACMAN_AUTH` tool, with makepkg's environment variables passed on
+  - each package is built into an empty staging `PKGDEST` in the cache; every file it produced is moved into the repository and exactly those packages are added with `repo-add`
   - fails with a clear error when `$CHROOT_DIR` is on a `nosuid` mount
   - nothing is installed on the host, including chosen providers
 
