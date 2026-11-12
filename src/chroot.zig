@@ -1,12 +1,13 @@
 //! Clean-chroot builds with devtools, the aurutils way: the chroot has its
-//! own pacman.conf, generated from the host's, that includes the local
+//! own pacman.conf, devtools' clean-build template plus the local
 //! repository. makepkg inside the chroot then resolves AUR dependencies
 //! like any other, and arch-nspawn bind-mounts every `file://` repository
 //! read-only, so nothing has to be injected with `makechrootpkg -I`.
 //!
 //! Layout under the chroot directory ($CHROOT_DIR, default
 //! /var/lib/aurodle/chroot):
-//!   pacman.conf  generated once, never overwritten, so users can edit it
+//!   pacman.conf  generated once, never overwritten, so users can edit it;
+//!                must serve the local repository from its directory
 //!   root/        the pristine chroot, updated once per run
 //!   <user>/      makechrootpkg's working copy, reset from root per build
 //!
@@ -14,6 +15,7 @@
 //! and what lands there is moved into the repository, so the files to add
 //! are exactly the ones this build produced.
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const utils = @import("utils.zig");
 const auth_mod = @import("auth.zig");
@@ -30,67 +32,65 @@ pub fn dir() []const u8 {
     return default_dir;
 }
 
-/// [options] directives copied into the chroot's pacman.conf. The others
-/// describe the host (RootDir, DBPath, CacheDir, HookDir, GPGDir, LogFile)
-/// or its preferences (IgnorePkg, HoldPkg, Color), which must not shape a
-/// clean build.
-const kept_options = [_][]const u8{
-    "Architecture",
-    "SigLevel",
-    "LocalFileSigLevel",
-    "RemoteFileSigLevel",
-    "ParallelDownloads",
-    "DisableDownloadTimeout",
-};
+/// devtools' pacman.conf templates, the ones its own clean chroots use:
+/// official repositories only, with `Include = /etc/pacman.d/mirrorlist`,
+/// which arch-nspawn fills from the host's mirrors on every run.
+const devtools_conf_dir = "/usr/share/devtools/pacman.conf.d";
 
 const conf_header =
-    \\# pacman.conf for aurodle's build chroot, generated from the host's
-    \\# configuration. aurodle never overwrites this file: edit it to change
-    \\# the repositories available to builds, or delete it to regenerate it.
+    \\# pacman.conf for aurodle's build chroot: devtools' template for clean
+    \\# builds, followed by the local repository. aurodle never overwrites
+    \\# this file: edit it to change the repositories available to builds,
+    \\# or delete it to generate it again.
+    \\
     \\
 ;
 
-/// Render the chroot's pacman.conf from `pacman-conf` output (the host's
-/// resolved configuration, with Include files expanded). Keeps every
-/// repository as configured, including the local one, and only the
-/// [options] directives in kept_options. Caller frees.
-pub fn renderPacmanConf(allocator: Allocator, dump: []const u8) ![]u8 {
+/// The devtools template for a host with these repositories
+/// (`pacman-conf --repo-list` output): with [multilib] when the host has
+/// it on x86_64, as aurutils does, so 32-bit packages build.
+pub fn templatePath(repo_list: []const u8, x86_64: bool) []const u8 {
+    if (x86_64 and listHasLine(repo_list, "multilib")) return devtools_conf_dir ++ "/multilib.conf";
+    return devtools_conf_dir ++ "/extra.conf";
+}
+
+fn listHasLine(list: []const u8, wanted: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, list, '\n');
+    while (lines.next()) |raw| {
+        if (std.mem.eql(u8, std.mem.trim(u8, raw, " \t\r"), wanted)) return true;
+    }
+    return false;
+}
+
+/// Render the chroot's pacman.conf: the devtools template, then the local
+/// repository's section as the host resolves it (`pacman-conf --repo`
+/// output: Usage, SigLevel, Server). Caller frees.
+pub fn renderPacmanConf(allocator: Allocator, template: []const u8, repo_name: []const u8, repo_dump: []const u8) ![]u8 {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(allocator);
     try out.appendSlice(allocator, conf_header);
-
-    var in_options = false;
-    var lines = std.mem.splitScalar(u8, dump, '\n');
+    try out.appendSlice(allocator, template);
+    if (template.len > 0 and template[template.len - 1] != '\n') try out.append(allocator, '\n');
+    try out.print(allocator, "\n[{s}]\n", .{repo_name});
+    var lines = std.mem.splitScalar(u8, repo_dump, '\n');
     while (lines.next()) |raw| {
         const line = std.mem.trim(u8, raw, " \t\r");
         if (line.len == 0) continue;
-        if (line[0] == '[') {
-            in_options = std.mem.eql(u8, line, "[options]");
-            try out.append(allocator, '\n');
-        } else if (in_options and !isKeptOption(line)) {
-            continue;
-        }
         try out.appendSlice(allocator, line);
         try out.append(allocator, '\n');
     }
     return out.toOwnedSlice(allocator);
 }
 
-fn isKeptOption(line: []const u8) bool {
-    const end = std.mem.indexOfAny(u8, line, " =") orelse line.len;
-    for (kept_options) |key| {
-        if (std.mem.eql(u8, line[0..end], key)) return true;
-    }
-    return false;
-}
-
-/// Does a pacman.conf have a [`repo`] section?
-pub fn confHasRepo(conf: []const u8, repo: []const u8) bool {
-    var lines = std.mem.splitScalar(u8, conf, '\n');
+/// Does one of these servers (`pacman-conf --repo NAME Server` output,
+/// one per line) point to `repo_dir`?
+pub fn serversInclude(servers: []const u8, repo_dir: []const u8) bool {
+    const want = std.mem.trimEnd(u8, repo_dir, "/");
+    var lines = std.mem.splitScalar(u8, servers, '\n');
     while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \t\r");
-        if (line.len < 2 or line[0] != '[' or line[line.len - 1] != ']') continue;
-        if (std.mem.eql(u8, line[1 .. line.len - 1], repo)) return true;
+        const url = std.mem.trim(u8, raw, " \t\r");
+        if (!std.mem.startsWith(u8, url, "file://")) continue;
+        if (std.mem.eql(u8, std.mem.trimEnd(u8, url["file://".len..], "/"), want)) return true;
     }
     return false;
 }
@@ -251,7 +251,8 @@ pub fn buildArgv(arena: Allocator, opts: BuildOptions) ![]const []const u8 {
 }
 
 /// Get the chroot ready for this run: check devtools and the mount, write
-/// pacman.conf if missing, then create root or bring it up to date. Root is
+/// pacman.conf if missing and check that it serves the local repository
+/// from `repo_dir`, then create root or bring it up to date. Root is
 /// updated once here so each build's `-u` only has to sync databases.
 /// Returns false after printing why when the chroot cannot be used.
 pub fn prepare(
@@ -259,6 +260,7 @@ pub fn prepare(
     auth: *auth_mod.Auth,
     cache_root: []const u8,
     repo_name: []const u8,
+    repo_dir: []const u8,
     err_writer: anytype,
     ec: color.Style,
 ) !bool {
@@ -284,9 +286,9 @@ pub fn prepare(
     defer allocator.free(root_path);
 
     if (!fileExists(conf_path)) {
-        if (!try writePacmanConf(allocator, auth, cache_root, conf_path, err_writer, ec)) return false;
+        if (!try writePacmanConf(allocator, auth, cache_root, conf_path, repo_name, err_writer, ec)) return false;
     }
-    warnIfRepoMissing(allocator, conf_path, repo_name, err_writer, ec);
+    if (!try checkRepo(allocator, conf_path, repo_name, repo_dir, err_writer, ec)) return false;
 
     const exit_code = if (!utils.dirExists(root_path)) blk: {
         err_writer.print("{s}::{s} creating chroot at {s}...\n", .{ ec.blue, ec.reset, chroot_dir });
@@ -309,24 +311,36 @@ fn fileExists(path: []const u8) bool {
     return true;
 }
 
-/// Generate the chroot's pacman.conf from the host's. The chroot directory
-/// is root-owned, so the file is staged in the cache and installed through
-/// PACMAN_AUTH.
+/// Generate the chroot's pacman.conf (see renderPacmanConf). The chroot
+/// directory is root-owned, so the file is staged in the cache and
+/// installed through PACMAN_AUTH.
 fn writePacmanConf(
     allocator: Allocator,
     auth: *auth_mod.Auth,
     cache_root: []const u8,
     conf_path: []const u8,
+    repo_name: []const u8,
     err_writer: anytype,
     ec: color.Style,
 ) !bool {
-    const dump = try utils.runCommand(allocator, &.{"pacman-conf"});
-    defer dump.deinit(allocator);
-    if (!dump.success()) {
-        err_writer.print("{s}error:{s} pacman-conf failed: {s}\n", .{ ec.red, ec.reset, dump.stderr });
-        return false;
+    const repo_list = try utils.runCommand(allocator, &.{ "pacman-conf", "--repo-list" });
+    defer repo_list.deinit(allocator);
+    const repo_dump = try utils.runCommand(allocator, &.{ "pacman-conf", "--repo", repo_name });
+    defer repo_dump.deinit(allocator);
+    for ([_]utils.ProcessResult{ repo_list, repo_dump }) |r| {
+        if (!r.success()) {
+            err_writer.print("{s}error:{s} pacman-conf failed: {s}\n", .{ ec.red, ec.reset, r.stderr });
+            return false;
+        }
     }
-    const conf = try renderPacmanConf(allocator, dump.stdout);
+
+    const template_path = templatePath(repo_list.stdout, builtin.cpu.arch == .x86_64);
+    const template = std.Io.Dir.readFileAlloc(std.Io.Dir.cwd(), utils.currentIo(), template_path, allocator, .limited(1024 * 1024)) catch |err| {
+        err_writer.print("{s}error:{s} could not read {s}: {} -- reinstall devtools\n", .{ ec.red, ec.reset, template_path, err });
+        return false;
+    };
+    defer allocator.free(template);
+    const conf = try renderPacmanConf(allocator, template, repo_name, repo_dump.stdout);
     defer allocator.free(conf);
 
     try std.Io.Dir.createDirPath(std.Io.Dir.cwd(), utils.currentIo(), cache_root);
@@ -345,83 +359,86 @@ fn writePacmanConf(
     return true;
 }
 
-/// Builds still work without the local repository in the chroot's
-/// pacman.conf (an edit may have removed it), but not ones with AUR
-/// dependencies.
-fn warnIfRepoMissing(allocator: Allocator, conf_path: []const u8, repo_name: []const u8, err_writer: anytype, ec: color.Style) void {
-    const conf = std.Io.Dir.readFileAlloc(std.Io.Dir.cwd(), utils.currentIo(), conf_path, allocator, .limited(1024 * 1024)) catch return;
-    defer allocator.free(conf);
-    if (!confHasRepo(conf, repo_name)) {
+/// Builds read AUR dependencies from the repository the chroot's
+/// pacman.conf names, and their packages are added to `repo_dir`: the
+/// two must be the same, or builds would see a stale or missing database
+/// (after an edit, or after the repository moved). Asks pacman-conf, so
+/// Include files in an edited pacman.conf count.
+fn checkRepo(
+    allocator: Allocator,
+    conf_path: []const u8,
+    repo_name: []const u8,
+    repo_dir: []const u8,
+    err_writer: anytype,
+    ec: color.Style,
+) !bool {
+    const servers = try utils.runCommand(allocator, &.{ "pacman-conf", "--config", conf_path, "--repo", repo_name, "Server" });
+    defer servers.deinit(allocator);
+    if (servers.success() and serversInclude(servers.stdout, repo_dir)) return true;
+    if (servers.success()) {
         err_writer.print(
-            "{s}warning:{s} {s} has no [{s}] section; builds with AUR dependencies will fail\n",
-            .{ ec.yellow, ec.reset, conf_path, repo_name },
+            "{s}error:{s} [{s}] in {s} has no Server = file://{s} -- edit the file, or delete it to generate it again\n",
+            .{ ec.red, ec.reset, repo_name, conf_path, repo_dir },
+        );
+    } else {
+        err_writer.print(
+            "{s}error:{s} {s} has no usable [{s}] section ({s}) -- edit the file, or delete it to generate it again\n",
+            .{ ec.red, ec.reset, conf_path, repo_name, std.mem.trim(u8, servers.stderr, " \t\r\n") },
         );
     }
+    return false;
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
 
 const testing = std.testing;
 
-test "renderPacmanConf keeps repositories and only build-relevant options" {
-    const dump =
+test "templatePath adds multilib when the host has it on x86_64" {
+    const with = "core\nextra\nmultilib\naur\n";
+    try testing.expectEqualStrings(devtools_conf_dir ++ "/multilib.conf", templatePath(with, true));
+    try testing.expectEqualStrings(devtools_conf_dir ++ "/extra.conf", templatePath(with, false));
+    try testing.expectEqualStrings(devtools_conf_dir ++ "/extra.conf", templatePath("core\nextra\nmultilib-testing\n", true));
+}
+
+test "renderPacmanConf appends the local repository to the template" {
+    const template =
         \\[options]
-        \\RootDir = /
-        \\DBPath = /var/lib/pacman/
-        \\CacheDir = /var/cache/pacman/pkg/
-        \\HoldPkg = pacman
-        \\IgnorePkg = linux
-        \\Architecture = x86_64
-        \\Color
-        \\ParallelDownloads = 5
-        \\SigLevel = PackageRequired
-        \\SigLevel = DatabaseOptional
-        \\LocalFileSigLevel = PackageOptional
+        \\Architecture = auto
+        \\
         \\[core]
-        \\Usage = All
-        \\Server = https://mirror.example/core/os/x86_64
-        \\[aur]
+        \\Include = /etc/pacman.d/mirrorlist
+    ;
+    const dump =
         \\Usage = All
         \\SigLevel = PackageOptional
-        \\SigLevel = PackageTrustAll
         \\Server = file:///var/lib/aurodle/aur
         \\
     ;
-    const conf = try renderPacmanConf(testing.allocator, dump);
+    const conf = try renderPacmanConf(testing.allocator, template, "aur", dump);
     defer testing.allocator.free(conf);
 
     try testing.expectEqualStrings(conf_header ++
-        \\
         \\[options]
-        \\Architecture = x86_64
-        \\ParallelDownloads = 5
-        \\SigLevel = PackageRequired
-        \\SigLevel = DatabaseOptional
-        \\LocalFileSigLevel = PackageOptional
+        \\Architecture = auto
         \\
         \\[core]
-        \\Usage = All
-        \\Server = https://mirror.example/core/os/x86_64
+        \\Include = /etc/pacman.d/mirrorlist
         \\
         \\[aur]
         \\Usage = All
         \\SigLevel = PackageOptional
-        \\SigLevel = PackageTrustAll
         \\Server = file:///var/lib/aurodle/aur
         \\
     , conf);
-    try testing.expect(confHasRepo(conf, "aur"));
-    try testing.expect(confHasRepo(conf, "core"));
-    try testing.expect(!confHasRepo(conf, "options2"));
-    try testing.expect(!confHasRepo(conf, "multilib"));
 }
 
-test "isKeptOption matches whole directive names" {
-    try testing.expect(isKeptOption("SigLevel = Required"));
-    try testing.expect(isKeptOption("Architecture=auto"));
-    try testing.expect(!isKeptOption("SigLevelX = Required"));
-    try testing.expect(!isKeptOption("CacheDir = /x"));
-    try testing.expect(!isKeptOption("Color"));
+test "serversInclude matches the repository directory" {
+    const servers = "https://mirror.example/aur\nfile:///var/lib/aurodle/aur/\n";
+    try testing.expect(serversInclude(servers, "/var/lib/aurodle/aur"));
+    try testing.expect(serversInclude(servers, "/var/lib/aurodle/aur/"));
+    try testing.expect(!serversInclude(servers, "/var/lib/aurodle/other"));
+    try testing.expect(!serversInclude(servers, "/var/lib/aurodle"));
+    try testing.expect(!serversInclude("", "/var/lib/aurodle/aur"));
 }
 
 test "hasNosuid finds the option among mount options" {

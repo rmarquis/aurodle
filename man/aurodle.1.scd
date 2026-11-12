@@ -317,12 +317,18 @@ The chroot directory (*CHROOT\_DIR*) holds:
 
 _pacman.conf_
 	The chroot's pacman configuration, generated on first use from the
-	host's repositories, including the local AUR repository and its
-	*file://* server. The repository directories are made available
+	template *devtools* uses for clean builds
+	(_/usr/share/devtools/pacman.conf.d/extra.conf_, or _multilib.conf_
+	when the host enables *[multilib]*), followed by the local AUR
+	repository as the host configures it. The official repositories use
+	the host's mirrors, which *arch-nspawn*(1) copies into the chroot on
+	every run. The local repository's directory is made available
 	read-only inside the chroot, so AUR dependencies are installed from
-	the local repository like any other package. Aurodle never overwrites
-	this file: edit it to change the repositories used for builds, or
-	delete it to generate it again, for example after changing mirrors.
+	it like any other package. Aurodle never overwrites this file: edit
+	it to change the repositories used for builds, or delete it to
+	generate it again. Its local repository section must keep a
+	*file://* server pointing to the repository directory (*PKGDEST*);
+	otherwise chroot builds stop with an error.
 
 _root_
 	The pristine chroot, created with *mkarchroot*(1) on first use and

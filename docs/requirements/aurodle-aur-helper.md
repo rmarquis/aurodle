@@ -167,7 +167,8 @@ This document is a living specification: it describes aurodle's current behavior
 - VCS packages build in two passes: `makepkg --nobuild` runs `pkgver()`, then the build is skipped if that version is already in the repository, otherwise `makepkg --noextract --holdver` builds it
 - `--rebuild` forces rebuild even if up to date (`makepkg -f`)
 - `--chroot` builds in a clean chroot via `makechrootpkg -c -u` (requires devtools), in `$CHROOT_DIR` (default `/var/lib/aurodle/chroot`):
-  - the chroot gets its own `pacman.conf`, generated once from the host's repositories (including the local repository) and never overwritten afterwards
+  - the chroot gets its own `pacman.conf`, generated once from devtools' clean-build template (`extra.conf`, or `multilib.conf` when the host enables `[multilib]` on x86_64) followed by the host's local repository section, and never overwritten afterwards
+  - fails with a clear error when that `pacman.conf` has no local repository section with a `file://` server pointing to `PKGDEST`
   - the chroot is created with `mkarchroot` on first use, and its root is upgraded once per run
   - AUR dependencies are installed from the local repository inside the chroot, so they work whether they were built in this run or earlier
   - AUR packages installed on the host do not satisfy dependencies: one missing from the local repository is built (the chroot cannot see the host)

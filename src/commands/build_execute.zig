@@ -235,7 +235,7 @@ pub fn buildLoop(
         // Nothing can be built without a chroot. Returning an empty result
         // here would look like "no failures" and let the caller install
         // every target, so fail the whole build instead.
-        if (!try chroot.prepare(self.allocator, self.auth, self.cache_root, repository.repo_name, self.err_writer, ec)) {
+        if (!try chroot.prepare(self.allocator, self.auth, self.cache_root, repository.repo_name, repository.repo_dir, self.err_writer, ec)) {
             return error.ChrootUnavailable;
         }
     }
