@@ -210,6 +210,38 @@ fn runVcsBuild(
     return utils.runInteractive(self.allocator, &.{ "makepkg", "-s", "--noextract", "--holdver", "--noconfirm" }, clone_dir);
 }
 
+/// Is a VCS package already built, for a chroot build? Its version is only
+/// known once pkgver() has run, so, as `aur build --pkgver` does, run
+/// `makepkg --nobuild --nodeps` on the host first (unless the `upgrade
+/// --devel` check just did), then compare `--packagelist` with the
+/// repository. --nodeps installs nothing on the host. If pkgver() fails
+/// there, for example for want of a makedepend, the package is built:
+/// the chroot finds the version itself. Stores the `--packagelist`
+/// result in `pkglist`.
+fn chrootVcsBuilt(
+    self: *const BuildContext,
+    entry: plan_mod.BuildEntry,
+    clone_dir: []const u8,
+    conf: ChrootConf,
+    pkglist: *?[]const []const u8,
+) !bool {
+    if (!sourcesStillPrepared(self, entry.name, clone_dir)) {
+        const sc = self.stdout_color;
+        types.getStdout().print("{s}::{s} Preparing {s} sources...\n", .{ sc.blue, sc.reset, entry.name });
+        const code = try utils.runInteractive(self.allocator, &.{ "makepkg", "--nobuild", "--nodeps", "--noconfirm" }, clone_dir);
+        if (code != 0) {
+            const ec = self.stderr_color;
+            self.err_writer.print(
+                "{s}warning:{s} could not run pkgver() for {s} on the host (exit {d}); building it in the chroot\n",
+                .{ ec.yellow, ec.reset, entry.name, code },
+            );
+            return false;
+        }
+    }
+    pkglist.* = packageList(self.allocator, clone_dir, conf) catch null;
+    return allPackagesBuilt(pkglist.*);
+}
+
 /// True if the `upgrade --devel` version check left prepared sources for
 /// `name` in clone_dir and no tracked build file changed since (no AUR
 /// pull, no edit during review). The check ran `makepkg --nobuild`, which
@@ -303,7 +335,8 @@ pub fn buildLoop(
         // VCS packages: use the devel-computed version hint to check the local
         // repo directly. makepkg --packagelist is useless before pkgver() runs
         // (it reports the stale cached pkgver). Without a hint, runVcsBuild
-        // performs the check between its two makepkg passes instead.
+        // performs the check between its two makepkg passes instead, or
+        // chrootVcsBuilt runs pkgver() on the host for a chroot build.
         // Non-VCS packages: check PKGDEST via makepkg --packagelist as usual.
         // The --packagelist result is kept to find the built files
         // afterwards without running makepkg once more.
@@ -320,6 +353,19 @@ pub fn buildLoop(
                 break :blk repo_versions.?.contains(entry.name, hint);
             } else allPackagesBuilt(pkglist);
 
+        // Version found by chrootVcsBuilt, shown instead of "latest".
+        var vcs_version: ?[]const u8 = null;
+        defer if (vcs_version) |v| self.allocator.free(v);
+        if (chroot_conf) |conf| {
+            if (is_vcs and !self.flags.rebuild and self.devel_version_hint.get(entry.name) == null) {
+                already_built = try chrootVcsBuilt(self, entry, clone_dir, conf, &pkglist);
+                // pkglist is only set once pkgver() ran; before, the
+                // PKGBUILD's version is stale.
+                if (pkglist != null) vcs_version = devel.srcinfoVersion(self.allocator, clone_dir) catch null;
+            }
+        }
+        const shown_ver = vcs_version orelse ver;
+
         // Chroot builds write their packages here (see runChrootBuild).
         var staging: ?[]u8 = null;
         defer if (staging) |p| self.allocator.free(p);
@@ -330,11 +376,11 @@ pub fn buildLoop(
         const build_start = std.Io.Timestamp.now(self.io, .real).nanoseconds - std.time.ns_per_s;
 
         if (already_built) {
-            types.getStdout().print("{s}::{s} {s} {s} already built, skipping\n", .{ sc.yellow, sc.reset, entry.name, ver });
+            types.getStdout().print("{s}::{s} {s} {s} already built, skipping\n", .{ sc.yellow, sc.reset, entry.name, shown_ver });
         } else {
             const split_vcs = is_vcs and !self.flags.chroot and !self.flags.rebuild;
             if (!split_vcs) {
-                types.getStdout().print("{s}::{s} Building {s} {s}...\n", .{ sc.blue, sc.reset, entry.name, ver });
+                types.getStdout().print("{s}::{s} Building {s} {s}...\n", .{ sc.blue, sc.reset, entry.name, shown_ver });
             }
 
             const exit_code = if (self.flags.chroot) blk: {

@@ -345,7 +345,10 @@ Each package is built in a fresh copy of _root_, into an empty
 staging directory in the cache (_chroot-pkgdest_), and what the build
 produced is then moved into the local repository. Repository dependencies
 are chosen by makepkg inside the chroot, so provider choices made before
-the build do not apply to chroot builds. AUR packages installed on the
+the build do not apply to chroot builds. For a VCS package,
+*makepkg --nobuild --nodeps* first runs _pkgver()_ on the host, installing
+nothing, so a version already in the repository is not built again; if
+that fails, the package is built anyway. AUR packages installed on the
 host do not count as available: an AUR dependency missing from the local
 repository is built, even if it is installed.
 

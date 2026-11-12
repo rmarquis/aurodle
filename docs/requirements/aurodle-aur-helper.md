@@ -175,6 +175,7 @@ This document is a living specification: it describes aurodle's current behavior
   - AUR packages installed on the host do not satisfy dependencies: one missing from the local repository is built (the chroot cannot see the host)
   - makechrootpkg runs as the user (`-U`, `SUDO_USER`) whatever the `PACMAN_AUTH` tool, with makepkg's environment variables passed on
   - each package is built into an empty staging `PKGDEST` in the cache; every file it produced is moved into the repository and exactly those packages are added with `repo-add`
+  - VCS packages: unless `upgrade --devel` already found the version, `makepkg --nobuild --nodeps` runs `pkgver()` on the host first (installing nothing), and the build is skipped if that version is already in the repository; if it fails on the host, the package is built in the chroot
   - fails with a clear error when `$CHROOT_DIR` is on a `nosuid` mount
   - nothing is installed on the host, including chosen providers
 
