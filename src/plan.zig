@@ -3,6 +3,18 @@ const Allocator = std.mem.Allocator;
 const source_mod = @import("source.zig");
 const provider_mod = @import("provider.zig");
 
+/// Settings that change what a plan contains. The command layer derives
+/// them from the command-line flags in one place (Flags.solverOptions),
+/// so every command that shows or builds a plan agrees on its contents.
+pub const SolverOptions = struct {
+    /// Rebuild targets already built or installed at the AUR version.
+    rebuild: bool = false,
+    /// With `rebuild`, still skip targets that are up to date.
+    needed: bool = false,
+    /// Packages that must not be pulled in. Borrowed.
+    ignore: []const []const u8 = &.{},
+};
+
 pub const BuildEntry = struct {
     name: []const u8,
     pkgbase: []const u8,

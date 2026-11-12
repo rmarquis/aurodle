@@ -23,7 +23,7 @@ pub fn resolve(self: *BuildContext, targets: []const []const u8) !ExitCode {
     const filtered = types.filterIgnored(self.stdout_color, self.stderr_color, self.err_writer, self.flags, targets, &ignore_buf);
     if (filtered.len == 0) return .success;
 
-    var s = self.newSolver();
+    var s = solver_mod.Solver.init(self.allocator, self.registry, self.flags.solverOptions());
     defer s.deinit();
 
     const plan = s.resolve(filtered) catch |err| {
@@ -54,7 +54,7 @@ pub fn buildorder(self: *BuildContext, targets: []const []const u8) !ExitCode {
     const filtered = types.filterIgnored(self.stdout_color, self.stderr_color, self.err_writer, self.flags, targets, &ignore_buf);
     if (filtered.len == 0) return .success;
 
-    var s = self.newSolver();
+    var s = solver_mod.Solver.init(self.allocator, self.registry, self.flags.solverOptions());
     defer s.deinit();
 
     const plan = s.resolve(filtered) catch |err| {

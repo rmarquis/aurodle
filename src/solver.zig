@@ -16,6 +16,7 @@ const DepGraph = graph_mod.DepGraph;
 pub const BuildEntry = plan_mod.BuildEntry;
 pub const DependencyEntry = plan_mod.DependencyEntry;
 pub const Conflict = plan_mod.Conflict;
+pub const SolverOptions = plan_mod.SolverOptions;
 pub const BuildPlan = plan_mod.BuildPlan;
 pub const Unresolved = plan_mod.Unresolved;
 
@@ -33,9 +34,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
         registry: *RegistryT,
         graph: DepGraph,
         targets: std.StringHashMapUnmanaged(void),
-        rebuild: bool = false,
-        needed: bool = false,
-        ignore: []const []const u8 = &.{},
+        options: SolverOptions,
         /// Set when resolve() fails with error.UnresolvableDependency.
         unresolved: ?Unresolved = null,
         /// Dep string → name of the first package that required it.
@@ -50,10 +49,11 @@ pub fn SolverImpl(comptime RegistryT: type) type {
         /// constraints (foo>=2 and foo<2) from flipping a node forever.
         const max_constraint_rounds = 8;
 
-        pub fn init(allocator: Allocator, reg: *RegistryT) Self {
+        pub fn init(allocator: Allocator, reg: *RegistryT, options: SolverOptions) Self {
             return .{
                 .allocator = allocator,
                 .registry = reg,
+                .options = options,
                 .graph = DepGraph.init(allocator),
                 .targets = .empty,
             };
@@ -432,7 +432,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                 else
                     false;
                 const is_vcs = RegistryT.isVcsPackage(actual_name);
-                if (dominated or is_vcs or (self.rebuild and !self.needed)) {
+                if (dominated or is_vcs or (self.options.rebuild and !self.options.needed)) {
                     node.meta.source = .aur;
                     if (aur_pkg) |pkg| node.meta.version = pkg.version;
                 }
@@ -483,7 +483,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
         }
 
         fn isIgnoredPkg(self: *Self, name: []const u8) bool {
-            for (self.ignore) |ignored| {
+            for (self.options.ignore) |ignored| {
                 if (std.mem.eql(u8, ignored, name)) return true;
             }
             return false;

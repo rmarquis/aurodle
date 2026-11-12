@@ -101,7 +101,7 @@ pub fn clonePackages(self: *QueryContext, targets: []const []const u8) !ExitCode
             return .general_error;
         };
 
-        var s = solver_mod.Solver.init(self.allocator, reg);
+        var s = solver_mod.Solver.init(self.allocator, reg, .{});
         defer s.deinit();
 
         const plan = s.resolve(targets) catch |err| {
@@ -213,7 +213,7 @@ pub fn runBuildPipeline(self: *BuildContext, filtered: []const []const u8, mode:
     const c_root = self.cache_root;
 
     // Phase 1: Resolve
-    var s = self.newSolver();
+    var s = solver_mod.Solver.init(self.allocator, self.registry, self.flags.solverOptions());
     defer s.deinit();
 
     const plan = s.resolve(filtered) catch |err| {

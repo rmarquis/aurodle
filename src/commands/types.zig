@@ -38,6 +38,17 @@ pub const Flags = struct {
     /// Packages to skip. Borrowed: main.run owns the storage, which
     /// outlives every command, so Flags can be copied freely.
     ignore: []const []const u8 = &.{},
+
+    /// The solver settings these flags select. Every command that shows
+    /// or builds a plan (resolve, buildorder, sync, build, upgrade) passes
+    /// them to Solver.init, so they all agree on what would be built.
+    pub fn solverOptions(self: Flags) plan_mod.SolverOptions {
+        return .{
+            .rebuild = self.rebuild,
+            .needed = self.needed,
+            .ignore = self.ignore,
+        };
+    }
 };
 
 pub const SortField = enum {
@@ -270,6 +281,15 @@ test {
 }
 
 const testing = std.testing;
+
+test "solverOptions carries the flags that change the plan" {
+    const flags: Flags = .{ .rebuild = true, .needed = true, .ignore = &.{"foo"}, .noconfirm = true };
+    const opts = flags.solverOptions();
+    try testing.expect(opts.rebuild);
+    try testing.expect(opts.needed);
+    try testing.expectEqual(@as(usize, 1), opts.ignore.len);
+    try testing.expectEqualStrings("foo", opts.ignore[0]);
+}
 
 test "handleResolveError returns general_error for CircularDependency" {
     const result = handleResolveError(error.CircularDependency, null, null_err_writer, color.Style.disabled);

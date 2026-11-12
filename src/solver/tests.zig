@@ -15,11 +15,11 @@ const TestSolver = SolverImpl(MockRegistry);
 
 // ── Lifecycle Tests ──────────────────────────────────────────────────────
 
-test "Solver.init accepts allocator and registry reference" {
+test "Solver.init accepts allocator, registry reference and options" {
     var mock = MockRegistry.initEmpty();
     defer mock.deinitMock();
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 }
 
@@ -30,7 +30,7 @@ test "resolve returns BuildPlan for a single target with no dependencies" {
     defer mock.deinitMock();
     mock.addAurPackage("pkg", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"pkg"});
@@ -49,7 +49,7 @@ test "resolve orders dependencies before dependents" {
     mock.addAurPackage("B", &.{"C"}, &.{});
     mock.addAurPackage("C", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"A"});
@@ -67,7 +67,7 @@ test "resolve classifies repo dependencies separately" {
     mock.addAurPackage("A", &.{"repo-pkg"}, &.{});
     mock.addRepoPackage("repo-pkg", "1.0");
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"A"});
@@ -88,7 +88,7 @@ test "resolve skips satisfied dependencies" {
     mock.addAurPackage("A", &.{"installed-pkg"}, &.{});
     mock.addSatisfied("installed-pkg", "2.0");
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"A"});
@@ -117,7 +117,7 @@ test "resolve classifies repo targets separately from repo deps" {
     // expac is installed from official repos — target
     mock.addSatisfiedRepo("expac", "10.4");
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"expac"});
@@ -136,7 +136,7 @@ test "resolve classifies uninstalled repo targets into repo_targets" {
     // expac is in official repos but not installed — target
     mock.addRepoPackage("expac", "10.4");
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"expac"});
@@ -156,7 +156,7 @@ test "resolve separates repo targets from repo deps in mixed plan" {
     mock.addRepoPackage("zlib", "1.3");
     mock.addSatisfiedRepo("expac", "10.4");
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{ "aurpkg", "expac" });
@@ -178,7 +178,7 @@ test "resolve does not recurse into repo dependencies" {
     mock.addAurPackage("foo", &.{"zlib"}, &.{});
     mock.addRepoPackage("zlib", "1.3.1");
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"foo"});
@@ -195,7 +195,7 @@ test "resolve marks target packages with is_target=true" {
     mock.addAurPackage("target-b", &.{"dep"}, &.{});
     mock.addAurPackage("dep", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{ "target-a", "target-b" });
@@ -220,7 +220,7 @@ test "resolve returns CircularDependency error on cycles" {
     mock.addAurPackage("A", &.{"B"}, &.{});
     mock.addAurPackage("B", &.{"A"}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     try testing.expectError(error.CircularDependency, s.resolve(&.{"A"}));
@@ -232,7 +232,7 @@ test "resolve returns UnresolvableDependency for unknown packages" {
     mock.addAurPackage("A", &.{"unknown-pkg"}, &.{});
     // "unknown-pkg" not registered → resolves as .unknown
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     try testing.expectError(error.UnresolvableDependency, s.resolve(&.{"A"}));
@@ -251,7 +251,7 @@ test "unresolved names the missing target" {
     var mock = MockRegistry.initEmpty();
     defer mock.deinitMock();
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     try testing.expectError(error.UnresolvableDependency, s.resolve(&.{"missing"}));
@@ -266,7 +266,7 @@ test "versioned dep upgrades an outdated installed package from the repos" {
     mock.addSatisfied("dep", "1");
     mock.addUpgrade("dep", .repos, "2", &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"A"});
@@ -286,7 +286,7 @@ test "versioned dep builds a newer AUR version and discovers its deps" {
     mock.addUpgrade("dep", .aur, "2", &.{"sub"});
     mock.addAurPackage("sub", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"A"});
@@ -308,7 +308,7 @@ test "versioned dep is checked even when the name was resolved first without one
     mock.addSatisfied("dep", "1");
     mock.addUpgrade("dep", .repos, "2", &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{ "A", "B" });
@@ -325,7 +325,7 @@ test "unsatisfiable versioned dep reports the dep, its parent and the version fo
     mock.addAurPackage("A", &.{"dep>=2"}, &.{});
     mock.addSatisfied("dep", "1");
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     try testing.expectError(error.UnresolvableDependency, s.resolve(&.{"A"}));
@@ -343,7 +343,7 @@ test "contradictory constraints fail instead of looping" {
     mock.addSatisfied("dep", "1");
     mock.addUpgrade("dep", .repos, "2", &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     try testing.expectError(error.UnresolvableDependency, s.resolve(&.{ "A", "B" }));
@@ -357,7 +357,7 @@ test "versioned dep satisfied through a provider is not version-checked" {
     mock.addProvider("virt", "impl", .satisfied_repos, "1");
     mock.addSatisfiedRepo("impl", "1");
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"A"});
@@ -374,7 +374,7 @@ test "resolve deduplicates packages sharing the same pkgbase" {
     mock.addAurPackageWithBase("sub-b", "parent", &.{}, &.{});
     mock.addAurPackage("foo", &.{ "sub-a", "sub-b" }, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"foo"});
@@ -392,7 +392,7 @@ test "resolve populates pkgbase field from AUR metadata" {
     defer mock.deinitMock();
     mock.addAurPackageWithBase("pkg-name", "pkg-base", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"pkg-name"});
@@ -410,7 +410,7 @@ test "BuildPlan.build_order contains only AUR packages" {
     mock.addAurPackage("aur-pkg", &.{"repo-pkg"}, &.{});
     mock.addRepoPackage("repo-pkg", "1.0");
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"aur-pkg"});
@@ -434,7 +434,7 @@ test "BuildPlan.all_deps contains every discovered dependency" {
     mock.addRepoPackage("repo-dep", "1.0");
     mock.addSatisfied("satisfied-dep", "2.0");
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"target"});
@@ -452,7 +452,7 @@ test "DependencyEntry.depth reflects distance from targets" {
     mock.addAurPackage("dep1", &.{"dep2"}, &.{});
     mock.addAurPackage("dep2", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"target"});
@@ -478,7 +478,7 @@ test "resolve handles multiple targets with shared dependencies" {
     mock.addAurPackage("B", &.{"C"}, &.{});
     mock.addAurPackage("C", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{ "A", "B" });
@@ -513,7 +513,7 @@ test "resolve handles diamond dependency patterns" {
     mock.addAurPackage("C", &.{"D"}, &.{});
     mock.addAurPackage("D", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"A"});
@@ -542,7 +542,7 @@ test "resolve discovers deps of installed target via AUR fallback" {
     mock.addAurPackage("auracle-git", &.{}, &.{});
     mock.addRepoPackage("expac", "10-3");
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"pacaur"});
@@ -568,7 +568,7 @@ test "resolve handles makedepends in addition to depends" {
     mock.addAurPackage("B", &.{}, &.{});
     mock.addAurPackage("C", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"A"});
@@ -594,7 +594,7 @@ test "resolve reclassifies repo_aur target as aur when AUR version is newer" {
     // aurpkgs has 1.0, AUR has 2.0
     mock.addRepoAurWithAurVersion("pkg", "1.0-1", "2.0-1", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"pkg"});
@@ -618,7 +618,7 @@ test "resolve keeps repo_aur target when aurpkgs version matches AUR" {
     // Same version in aurpkgs and AUR
     mock.addRepoAurWithAurVersion("pkg", "1.0-1", "1.0-1", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"pkg"});
@@ -641,7 +641,7 @@ test "resolve reclassifies repo_aur VCS target even when version matches" {
     // VCS package: same version in aurpkgs and AUR (static AUR version is meaningless)
     mock.addRepoAurWithAurVersion("pacaur-git", "4.0.0-1", "4.0.0-1", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"pacaur-git"});
@@ -659,7 +659,7 @@ test "resolve reclassifies repo_aur VCS target with no AUR data" {
     // resolveFromAur returns null, so aur_pkg stays null throughout.
     mock.addRepoAur("aurodle-git", "r100-1");
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"aurodle-git"});
@@ -677,8 +677,7 @@ test "rebuild reclassifies satisfied_aur target into build plan" {
     mock.addSatisfiedWithAurDeps("pacaur", "4.8.6-2", &.{"auracle-git"}, &.{});
     mock.addAurPackage("auracle-git", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
-    s.rebuild = true;
+    var s = TestSolver.init(testing.allocator, &mock, .{ .rebuild = true });
     defer s.deinit();
 
     const plan = try s.resolve(&.{"pacaur"});
@@ -701,7 +700,7 @@ test "resolve prefers AUR exact name over provider redirect for targets" {
     mock.addAurPackage("pacaur", &.{"auracle-git"}, &.{});
     mock.addAurPackage("auracle-git", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"pacaur"});
@@ -725,8 +724,7 @@ test "resolve still redirects virtual name when target not in AUR" {
     mock.addProvider("auracle", "auracle-git", .satisfied_aur, "r427-1");
     mock.addSatisfiedWithAurDeps("auracle-git", "r427-1", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
-    s.rebuild = true;
+    var s = TestSolver.init(testing.allocator, &mock, .{ .rebuild = true });
     defer s.deinit();
 
     const plan = try s.resolve(&.{"auracle"});
@@ -747,7 +745,7 @@ test "resolve redirects deferred AUR provider dependency to real name" {
     // auracle is NOT in packages (unknown to resolveMany) but found via AUR provider search
     mock.addDeferredProvider("auracle", "auracle-git");
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"pacaur"});
@@ -775,7 +773,7 @@ test "resolve marks deferred AUR provider of a target as the target" {
     mock.addDeferredProvider("pi-coding-agent", "pi-coding-agent-bin");
     mock.addAurPackage("pi-coding-agent-bin", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"pi-coding-agent"});
@@ -795,8 +793,7 @@ test "resolve redirects virtual name to provider package" {
     mock.addProvider("auracle", "auracle-git", .satisfied_aur, "r427-1");
     mock.addSatisfiedWithAurDeps("auracle-git", "r427-1", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
-    s.rebuild = true;
+    var s = TestSolver.init(testing.allocator, &mock, .{ .rebuild = true });
     defer s.deinit();
 
     const plan = try s.resolve(&.{"auracle"});
@@ -818,7 +815,7 @@ test "resolve redirects to provider when installed pkg provides target and AUR a
     // "aurodle-git" itself exists in AUR
     mock.addAurPackage("aurodle-git", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"aurodle"});
@@ -841,7 +838,7 @@ test "resolve discovers dependencies of provider-redirected packages" {
     mock.addRepoPackage("dep-a", "1.0");
     mock.addRepoPackage("dep-b", "1.0");
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"pacaur"});
@@ -871,7 +868,7 @@ test "resolve discovers deps of deferred AUR provider (search returns empty deps
     mock.addRepoPackage("dep-a", "1.0");
     mock.addRepoPackage("dep-b", "1.0");
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"pacaur"});
@@ -895,7 +892,7 @@ test "resolve does not version-check repo_aur dependencies" {
     // dep is in aurpkgs with old version, but it's not a target
     mock.addRepoAur("dep", "1.0-1");
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"target"});
@@ -917,7 +914,7 @@ test "detectConflicts finds AUR↔AUR conflict" {
     mock.addAurPackageWithConflicts("foo", &.{}, &.{"bar"});
     mock.addAurPackage("bar", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{ "foo", "bar" });
@@ -936,7 +933,7 @@ test "detectConflicts finds AUR↔installed conflict" {
     mock.addAurPackageWithConflicts("foo", &.{}, &.{"old-pkg"});
     mock.pacman.addInstalled("old-pkg");
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"foo"});
@@ -954,7 +951,7 @@ test "detectConflicts ignores self-conflicts" {
     // -git package conflicting with its own name (common pattern)
     mock.addAurPackageWithConflicts("foo-git", &.{}, &.{"foo-git"});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"foo-git"});
@@ -970,7 +967,7 @@ test "detectConflicts deduplicates bidirectional conflicts" {
     mock.addAurPackageWithConflicts("foo", &.{}, &.{"bar"});
     mock.addAurPackageWithConflicts("bar", &.{}, &.{"foo"});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{ "foo", "bar" });
@@ -987,7 +984,7 @@ test "detectConflicts returns empty when no conflicts" {
     mock.addAurPackage("foo", &.{}, &.{});
     mock.addAurPackage("bar", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{ "foo", "bar" });
@@ -1004,7 +1001,7 @@ test "detectConflicts handles multiple conflicts from same package" {
     mock.addAurPackage("bar", &.{}, &.{});
     mock.addAurPackage("baz", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{ "foo", "bar", "baz" });
@@ -1020,7 +1017,7 @@ test "detectConflicts parses version constraints from conflict entries" {
     mock.addAurPackageWithConflicts("foo", &.{}, &.{"bar>=1.0"});
     mock.addAurPackage("bar", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{ "foo", "bar" });
@@ -1037,7 +1034,7 @@ test "detectConflicts finds conflict via provides" {
     mock.addAurPackageWithConflicts("foo", &.{}, &.{"jack"});
     mock.addAurPackageFull("bar", &.{}, &.{}, &.{"jack"});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{ "foo", "bar" });
@@ -1055,7 +1052,7 @@ test "detectConflicts skips self-conflict via provides" {
     // foo-git provides "foo" and conflicts with "foo" — not a real conflict
     mock.addAurPackageFull("foo-git", &.{}, &.{"foo"}, &.{"foo"});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"foo-git"});
@@ -1075,7 +1072,7 @@ test "detectConflicts skips self-conflict via alias (provider redirect)" {
     mock.addProvider("foo", "foo-git", .aur, "r1-1");
     mock.addAurPackage("pacaur", &.{"foo"}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"pacaur"});
@@ -1091,7 +1088,7 @@ test "detectConflicts finds installed conflict even when provides resolves to se
     mock.addAurPackageFull("foo-git", &.{}, &.{"foo"}, &.{"foo"});
     mock.pacman.addInstalled("foo");
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"foo-git"});
@@ -1111,7 +1108,7 @@ test "detectConflicts provides with versioned provides string" {
     mock.addAurPackageWithConflicts("foo", &.{}, &.{"libgl"});
     mock.addAurPackageFull("bar", &.{}, &.{}, &.{"libgl=1.0"});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{ "foo", "bar" });
@@ -1131,7 +1128,7 @@ test "detectConflicts skips self-conflict via installed provider (VCS rebuild)" 
     mock.pacman.addInstalled("auracle-git");
     mock.pacman.addProvider("auracle", "auracle-git");
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"auracle-git"});
@@ -1147,7 +1144,7 @@ test "detectConflicts finds AUR replaces installed" {
     mock.addAurPackageFullWithReplaces("new-pkg", &.{}, &.{}, &.{}, &.{"old-pkg"});
     mock.pacman.addInstalled("old-pkg");
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"new-pkg"});
@@ -1166,7 +1163,7 @@ test "detectConflicts ignores self-replacement" {
     mock.addAurPackageFullWithReplaces("foo", &.{}, &.{}, &.{}, &.{"foo"});
     mock.pacman.addInstalled("foo");
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"foo"});
@@ -1181,7 +1178,7 @@ test "detectConflicts replaces does not trigger when target not installed" {
     // new-pkg replaces old-pkg but old-pkg is not installed
     mock.addAurPackageFullWithReplaces("new-pkg", &.{}, &.{}, &.{}, &.{"old-pkg"});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"new-pkg"});
@@ -1198,7 +1195,7 @@ test "detectConflicts replaces via installed provider" {
     mock.pacman.addInstalled("old-provider");
     mock.pacman.addProvider("virtual-dep", "old-provider");
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"new-pkg"});
@@ -1216,9 +1213,8 @@ test "ignored dependency returns IgnoredDependency error" {
     mock.addAurPackage("foo", &.{"bar"}, &.{});
     mock.addAurPackage("bar", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{ .ignore = &.{"bar"} });
     defer s.deinit();
-    s.ignore = &.{"bar"};
 
     try testing.expectError(error.IgnoredDependency, s.resolve(&.{"foo"}));
 }
@@ -1228,12 +1224,11 @@ test "ignored package does not affect targets (filtered upstream)" {
     defer mock.deinitMock();
     mock.addAurPackage("foo", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
-    defer s.deinit();
     // foo is in ignore list but also a target — targets are filtered
     // before reaching the solver, so the solver never sees it as ignored.
     // This test verifies that targets bypass the ignore check.
-    s.ignore = &.{"foo"};
+    var s = TestSolver.init(testing.allocator, &mock, .{ .ignore = &.{"foo"} });
+    defer s.deinit();
 
     const plan = try s.resolve(&.{"foo"});
     defer plan.deinit(testing.allocator);
@@ -1246,9 +1241,7 @@ test "needed prevents rebuild of satisfied_aur target at same version" {
     // pacaur is installed (satisfied_aur) with same version as AUR
     mock.addSatisfiedWithAurDeps("pacaur", "4.8.6-2", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
-    s.rebuild = true;
-    s.needed = true;
+    var s = TestSolver.init(testing.allocator, &mock, .{ .rebuild = true, .needed = true });
     defer s.deinit();
 
     const plan = try s.resolve(&.{"pacaur"});
@@ -1264,8 +1257,7 @@ test "needed allows build when AUR version is newer" {
     // pacaur installed at 4.8.5, AUR has 4.8.6
     mock.addSatisfiedWithAurDepsVersioned("pacaur", "4.8.5-1", "4.8.6-1", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
-    s.needed = true;
+    var s = TestSolver.init(testing.allocator, &mock, .{ .needed = true });
     defer s.deinit();
 
     const plan = try s.resolve(&.{"pacaur"});
@@ -1283,7 +1275,7 @@ test "split package: multiple targets from same pkgbase all tracked as targets" 
     mock.addAurPackageWithBase("qt6-base", "qt6", &.{}, &.{});
     mock.addAurPackageWithBase("qt6-tools", "qt6", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{ "qt6-base", "qt6-tools" });
@@ -1312,7 +1304,7 @@ test "split package: single target from split pkgbase tracks only that target" {
     defer mock.deinitMock();
     mock.addAurPackageWithBase("qt6-base", "qt6", &.{}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{"qt6-base"});
@@ -1332,7 +1324,7 @@ test "split package: non-target dep sharing pkgbase with target" {
     mock.addAurPackageWithBase("qt6-tools", "qt6", &.{}, &.{});
     mock.addAurPackage("app", &.{"qt6-tools"}, &.{});
 
-    var s = TestSolver.init(testing.allocator, &mock);
+    var s = TestSolver.init(testing.allocator, &mock, .{});
     defer s.deinit();
 
     const plan = try s.resolve(&.{ "qt6-base", "app" });
