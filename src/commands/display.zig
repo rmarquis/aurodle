@@ -250,10 +250,7 @@ fn displayPlanCompact(
     c: color.Style,
     hint: *const std.StringHashMapUnmanaged([]const u8),
 ) void {
-    var aur_count: usize = 0;
-    for (plan.build_order) |entry| {
-        aur_count += if (entry.target_names.len > 0) entry.target_names.len else 1;
-    }
+    const aur_count = aurRowCount(plan.build_order);
     const total = aur_count + repo_deps_full.len + plan.repo_targets.len;
     if (total == 0) return;
 
@@ -342,10 +339,7 @@ fn displayPlanVerbose(
     c: color.Style,
     hint: *const std.StringHashMapUnmanaged([]const u8),
 ) void {
-    var aur_count: usize = 0;
-    for (plan.build_order) |entry| {
-        aur_count += if (entry.target_names.len > 0) entry.target_names.len else 1;
-    }
+    const aur_count = aurRowCount(plan.build_order);
     const total = aur_count + removals.len + repo_deps_full.len + plan.repo_targets.len;
     if (total == 0) return;
 
@@ -420,16 +414,37 @@ fn displayPlanVerbose(
     }
 }
 
+/// Rows the AUR part of the plan takes: one per target name of a split
+/// package, one per entry otherwise (dependencies have no target names).
+fn aurRowCount(build_order: []const plan_mod.BuildEntry) usize {
+    var count: usize = 0;
+    for (build_order) |entry| {
+        count += if (entry.target_names.len > 0) entry.target_names.len else 1;
+    }
+    return count;
+}
+
+/// The version shown for an AUR entry: the one `--devel` computed, else
+/// "latest" for a VCS package (its PKGBUILD version is stale until
+/// pkgver() runs), else the plan's version.
 fn displayVersion(entry: plan_mod.BuildEntry, hint: *const std.StringHashMapUnmanaged([]const u8)) []const u8 {
     if (hint.get(entry.name)) |v| return v;
     return if (devel.isVcsPackage(entry.name)) "latest" else entry.version;
 }
 
-fn pad(writer: StdWriter, current: usize, col: usize) void {
-    const spaces = (col + 2) -| current;
-    writer.writeByteNTimes(' ', if (spaces < 2) 2 else spaces);
+/// Spaces that take text `current` columns wide to the end of a `col`
+/// wide column, plus the two-space gutter. Never fewer than the gutter,
+/// so an overlong value still stays apart from the next column.
+fn gap(current: usize, col: usize) usize {
+    return @max((col + 2) -| current, 2);
 }
 
+fn pad(writer: StdWriter, current: usize, col: usize) void {
+    writer.writeByteNTimes(' ', gap(current, col));
+}
+
+/// `bytes` as pacman shows sizes: B below 1 KiB, else KiB or MiB with two
+/// decimals. Negative for a shrinking net change.
 fn fmtSize(bytes: i64, buf: *[32]u8) []const u8 {
     const abs = if (bytes < 0) -bytes else bytes;
     const sign: []const u8 = if (bytes < 0) "-" else "";
@@ -442,8 +457,7 @@ fn fmtSize(bytes: i64, buf: *[32]u8) []const u8 {
 }
 
 fn rightAlign(writer: StdWriter, str: []const u8, col: usize) void {
-    const spaces = (col + 2) -| str.len;
-    writer.writeByteNTimes(' ', if (spaces < 2) 2 else spaces);
+    writer.writeByteNTimes(' ', gap(str.len, col));
     writer.writeAll(str);
 }
 
@@ -458,13 +472,6 @@ fn countDigits(n: usize) usize {
 }
 
 fn printSize(writer: StdWriter, label: []const u8, bytes: i64) void {
-    const abs = if (bytes < 0) -bytes else bytes;
-    const sign: []const u8 = if (bytes < 0) "-" else "";
-    if (abs >= 1024 * 1024) {
-        writer.print("{s}{s}{d:.2} MiB\n", .{ label, sign, @as(f64, @floatFromInt(abs)) / (1024.0 * 1024.0) });
-    } else if (abs >= 1024) {
-        writer.print("{s}{s}{d:.2} KiB\n", .{ label, sign, @as(f64, @floatFromInt(abs)) / 1024.0 });
-    } else {
-        writer.print("{s}{s}{d} B\n", .{ label, sign, abs });
-    }
+    var buf: [32]u8 = undefined;
+    writer.print("{s}{s}\n", .{ label, fmtSize(bytes, &buf) });
 }
