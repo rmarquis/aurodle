@@ -300,3 +300,195 @@ pub fn mergeDevelVersion(
         });
     }
 }
+
+// ── Tests ────────────────────────────────────────────────────────────────
+
+const testing = std.testing;
+const Installed = pacman_mod.InstalledPackage;
+
+fn versionMap(pairs: []const [2][]const u8) !std.StringHashMapUnmanaged([]const u8) {
+    var map: std.StringHashMapUnmanaged([]const u8) = .empty;
+    errdefer map.deinit(testing.allocator);
+    for (pairs) |p| try map.put(testing.allocator, p[0], p[1]);
+    return map;
+}
+
+fn expectNames(expected: []const []const u8, entries: []const OutdatedEntry) !void {
+    try testing.expectEqual(expected.len, entries.len);
+    for (expected, entries) |name, entry| try testing.expectEqualStrings(name, entry.name);
+}
+
+test "filterByName keeps named packages in installed order" {
+    const installed = [_]Installed{
+        .{ .name = "a", .version = "1-1" },
+        .{ .name = "b", .version = "1-1" },
+        .{ .name = "c", .version = "1-1" },
+    };
+    const got = try filterByName(testing.allocator, &installed, &.{ "c", "unknown", "a" });
+    defer testing.allocator.free(got);
+    try testing.expectEqual(@as(usize, 2), got.len);
+    try testing.expectEqualStrings("a", got[0].name);
+    try testing.expectEqualStrings("c", got[1].name);
+}
+
+test "filterByName returns nothing when no name matches" {
+    const installed = [_]Installed{.{ .name = "a", .version = "1-1" }};
+    const got = try filterByName(testing.allocator, &installed, &.{"z"});
+    defer testing.allocator.free(got);
+    try testing.expectEqual(@as(usize, 0), got.len);
+}
+
+test "compareWithAur flags only packages with a newer AUR version" {
+    const installed = [_]Installed{
+        .{ .name = "older", .version = "1.0-1" },
+        .{ .name = "same", .version = "2.0-1" },
+        .{ .name = "newer", .version = "3.1-1" },
+        .{ .name = "pkgrel", .version = "1.0-1" },
+    };
+    var aur = try versionMap(&.{
+        .{ "older", "1.1-1" },
+        .{ "same", "2.0-1" },
+        .{ "newer", "3.0-1" },
+        .{ "pkgrel", "1.0-2" },
+    });
+    defer aur.deinit(testing.allocator);
+
+    var cmp = try compareWithAur(testing.allocator, &installed, &aur, .{});
+    defer cmp.deinit(testing.allocator);
+
+    try expectNames(&.{ "older", "pkgrel" }, cmp.entries.items);
+    try testing.expectEqualStrings("1.0-1", cmp.entries.items[0].installed_version);
+    try testing.expectEqualStrings("1.1-1", cmp.entries.items[0].aur_version);
+    try testing.expectEqual(@as(usize, 0), cmp.not_found.items.len);
+}
+
+test "compareWithAur honours epochs" {
+    const installed = [_]Installed{
+        .{ .name = "epoch-installed", .version = "1:1.0-1" },
+        .{ .name = "epoch-aur", .version = "9.0-1" },
+    };
+    var aur = try versionMap(&.{
+        .{ "epoch-installed", "2.0-1" },
+        .{ "epoch-aur", "1:0.5-1" },
+    });
+    defer aur.deinit(testing.allocator);
+
+    var cmp = try compareWithAur(testing.allocator, &installed, &aur, .{});
+    defer cmp.deinit(testing.allocator);
+
+    try expectNames(&.{"epoch-aur"}, cmp.entries.items);
+}
+
+test "compareWithAur lists packages the AUR does not know, in order" {
+    const installed = [_]Installed{
+        .{ .name = "local-b", .version = "1-1" },
+        .{ .name = "known", .version = "1-1" },
+        .{ .name = "local-a", .version = "1-1" },
+    };
+    var aur = try versionMap(&.{.{ "known", "2-1" }});
+    defer aur.deinit(testing.allocator);
+
+    var cmp = try compareWithAur(testing.allocator, &installed, &aur, .{});
+    defer cmp.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 2), cmp.not_found.items.len);
+    try testing.expectEqualStrings("local-b", cmp.not_found.items[0]);
+    try testing.expectEqualStrings("local-a", cmp.not_found.items[1]);
+    try expectNames(&.{"known"}, cmp.entries.items);
+}
+
+test "compareWithAur keeps ignored packages but flags them" {
+    const installed = [_]Installed{
+        .{ .name = "held", .version = "1-1" },
+        .{ .name = "free", .version = "1-1" },
+    };
+    var aur = try versionMap(&.{ .{ "held", "2-1" }, .{ "free", "2-1" } });
+    defer aur.deinit(testing.allocator);
+
+    var cmp = try compareWithAur(testing.allocator, &installed, &aur, .{ .ignore = &.{"held"} });
+    defer cmp.deinit(testing.allocator);
+
+    try expectNames(&.{ "held", "free" }, cmp.entries.items);
+    try testing.expect(cmp.entries.items[0].ignored);
+    try testing.expect(!cmp.entries.items[1].ignored);
+}
+
+test "compareWithAur records every flagged name in outdated" {
+    const installed = [_]Installed{
+        .{ .name = "a", .version = "1-1" },
+        .{ .name = "b", .version = "2-1" },
+    };
+    var aur = try versionMap(&.{ .{ "a", "2-1" }, .{ "b", "2-1" } });
+    defer aur.deinit(testing.allocator);
+
+    var cmp = try compareWithAur(testing.allocator, &installed, &aur, .{});
+    defer cmp.deinit(testing.allocator);
+
+    try testing.expect(cmp.outdated.contains("a"));
+    try testing.expect(!cmp.outdated.contains("b"));
+}
+
+test "vcsPkgbases checks each split pkgbase once, in first-seen order" {
+    const installed = [_]Installed{
+        .{ .name = "tool-git", .version = "r1-1" },
+        .{ .name = "plain", .version = "1-1" },
+        .{ .name = "lib-git", .version = "r1-1" },
+        .{ .name = "tool-docs-git", .version = "r1-1" },
+        .{ .name = "solo-svn", .version = "r1-1" },
+    };
+    var pkgbases = try versionMap(&.{
+        .{ "tool-git", "tool-git" },
+        .{ "tool-docs-git", "tool-git" },
+        .{ "lib-git", "lib-git" },
+    });
+    defer pkgbases.deinit(testing.allocator);
+
+    var index = try vcsPkgbases(testing.allocator, &installed, &pkgbases);
+    defer index.deinit(testing.allocator);
+
+    const keys = index.keys();
+    try testing.expectEqual(@as(usize, 3), keys.len);
+    try testing.expectEqualStrings("tool-git", keys[0]);
+    try testing.expectEqualStrings("lib-git", keys[1]);
+    // Not in the map: its own pkgbase.
+    try testing.expectEqualStrings("solo-svn", keys[2]);
+}
+
+test "mergeDevelVersion refines an entry the AUR pass flagged" {
+    var entries: std.ArrayListUnmanaged(OutdatedEntry) = .empty;
+    defer entries.deinit(testing.allocator);
+    try entries.append(testing.allocator, .{ .name = "x-git", .installed_version = "r1-1", .aur_version = "r2-1" });
+    var flagged: std.StringHashMapUnmanaged(void) = .empty;
+    defer flagged.deinit(testing.allocator);
+    try flagged.put(testing.allocator, "x-git", {});
+
+    try mergeDevelVersion(testing.allocator, &entries, &flagged, .{ .name = "x-git", .version = "r1-1" }, "r9-1", .{});
+
+    try testing.expectEqual(@as(usize, 1), entries.items.len);
+    try testing.expectEqualStrings("r9-1", entries.items[0].aur_version);
+}
+
+test "mergeDevelVersion adds a VCS package with a newer upstream version" {
+    var entries: std.ArrayListUnmanaged(OutdatedEntry) = .empty;
+    defer entries.deinit(testing.allocator);
+    const flagged: std.StringHashMapUnmanaged(void) = .empty;
+
+    try mergeDevelVersion(testing.allocator, &entries, &flagged, .{ .name = "y-git", .version = "r1.abc-1" }, "r5.def-1", .{ .ignore = &.{"y-git"} });
+
+    try testing.expectEqual(@as(usize, 1), entries.items.len);
+    try testing.expectEqualStrings("y-git", entries.items[0].name);
+    try testing.expectEqualStrings("r1.abc-1", entries.items[0].installed_version);
+    try testing.expectEqualStrings("r5.def-1", entries.items[0].aur_version);
+    try testing.expect(entries.items[0].ignored);
+}
+
+test "mergeDevelVersion skips a VCS package that is up to date" {
+    var entries: std.ArrayListUnmanaged(OutdatedEntry) = .empty;
+    defer entries.deinit(testing.allocator);
+    const flagged: std.StringHashMapUnmanaged(void) = .empty;
+
+    try mergeDevelVersion(testing.allocator, &entries, &flagged, .{ .name = "z-git", .version = "r5-1" }, "r5-1", .{});
+    try mergeDevelVersion(testing.allocator, &entries, &flagged, .{ .name = "z-git", .version = "r6-1" }, "r5-1", .{});
+
+    try testing.expectEqual(@as(usize, 0), entries.items.len);
+}
