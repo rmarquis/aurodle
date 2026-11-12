@@ -5,6 +5,8 @@ const repo_conf = @import("repo_conf.zig");
 const version = @import("version.zig");
 const dep_spec = @import("dep_spec.zig");
 const pacman_conf = @import("pacman_conf.zig");
+const provides = @import("pacman/provides.zig");
+const repo_deps = @import("pacman/repo_deps.zig");
 
 pub const CmpOp = version.CmpOp;
 pub const VersionConstraint = version.VersionConstraint;
@@ -16,16 +18,11 @@ pub const checkVersion = version.checkVersion;
 pub const ProviderCandidate = @import("provider.zig").ProviderCandidate;
 
 /// A locally installed package's identity.
+pub const SyncProviderChoice = repo_deps.SyncProviderChoice;
+
 pub const InstalledPackage = struct {
     name: []const u8,
     version: []const u8,
-};
-
-/// A virtual dep (e.g. "jack") with multiple uninstalled providers in official repos.
-/// Returned by findTransitiveProviderChoices for interactive selection.
-pub const SyncProviderChoice = struct {
-    dep_name: []const u8, // virtual dep name, borrowed from alpm memory
-    candidates: []ProviderCandidate, // all uninstalled providers; caller owns slice
 };
 
 // ── Pacman Struct ────────────────────────────────────────────────────────
@@ -56,7 +53,7 @@ pub const Pacman = struct {
     cache_dirs: []const []const u8 = &.{},
     /// Name/provision → provider lookup table, built on first use. Null
     /// only if allocating it failed; lookups then scan the databases.
-    provides_index: ?*ProvidesIndex = null,
+    provides_index: ?*provides.ProvidesIndex = null,
 
     /// Initialize by parsing /etc/pacman.conf and registering all
     /// discovered sync databases.
@@ -71,7 +68,7 @@ pub const Pacman = struct {
         const official_dbs = try buildOfficialDbs(allocator, conf.sync_dbs, aur_repo_name);
         errdefer allocator.free(official_dbs);
 
-        const index = try ProvidesIndex.create(allocator);
+        const index = try provides.ProvidesIndex.create(allocator);
         errdefer index.destroy();
 
         return .{
@@ -111,7 +108,7 @@ pub const Pacman = struct {
         const official_dbs = try buildOfficialDbs(allocator, sync_dbs, aur_repo_name);
         errdefer allocator.free(official_dbs);
 
-        const index = try ProvidesIndex.create(allocator);
+        const index = try provides.ProvidesIndex.create(allocator);
         errdefer index.destroy();
 
         return .{
@@ -339,7 +336,7 @@ pub const Pacman = struct {
     pub fn aurRepoPkgbase(self: Pacman, dep: []const u8) ?[]const u8 {
         const db = self.aurpkgs_db orelse return null;
         const pkg = db.getPackage(dep_spec.parseDep(dep).name) orelse blk: {
-            const match = findProviderInDb(db, dep) orelse return null;
+            const match = provides.findProviderInDb(db, dep) orelse return null;
             break :blk db.getPackage(match.name) orelse return null;
         };
         return pkg.getBase() orelse pkg.getName();
@@ -358,12 +355,12 @@ pub const Pacman = struct {
 
         // Check official repos first
         for (self.official_dbs) |db| {
-            if (findProviderInDb(db, dep)) |match| return match;
+            if (provides.findProviderInDb(db, dep)) |match| return match;
         }
 
         // Then check aurpkgs
         if (self.aurpkgs_db) |aurdb| {
-            if (findProviderInDb(aurdb, dep)) |match| return match;
+            if (provides.findProviderInDb(aurdb, dep)) |match| return match;
         }
 
         return null;
@@ -380,12 +377,12 @@ pub const Pacman = struct {
 
         // Official repos first
         for (self.official_dbs) |db| {
-            try findAllProvidersInDb(allocator, db, dep, &matches);
+            try provides.findAllProvidersInDb(allocator, db, dep, &matches);
         }
 
         // Then aurpkgs
         if (self.aurpkgs_db) |aurdb| {
-            try findAllProvidersInDb(allocator, aurdb, dep, &matches);
+            try provides.findAllProvidersInDb(allocator, aurdb, dep, &matches);
         }
 
         return try matches.toOwnedSlice(allocator);
@@ -394,12 +391,12 @@ pub const Pacman = struct {
     /// The provides index, built now if it has become worth it. Null while
     /// the caller should scan the databases instead: during the first few
     /// lookups, or if the index can't be built (out of memory).
-    fn readyIndex(self: Pacman) ?*ProvidesIndex {
+    fn readyIndex(self: Pacman) ?*provides.ProvidesIndex {
         const index = self.provides_index orelse return null;
         if (!index.built) {
             // Building costs about as much as `scan_lookups` scans, so a
             // short resolution never pays for it and a long one pays once.
-            if (index.lookups < ProvidesIndex.scan_lookups) {
+            if (index.lookups < provides.ProvidesIndex.scan_lookups) {
                 index.lookups += 1;
                 return null;
             }
@@ -413,7 +410,7 @@ pub const Pacman = struct {
 
     /// Find the first sync DB package (as an AlpmPackage) satisfying `dep`.
     /// Skips aurpkgs — only official repos are searched.
-    fn findSyncPkgForDep(self: Pacman, dep: []const u8) ?alpm.AlpmPackage {
+    pub fn findSyncPkgForDep(self: Pacman, dep: []const u8) ?alpm.AlpmPackage {
         for (self.official_dbs) |db| {
             if (alpm.findSatisfier(db.getPkgcache(), dep)) |pkg| return pkg;
         }
@@ -422,164 +419,21 @@ pub const Pacman = struct {
 
     /// Find ALL packages in official sync dbs (no aurpkgs) that satisfy `dep`.
     /// Caller owns the returned slice.
-    fn findAllOfficialProviders(self: Pacman, allocator: Allocator, dep: []const u8) ![]ProviderCandidate {
+    pub fn findAllOfficialProviders(self: Pacman, allocator: Allocator, dep: []const u8) ![]ProviderCandidate {
         if (self.readyIndex()) |index| return index.collect(allocator, dep, true);
 
         var matches: std.ArrayList(ProviderCandidate) = .empty;
         errdefer matches.deinit(allocator);
         for (self.official_dbs) |db| {
-            try findAllProvidersInDb(allocator, db, dep, &matches);
+            try provides.findAllProvidersInDb(allocator, db, dep, &matches);
         }
         return try matches.toOwnedSlice(allocator);
     }
 
-    /// Compute the full set of official-repo packages that would need to be
-    /// installed when installing `root_names`, following runtime `depends`
-    /// transitively and excluding packages already installed locally.
-    ///
-    /// `provider_choices` maps virtual dep names (e.g. "jack") to the chosen
-    /// provider package name (e.g. "pipewire-jack"). When a dep is present in
-    /// the map the chosen package is used; otherwise first-satisfier wins.
-    ///
-    /// Deps already satisfied by an installed package (by name or provides)
-    /// are excluded — installing a repo provider would conflict with the
-    /// installed satisfier (e.g. nodejs-lts-jod vs nodejs-lts-krypton).
-    ///
-    /// Caller owns the returned slice (strings themselves are borrowed from
-    /// libalpm memory and remain valid until Pacman.deinit).
-    pub fn transitiveRepoDeps(
-        self: anytype,
-        allocator: Allocator,
-        root_names: []const []const u8,
-        provider_choices: std.StringHashMapUnmanaged([]const u8),
-    ) ![][]const u8 {
-        var result = std.StringArrayHashMapUnmanaged(void){};
-        defer result.deinit(allocator);
+    // ── Transitive Repo Dependencies (pacman/repo_deps.zig) ─────────────
 
-        var queue: std.ArrayListUnmanaged([]const u8) = .empty;
-        defer queue.deinit(allocator);
-
-        var seen = std.StringHashMapUnmanaged(void){};
-        defer seen.deinit(allocator);
-
-        for (root_names) |name| {
-            if (!(try seen.getOrPut(allocator, name)).found_existing) {
-                try queue.append(allocator, name);
-            }
-        }
-
-        var head: usize = 0;
-        while (head < queue.items.len) {
-            const dep_str = queue.items[head];
-            head += 1;
-
-            // Satisfied by an installed package (by name or via provides) —
-            // do not pull in a repo provider that would conflict with it.
-            if (self.satisfiesDep(dep_str)) continue;
-
-            const pkg = (if (provider_choices.get(dep_str)) |chosen_name|
-                self.findInOfficialDbs(chosen_name)
-            else
-                self.findSyncPkgForDep(dep_str)) orelse continue;
-            const pkg_name = pkg.getName();
-
-            try seen.put(allocator, pkg_name, {});
-
-            if (self.isInstalled(pkg_name)) continue;
-
-            if (!(try result.getOrPut(allocator, pkg_name)).found_existing) {
-                var dep_it = pkg.getDepends();
-                while (dep_it.next()) |dep| {
-                    if (!(try seen.getOrPut(allocator, dep.name)).found_existing) {
-                        try queue.append(allocator, dep.name);
-                    }
-                }
-            }
-        }
-
-        return try allocator.dupe([]const u8, result.keys());
-    }
-
-    /// Walk the transitive repo dep closure of `root_names` and return a
-    /// `SyncProviderChoice` for each virtual dep that has more than one
-    /// uninstalled provider in official repos.
-    ///
-    /// Deps already satisfied by an installed package (by name or provides)
-    /// are skipped — no choice is needed and offering one would propose
-    /// providers that conflict with the installed satisfier.
-    ///
-    /// BFS uses first-satisfier order; the returned choices are in BFS
-    /// encounter order.  Caller owns the slice and each `candidates` slice
-    /// inside it.
-    pub fn findTransitiveProviderChoices(
-        self: anytype,
-        allocator: Allocator,
-        root_names: []const []const u8,
-    ) ![]SyncProviderChoice {
-        var choices: std.ArrayListUnmanaged(SyncProviderChoice) = .empty;
-        errdefer {
-            for (choices.items) |ch| allocator.free(ch.candidates);
-            choices.deinit(allocator);
-        }
-
-        var queue: std.ArrayListUnmanaged([]const u8) = .empty;
-        defer queue.deinit(allocator);
-        var seen: std.StringHashMapUnmanaged(void) = .empty;
-        defer seen.deinit(allocator);
-
-        for (root_names) |name| {
-            if (!(try seen.getOrPut(allocator, name)).found_existing) {
-                try queue.append(allocator, name);
-            }
-        }
-
-        var head: usize = 0;
-        while (head < queue.items.len) {
-            const dep_str = queue.items[head];
-            head += 1;
-
-            // Already satisfied by an installed package (by name or via
-            // provides, e.g. nodejs-lts-krypton provides nodejs) — nothing
-            // to choose or install.
-            if (self.satisfiesDep(dep_str)) continue;
-
-            const all = try self.findAllOfficialProviders(allocator, dep_str);
-            defer allocator.free(all);
-
-            var uninstalled: std.ArrayListUnmanaged(ProviderCandidate) = .empty;
-            defer uninstalled.deinit(allocator);
-            for (all) |p| {
-                if (!self.isInstalled(p.name)) {
-                    try uninstalled.append(allocator, p);
-                }
-            }
-
-            if (uninstalled.items.len == 0) continue;
-
-            const first_name = uninstalled.items[0].name;
-            try seen.put(allocator, first_name, {});
-
-            if (uninstalled.items.len > 1) {
-                var claimed = false;
-                const candidates = try uninstalled.toOwnedSlice(allocator);
-                errdefer if (!claimed) allocator.free(candidates);
-                try choices.append(allocator, .{ .dep_name = dep_str, .candidates = candidates });
-                claimed = true;
-            }
-
-            const pkg = self.findInOfficialDbs(first_name) orelse continue;
-            if (self.isInstalled(first_name)) continue;
-
-            var dep_it = pkg.getDepends();
-            while (dep_it.next()) |dep| {
-                if (!(try seen.getOrPut(allocator, dep.name)).found_existing) {
-                    try queue.append(allocator, dep.name);
-                }
-            }
-        }
-
-        return try choices.toOwnedSlice(allocator);
-    }
+    pub const transitiveRepoDeps = repo_deps.transitiveRepoDeps;
+    pub const findTransitiveProviderChoices = repo_deps.findTransitiveProviderChoices;
 
     // ── Aurpkgs Database Queries ────────────────────────────────────────
 
@@ -625,7 +479,7 @@ pub const Pacman = struct {
     }
 
     /// Find a package by name in official sync databases (skips aurpkgs).
-    fn findInOfficialDbs(self: Pacman, name: []const u8) ?alpm.AlpmPackage {
+    pub fn findInOfficialDbs(self: Pacman, name: []const u8) ?alpm.AlpmPackage {
         for (self.official_dbs) |db| {
             if (db.getPackage(name)) |pkg| return pkg;
         }
@@ -687,130 +541,6 @@ fn depMatches(dep: alpm.Dependency, name: []const u8, ver: ?[]const u8) bool {
     return checkVersion(v, .{ .op = op, .version = dep.version });
 }
 
-fn packageMatchesDep(pkg: alpm.AlpmPackage, dep: []const u8) bool {
-    if (std.mem.eql(u8, pkg.getName(), dep)) return true;
-    var dep_it = pkg.getProvides();
-    while (dep_it.next()) |prov| {
-        if (std.mem.eql(u8, prov.name, dep)) return true;
-    }
-    return false;
-}
-
-fn providerMatchFromPkg(pkg: alpm.AlpmPackage, db: alpm.Database) ProviderCandidate {
-    return .{
-        .name = pkg.getName(),
-        .version = pkg.getVersion(),
-        .db_name = db.getName(),
-    };
-}
-
-/// Every sync package indexed under its own name and each name it
-/// provides, so provider lookups cost a hash lookup instead of a walk over
-/// all ~15k packages and their provides lists. Entries for a name keep the
-/// scan order: official databases in pacman.conf order, then the AUR repo,
-/// each in package cache order. Strings are borrowed from libalpm and stay
-/// valid until Pacman.deinit.
-/// Not thread-safe.
-const ProvidesIndex = struct {
-    allocator: Allocator,
-    arena: std.heap.ArenaAllocator,
-    map: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(Entry)) = .empty,
-    built: bool = false,
-    /// Lookups answered by scanning while the index was not built.
-    lookups: u32 = 0,
-
-    /// One scan of every sync package takes about 1 ms; building the
-    /// index about 8 ms.
-    const scan_lookups = 8;
-
-    const Entry = struct {
-        match: ProviderCandidate,
-        /// False for the local AUR repository.
-        official: bool,
-    };
-
-    fn create(allocator: Allocator) !*ProvidesIndex {
-        const index = try allocator.create(ProvidesIndex);
-        index.* = .{ .allocator = allocator, .arena = .init(allocator) };
-        return index;
-    }
-
-    fn destroy(self: *ProvidesIndex) void {
-        self.arena.deinit();
-        self.allocator.destroy(self);
-    }
-
-    fn reset(self: *ProvidesIndex) void {
-        _ = self.arena.reset(.free_all);
-        self.map = .empty;
-        self.built = false;
-        self.lookups = 0;
-    }
-
-    fn build(self: *ProvidesIndex, official_dbs: []const alpm.Database, aurpkgs_db: ?alpm.Database) !void {
-        for (official_dbs) |db| try self.addDb(db, true);
-        if (aurpkgs_db) |db| try self.addDb(db, false);
-        self.built = true;
-    }
-
-    fn addDb(self: *ProvidesIndex, db: alpm.Database, official: bool) !void {
-        var it = db.getPkgcache();
-        while (it.next()) |pkg| {
-            const entry: Entry = .{ .match = providerMatchFromPkg(pkg, db), .official = official };
-            try self.add(pkg.getName(), entry);
-            var prov_it = pkg.getProvides();
-            while (prov_it.next()) |prov| try self.add(prov.name, entry);
-        }
-    }
-
-    fn add(self: *ProvidesIndex, name: []const u8, entry: Entry) !void {
-        const arena = self.arena.allocator();
-        const gop = try self.map.getOrPut(arena, name);
-        if (!gop.found_existing) gop.value_ptr.* = .empty;
-        const list = gop.value_ptr;
-        // A package listing a name twice (or providing its own name)
-        // is still one provider.
-        if (list.items.len > 0 and list.items[list.items.len - 1].match.name.ptr == entry.match.name.ptr) return;
-        try list.append(arena, entry);
-    }
-
-    fn get(self: *const ProvidesIndex, name: []const u8) []const Entry {
-        const list = self.map.get(name) orelse return &.{};
-        return list.items;
-    }
-
-    /// Providers of `name`, optionally official ones only. Caller owns
-    /// the slice.
-    fn collect(self: *const ProvidesIndex, allocator: Allocator, name: []const u8, official_only: bool) ![]ProviderCandidate {
-        var matches: std.ArrayList(ProviderCandidate) = .empty;
-        errdefer matches.deinit(allocator);
-        for (self.get(name)) |entry| {
-            if (official_only and !entry.official) continue;
-            try matches.append(allocator, entry.match);
-        }
-        return try matches.toOwnedSlice(allocator);
-    }
-};
-
-/// Search a single database for a package that provides `dep`.
-fn findProviderInDb(db: alpm.Database, dep: []const u8) ?ProviderCandidate {
-    var it = db.getPkgcache();
-    while (it.next()) |pkg| {
-        if (packageMatchesDep(pkg, dep)) return providerMatchFromPkg(pkg, db);
-    }
-    return null;
-}
-
-/// Collect ALL packages in a single database that provide `dep`.
-fn findAllProvidersInDb(allocator: Allocator, db: alpm.Database, dep: []const u8, matches: *std.ArrayList(ProviderCandidate)) !void {
-    var it = db.getPkgcache();
-    while (it.next()) |pkg| {
-        if (packageMatchesDep(pkg, dep)) {
-            try matches.append(allocator, providerMatchFromPkg(pkg, db));
-        }
-    }
-}
-
 // ── Tests ────────────────────────────────────────────────────────────────
 
 fn testDep(name: []const u8, mod: alpm.DepMod, ver: []const u8) alpm.Dependency {
@@ -841,9 +571,9 @@ const testing = std.testing;
 fn scanAllProviders(pm: Pacman, allocator: Allocator, dep: []const u8, official_only: bool) ![]ProviderCandidate {
     var matches: std.ArrayList(ProviderCandidate) = .empty;
     errdefer matches.deinit(allocator);
-    for (pm.official_dbs) |db| try findAllProvidersInDb(allocator, db, dep, &matches);
+    for (pm.official_dbs) |db| try provides.findAllProvidersInDb(allocator, db, dep, &matches);
     if (!official_only) {
-        if (pm.aurpkgs_db) |aurdb| try findAllProvidersInDb(allocator, aurdb, dep, &matches);
+        if (pm.aurpkgs_db) |aurdb| try provides.findAllProvidersInDb(allocator, aurdb, dep, &matches);
     }
     return try matches.toOwnedSlice(allocator);
 }
@@ -897,7 +627,7 @@ test "provides index answers like a database scan" {
     // then rebuilds it once lookups pile up again.
     pm.provides_index.?.reset();
     try testing.expect(!pm.provides_index.?.built);
-    for (0..ProvidesIndex.scan_lookups + 1) |_| try expectSameProviders(pm, "sh");
+    for (0..provides.ProvidesIndex.scan_lookups + 1) |_| try expectSameProviders(pm, "sh");
     try testing.expect(pm.provides_index.?.built);
 }
 

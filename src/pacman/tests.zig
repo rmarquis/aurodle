@@ -183,6 +183,7 @@ test "repoDepSizes returns zeros for unknown packages" {
 // ── Transitive dep BFS (mock pacman, no libalpm handle) ────────────────────
 
 const mocks_mod = @import("mocks.zig");
+const repo_deps = @import("repo_deps.zig");
 const MockPacman = mocks_mod.MockPacman;
 const MockPackage = mocks_mod.MockPackage;
 
@@ -204,7 +205,7 @@ const nodejs_world = MockPacman{
 };
 
 test "findTransitiveProviderChoices: installed provides-satisfier suppresses provider choice" {
-    const choices = try Pacman.findTransitiveProviderChoices(&nodejs_world, testing.allocator, &.{"npm"});
+    const choices = try repo_deps.findTransitiveProviderChoices(&nodejs_world, testing.allocator, &.{"npm"});
     defer {
         for (choices) |ch| testing.allocator.free(ch.candidates);
         testing.allocator.free(choices);
@@ -216,7 +217,7 @@ test "findTransitiveProviderChoices: installed provides-satisfier suppresses pro
 test "findTransitiveProviderChoices: unsatisfied virtual dep still offers a choice" {
     const world = MockPacman{ .sync_pkgs = nodejs_world.sync_pkgs };
 
-    const choices = try Pacman.findTransitiveProviderChoices(&world, testing.allocator, &.{"npm"});
+    const choices = try repo_deps.findTransitiveProviderChoices(&world, testing.allocator, &.{"npm"});
     defer {
         for (choices) |ch| testing.allocator.free(ch.candidates);
         testing.allocator.free(choices);
@@ -228,7 +229,7 @@ test "findTransitiveProviderChoices: unsatisfied virtual dep still offers a choi
 }
 
 test "transitiveRepoDeps: installed provides-satisfier excludes conflicting provider" {
-    const deps = try Pacman.transitiveRepoDeps(&nodejs_world, testing.allocator, &.{"npm"}, .empty);
+    const deps = try repo_deps.transitiveRepoDeps(&nodejs_world, testing.allocator, &.{"npm"}, .empty);
     defer testing.allocator.free(deps);
 
     try testing.expectEqualSlices([]const u8, &.{"npm"}, deps);
@@ -237,7 +238,7 @@ test "transitiveRepoDeps: installed provides-satisfier excludes conflicting prov
 test "transitiveRepoDeps: unsatisfied virtual dep resolves to first-satisfier" {
     const world = MockPacman{ .sync_pkgs = nodejs_world.sync_pkgs };
 
-    const deps = try Pacman.transitiveRepoDeps(&world, testing.allocator, &.{"npm"}, .empty);
+    const deps = try repo_deps.transitiveRepoDeps(&world, testing.allocator, &.{"npm"}, .empty);
     defer testing.allocator.free(deps);
 
     try testing.expectEqualSlices([]const u8, &.{ "npm", "nodejs" }, deps);
