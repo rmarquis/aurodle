@@ -767,6 +767,27 @@ test "resolve redirects deferred AUR provider dependency to real name" {
     try testing.expect(has_auracle_git_dep);
 }
 
+test "resolve marks deferred AUR provider of a target as the target" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    // "pi-coding-agent" is not in the AUR by exact name; only providers are
+    // (found via the full cascade after the batch lookup returns .unknown)
+    mock.addDeferredProvider("pi-coding-agent", "pi-coding-agent-bin");
+    mock.addAurPackage("pi-coding-agent-bin", &.{}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock);
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"pi-coding-agent"});
+    defer plan.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), plan.build_order.len);
+    try testing.expectEqualStrings("pi-coding-agent-bin", plan.build_order[0].name);
+    try testing.expect(plan.build_order[0].is_target);
+    try testing.expectEqual(@as(usize, 1), plan.build_order[0].target_names.len);
+    try testing.expectEqualStrings("pi-coding-agent-bin", plan.build_order[0].target_names[0]);
+}
+
 test "resolve redirects virtual name to provider package" {
     var mock = MockRegistry.initEmpty();
     defer mock.deinitMock();

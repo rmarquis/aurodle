@@ -374,6 +374,11 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                 // The full cascade may have found an AUR provider (e.g. "auracle" → "auracle-git").
                 if (full_res.provider) |prov| {
                     if (!std.mem.eql(u8, prov, actual_name)) {
+                        // An explicit target satisfied only by a provider:
+                        // the provider is what gets built and installed.
+                        if (self.targets.contains(actual_name)) {
+                            try self.targets.put(self.allocator, prov, {});
+                        }
                         actual_name = prov;
                         if (visited.contains(actual_name)) {
                             self.graph.updateDepth(actual_name, depth);

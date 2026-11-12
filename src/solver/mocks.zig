@@ -456,7 +456,7 @@ pub const MockRegistry = struct {
             .makedepends = &.{},
             .checkdepends = &.{},
             .optdepends = &.{},
-            .provides = &.{virtual_name},
+            .provides = alloc.dupe([]const u8, &.{virtual_name}) catch unreachable,
             .conflicts = &.{},
             .replaces = &.{},
             .groups = &.{},
@@ -498,6 +498,14 @@ pub const MockRegistry = struct {
         errdefer results.deinit(testing.allocator);
         try results.ensureTotalCapacity(testing.allocator, dep_strings.len);
         for (dep_strings) |dep_str| {
+            // Mirror the real registry: the batch AUR lookup is by exact
+            // name, so names known only via an AUR provides search stay
+            // .unknown here and are found by the solver's resolve() fallback.
+            const name = registry_mod.parseDep(dep_str).name;
+            if (!self.packages.contains(name) and self.deferred_providers.contains(name)) {
+                results.appendAssumeCapacity(.{ .name = name, .source = .unknown });
+                continue;
+            }
             results.appendAssumeCapacity(try self.resolve(dep_str));
         }
         return try results.toOwnedSlice(testing.allocator);
