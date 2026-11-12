@@ -325,6 +325,26 @@ pub const Pacman = struct {
         return alpm.findSatisfier(self.local_db.getPkgcache(), depstring);
     }
 
+    /// Pkgbase of the installed package that satisfies `dep` (by name or
+    /// provision). Falls back to the package's own name when the local
+    /// database has no %BASE% entry. Null if nothing installed satisfies it.
+    pub fn installedPkgbase(self: Pacman, dep: []const u8) ?[]const u8 {
+        const pkg = self.findLocalSatisfierPkg(dep) orelse return null;
+        return pkg.getBase() orelse pkg.getName();
+    }
+
+    /// Pkgbase of the package in the local AUR repository that provides
+    /// `dep` (by name or provision). Falls back to the package's own name
+    /// when the database has no %BASE% entry. Null if the repository has none.
+    pub fn aurRepoPkgbase(self: Pacman, dep: []const u8) ?[]const u8 {
+        const db = self.aurpkgs_db orelse return null;
+        const pkg = db.getPackage(dep_spec.parseDep(dep).name) orelse blk: {
+            const match = findProviderInDb(db, dep) orelse return null;
+            break :blk db.getPackage(match.name) orelse return null;
+        };
+        return pkg.getBase() orelse pkg.getName();
+    }
+
     // ── Provider Resolution ──────────────────────────────────────────────
 
     /// Find a package that provides the given dependency.

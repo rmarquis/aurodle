@@ -94,8 +94,16 @@ pub fn buildorder(self: *BuildContext, targets: []const []const u8) !ExitCode {
             .satisfied_aur => "SATISFIEDAUR",
             .unknown => "UNKNOWN",
         };
-        if (dep.pkgbase) |pkgbase| {
-            stdout.print("{s} {s} {s}\n", .{ prefix, pkgbase, dep.name });
+        // Without AUR metadata (installed or local-repo packages that were
+        // not traversed), take the pkgbase from the pacman databases so
+        // every AUR-sourced line carries one.
+        const pkgbase = dep.pkgbase orelse switch (dep.source) {
+            .satisfied_aur => self.pacman.installedPkgbase(dep.name),
+            .repo_aur => self.pacman.aurRepoPkgbase(dep.name),
+            else => null,
+        };
+        if (pkgbase) |base| {
+            stdout.print("{s} {s} {s}\n", .{ prefix, base, dep.name });
         } else {
             stdout.print("{s} {s}\n", .{ prefix, dep.name });
         }

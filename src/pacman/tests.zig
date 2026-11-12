@@ -42,6 +42,28 @@ test "installedVersion returns version for installed package" {
     try testing.expect(pm.installedVersion("zzz-not-installed") == null);
 }
 
+test "installedPkgbase returns the satisfier's pkgbase, by name or provision" {
+    if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
+
+    var pm = try Pacman.init(testing.allocator, repo_mod.DEFAULT_REPO_NAME);
+    defer pm.deinit();
+
+    try testing.expectEqualStrings("pacman", pm.installedPkgbase("pacman").?);
+    // `sh` is a provision of bash.
+    try testing.expectEqualStrings("bash", pm.installedPkgbase("sh").?);
+    try testing.expect(pm.installedPkgbase("zzz-not-installed") == null);
+}
+
+test "aurRepoPkgbase returns null for packages outside the local AUR repository" {
+    if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
+
+    var pm = try Pacman.init(testing.allocator, repo_mod.DEFAULT_REPO_NAME);
+    defer pm.deinit();
+
+    try testing.expect(pm.aurRepoPkgbase("pacman") == null);
+    try testing.expect(pm.aurRepoPkgbase("zzz-not-installed") == null);
+}
+
 test "isInSyncDb finds official packages" {
     if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 

@@ -90,10 +90,13 @@ use.
 	PREFIX pkgname
 	```
 
-	The pkgbase is always present for *AUR* and *TARGETAUR* entries. It is
-	present for *REPOAUR* and *SATISFIEDAUR* entries only if AUR metadata
-	was fetched for that package during the current invocation. Repository
-	entries (*REPOS*, *SATISFIEDREPOS*, *TARGETREPO*) only carry a pkgname.
+	The pkgbase is present for *AUR*, *TARGETAUR*, *REPOAUR* and
+	*SATISFIEDAUR* entries. When AUR metadata was not fetched for a
+	*SATISFIEDAUR* or *REPOAUR* entry, the pkgbase is read from the local
+	package database or the local AUR repository. For a dependency met
+	through a provision, it is the pkgbase of the package that provides
+	it. Repository entries (*REPOS*, *SATISFIEDREPOS*, *TARGETREPO*) only
+	carry a pkgname.
 
 	Classification tokens:
 
