@@ -4,6 +4,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const repo_mod = @import("../repo.zig");
 const utils = @import("../utils.zig");
+const term = @import("../term.zig");
 const registry_mod = @import("../registry.zig");
 const pacman_mod = @import("../pacman.zig");
 const plan_mod = @import("../plan.zig");
@@ -57,7 +58,7 @@ pub fn selectRepoDepsProviders(
 
         const chosen_idx = if (auto_idx) |i| i else blk: {
             if (noconfirm) break :blk @as(usize, 0);
-            const idx = utils.promptProviderChoice(choice.dep_name, choice.candidates, c);
+            const idx = term.promptProviderChoice(choice.dep_name, choice.candidates, c);
             break :blk idx orelse 0;
         };
 

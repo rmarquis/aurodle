@@ -7,6 +7,7 @@ const solver_mod = @import("../solver.zig");
 const repo_mod = @import("../repo.zig");
 const pacman_mod = @import("../pacman.zig");
 const utils = @import("../utils.zig");
+const term = @import("../term.zig");
 const color = @import("../color.zig");
 const types = @import("types.zig");
 const query_ctx = @import("query_context.zig");
@@ -273,7 +274,7 @@ pub fn runBuildPipeline(self: *BuildContext, filtered: []const []const u8, mode:
         .build_only => "Proceed with build?",
     };
     if (!self.flags.noconfirm) {
-        if (!try utils.promptYesNoStyled(self.stdout_color, prompt)) {
+        if (!try term.promptYesNoStyled(self.stdout_color, prompt)) {
             return .success;
         }
     }
@@ -413,7 +414,7 @@ fn handleEmptyBuildOrder(self: *BuildContext, plan: solver_mod.BuildPlan, mode: 
     display_mod.displayInstallList(all_names.items, self.pacman, self.err_writer, self.stdout_color, self.stderr_color);
 
     if (!self.flags.noconfirm) {
-        if (!try utils.promptYesNoStyled(self.stdout_color, "Proceed with installation?")) {
+        if (!try term.promptYesNoStyled(self.stdout_color, "Proceed with installation?")) {
             return .success;
         }
     }
@@ -518,9 +519,9 @@ pub fn clean(self: *BuildContext) !ExitCode {
 
     if (!self.flags.noconfirm) {
         const proceed = if (self.flags.all)
-            try utils.promptNoYesStyled(self.stdout_color, "Proceed with cleanup?")
+            try term.promptNoYesStyled(self.stdout_color, "Proceed with cleanup?")
         else
-            try utils.promptYesNoStyled(self.stdout_color, "Proceed with cleanup?");
+            try term.promptYesNoStyled(self.stdout_color, "Proceed with cleanup?");
         if (!proceed) return .success;
     }
 

@@ -5,6 +5,7 @@ const Allocator = std.mem.Allocator;
 const git = @import("../git.zig");
 const plan_mod = @import("../plan.zig");
 const utils = @import("../utils.zig");
+const term = @import("../term.zig");
 const color = @import("../color.zig");
 const types = @import("types.zig");
 const build_ctx = @import("build_context.zig");
@@ -56,7 +57,7 @@ fn reviewFiles(self: *BuildContext, pkgbase: []const u8, clone_dir: []const u8) 
     const sc = self.stdout_color;
     const msg = try std.fmt.allocPrint(self.allocator, "Review {s} files?", .{pkgbase});
     defer self.allocator.free(msg);
-    if (!try utils.promptYesNoStyled(self.stdout_color, msg)) return;
+    if (!try term.promptYesNoStyled(self.stdout_color, msg)) return;
 
     const editor = getViewer();
     const exit_code = utils.runInteractive(self.allocator, &.{ editor, clone_dir }, null) catch {
@@ -81,7 +82,7 @@ fn reviewDiff(
     const sc = self.stdout_color;
     const msg = try std.fmt.allocPrint(self.allocator, prompt, .{pkgbase});
     defer self.allocator.free(msg);
-    if (!try utils.promptYesNoStyled(self.stdout_color, msg)) return;
+    if (!try term.promptYesNoStyled(self.stdout_color, msg)) return;
 
     _ = utils.runInteractive(self.allocator, argv, clone_dir) catch {
         stdout.writeAll("  (could not show diff)\n");

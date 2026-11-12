@@ -10,6 +10,7 @@ const registry_mod = @import("registry.zig");
 const repo_mod = @import("repo.zig");
 const auth_mod = @import("auth.zig");
 const utils = @import("utils.zig");
+const term = @import("term.zig");
 const color = @import("color.zig");
 const Allocator = std.mem.Allocator;
 
@@ -381,7 +382,7 @@ fn runWithFullStack(
 
     // Enable interactive provider selection unless --noconfirm.
     if (!parsed.flags.noconfirm) {
-        reg.provider_chooser = utils.providerChooser(&stderr_style);
+        reg.provider_chooser = term.providerChooser(&stderr_style);
     }
     // Chroot builds install AUR dependencies from the local repository,
     // so one installed on the host but missing from it must be built.

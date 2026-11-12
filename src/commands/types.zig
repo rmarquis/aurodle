@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const aur = @import("../aur.zig");
 const color = @import("../color.zig");
 const utils = @import("../utils.zig");
+const term = @import("../term.zig");
 const plan_mod = @import("../plan.zig");
 const report = @import("../report.zig");
 
@@ -244,7 +245,7 @@ pub fn filterIgnored(
         if (isIgnored(flags, target)) {
             var msg_buf: [256]u8 = undefined;
             const msg = std.fmt.bufPrint(&msg_buf, "{s} is in IgnorePkg. Install anyway?", .{target}) catch target;
-            const install = utils.promptYesNoStyled(stdout_color, msg) catch false;
+            const install = term.promptYesNoStyled(stdout_color, msg) catch false;
             if (install) {
                 buf[count] = target;
                 count += 1;
