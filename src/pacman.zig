@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const alpm = @import("alpm.zig");
-const repo_mod = @import("repo.zig");
+const repo_conf = @import("repo_conf.zig");
 const version = @import("version.zig");
 const dep_spec = @import("dep_spec.zig");
 const pacman_conf = @import("pacman_conf.zig");
@@ -98,7 +98,7 @@ pub const Pacman = struct {
         handle: alpm.Handle,
         sync_dbs: []alpm.Database,
     ) !Pacman {
-        return initWithHandleAndName(allocator, handle, sync_dbs, repo_mod.DEFAULT_REPO_NAME);
+        return initWithHandleAndName(allocator, handle, sync_dbs, repo_conf.DEFAULT_REPO_NAME);
     }
 
     /// Initialize with a pre-configured handle and custom AUR repo name.
@@ -874,7 +874,7 @@ fn expectSameProviders(pm: Pacman, name: []const u8) !void {
 test "provides index answers like a database scan" {
     if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
-    var pm = try Pacman.init(testing.allocator, repo_mod.DEFAULT_REPO_NAME);
+    var pm = try Pacman.init(testing.allocator, repo_conf.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
     for ([_][]const u8{ "sh", "java-runtime", "jack", "nodejs", "libgl", "glibc", "zzz-not-a-package" }) |name| {
@@ -904,7 +904,7 @@ test "provides index answers like a database scan" {
 test "installed-package fast path agrees with alpm_find_satisfier" {
     if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
-    var pm = try Pacman.init(testing.allocator, repo_mod.DEFAULT_REPO_NAME);
+    var pm = try Pacman.init(testing.allocator, repo_conf.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
     var checked: usize = 0;

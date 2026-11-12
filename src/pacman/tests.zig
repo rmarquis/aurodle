@@ -3,7 +3,7 @@ const testing = std.testing;
 const pacman = @import("../pacman.zig");
 const alpm = @import("../alpm.zig");
 const pacman_conf = @import("../pacman_conf.zig");
-const repo_mod = @import("../repo.zig");
+const repo_conf = @import("../repo_conf.zig");
 
 const Pacman = pacman.Pacman;
 
@@ -12,7 +12,7 @@ const Pacman = pacman.Pacman;
 test "Pacman.init and deinit on Arch system" {
     if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
-    var pm = try Pacman.init(testing.allocator, repo_mod.DEFAULT_REPO_NAME);
+    var pm = try Pacman.init(testing.allocator, repo_conf.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
     // Should have at least one sync db (core/extra)
@@ -22,7 +22,7 @@ test "Pacman.init and deinit on Arch system" {
 test "isInstalled returns true for pacman itself" {
     if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
-    var pm = try Pacman.init(testing.allocator, repo_mod.DEFAULT_REPO_NAME);
+    var pm = try Pacman.init(testing.allocator, repo_conf.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
     try testing.expect(pm.isInstalled("pacman"));
@@ -32,7 +32,7 @@ test "isInstalled returns true for pacman itself" {
 test "installedVersion returns version for installed package" {
     if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
-    var pm = try Pacman.init(testing.allocator, repo_mod.DEFAULT_REPO_NAME);
+    var pm = try Pacman.init(testing.allocator, repo_conf.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
     const ver = pm.installedVersion("pacman");
@@ -45,7 +45,7 @@ test "installedVersion returns version for installed package" {
 test "installedPkgbase returns the satisfier's pkgbase, by name or provision" {
     if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
-    var pm = try Pacman.init(testing.allocator, repo_mod.DEFAULT_REPO_NAME);
+    var pm = try Pacman.init(testing.allocator, repo_conf.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
     try testing.expectEqualStrings("pacman", pm.installedPkgbase("pacman").?);
@@ -57,7 +57,7 @@ test "installedPkgbase returns the satisfier's pkgbase, by name or provision" {
 test "aurRepoPkgbase returns null for packages outside the local AUR repository" {
     if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
-    var pm = try Pacman.init(testing.allocator, repo_mod.DEFAULT_REPO_NAME);
+    var pm = try Pacman.init(testing.allocator, repo_conf.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
     try testing.expect(pm.aurRepoPkgbase("pacman") == null);
@@ -67,7 +67,7 @@ test "aurRepoPkgbase returns null for packages outside the local AUR repository"
 test "isInSyncDb finds official packages" {
     if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
-    var pm = try Pacman.init(testing.allocator, repo_mod.DEFAULT_REPO_NAME);
+    var pm = try Pacman.init(testing.allocator, repo_conf.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
     // glibc is always in an official sync db
@@ -78,7 +78,7 @@ test "isInSyncDb finds official packages" {
 test "syncDbFor returns correct repository name" {
     if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
-    var pm = try Pacman.init(testing.allocator, repo_mod.DEFAULT_REPO_NAME);
+    var pm = try Pacman.init(testing.allocator, repo_conf.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
     // glibc is in core
@@ -92,7 +92,7 @@ test "syncDbFor returns correct repository name" {
 test "satisfies checks installed version against constraint" {
     if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
-    var pm = try Pacman.init(testing.allocator, repo_mod.DEFAULT_REPO_NAME);
+    var pm = try Pacman.init(testing.allocator, repo_conf.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
     // pacman is definitely installed with version >= 1.0
@@ -106,7 +106,7 @@ test "satisfies checks installed version against constraint" {
 test "satisfiesDep checks dependency string against installed packages" {
     if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
-    var pm = try Pacman.init(testing.allocator, repo_mod.DEFAULT_REPO_NAME);
+    var pm = try Pacman.init(testing.allocator, repo_conf.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
     try testing.expect(pm.satisfiesDep("glibc"));
@@ -116,7 +116,7 @@ test "satisfiesDep checks dependency string against installed packages" {
 test "findProvider finds package providing dependency" {
     if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
-    var pm = try Pacman.init(testing.allocator, repo_mod.DEFAULT_REPO_NAME);
+    var pm = try Pacman.init(testing.allocator, repo_conf.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
     // glibc is a direct package name — should be found
@@ -131,7 +131,7 @@ test "findProvider finds package providing dependency" {
 test "allForeignPackages returns packages not in official repos" {
     if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
-    var pm = try Pacman.init(testing.allocator, repo_mod.DEFAULT_REPO_NAME);
+    var pm = try Pacman.init(testing.allocator, repo_conf.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
     const foreign = try pm.allForeignPackages();
@@ -156,7 +156,7 @@ test "allForeignPackages returns packages not in official repos" {
 test "repoDepSizes returns nonzero sizes for real packages" {
     if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
-    var pm = try Pacman.init(testing.allocator, repo_mod.DEFAULT_REPO_NAME);
+    var pm = try Pacman.init(testing.allocator, repo_conf.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
     // glibc is always in sync dbs and installed
@@ -170,7 +170,7 @@ test "repoDepSizes returns nonzero sizes for real packages" {
 test "repoDepSizes returns zeros for unknown packages" {
     if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 
-    var pm = try Pacman.init(testing.allocator, repo_mod.DEFAULT_REPO_NAME);
+    var pm = try Pacman.init(testing.allocator, repo_conf.DEFAULT_REPO_NAME);
     defer pm.deinit();
 
     const names = &[_][]const u8{"zzz-nonexistent-pkg-99999"};
