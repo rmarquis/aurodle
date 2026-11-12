@@ -71,7 +71,7 @@ fn extractDependency(node: *c.alpm_list_t) Dependency {
         .version = if (raw.version) |v| std.mem.span(v) else "",
         .desc = if (raw.desc) |d| std.mem.span(d) else null,
         .name_hash = raw.name_hash,
-        .mod = @enumFromInt(raw.mod),
+        .mod = @fromBackingInt(@intCast(raw.mod)),
     };
 }
 
@@ -111,7 +111,7 @@ pub const Handle = struct {
     /// Register a sync database by name (e.g., "core", "extra", "aurpkgs").
     pub fn registerSyncDb(self: Handle, name: []const u8, siglevel: SigLevel) AlpmError!Database {
         const c_name = CStringBuf.init(name) catch return error.InvalidArgument;
-        const db = c.alpm_register_syncdb(self.raw, c_name.ptr(), @intFromEnum(siglevel));
+        const db = c.alpm_register_syncdb(self.raw, c_name.ptr(), @backingInt(siglevel));
         if (db == null) return error.DatabaseRegistrationFailed;
         return .{ .raw = db.? };
     }

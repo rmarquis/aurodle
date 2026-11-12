@@ -274,7 +274,7 @@ fn readWord(allocator: Allocator, content: []const u8, pos: *usize, context: Wor
         switch (content[i]) {
             '\'' => {
                 const close = std.mem.indexOfScalarPos(u8, content, i + 1, '\'') orelse content.len;
-                try word.appendSlice(allocator, content[i + 1..close]);
+                try word.appendSlice(allocator, content[i + 1 .. close]);
                 i = @min(close + 1, content.len);
             },
             '"' => {

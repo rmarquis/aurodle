@@ -488,7 +488,6 @@ pub const Pacman = struct {
             if (self.isInstalled(pkg_name)) continue;
 
             if (!(try result.getOrPut(allocator, pkg_name)).found_existing) {
-
                 var dep_it = pkg.getDepends();
                 while (dep_it.next()) |dep| {
                     if (!(try seen.getOrPut(allocator, dep.name)).found_existing) {

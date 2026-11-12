@@ -121,7 +121,7 @@ pub const ProcessResult = struct {
 fn termToExitCode(term: std.process.Child.Term) u8 {
     return switch (term) {
         .exited => |code| code,
-        .signal => |sig| @truncate(128 +| @as(u16, @intCast(@intFromEnum(sig)))),
+        .signal => |sig| @truncate(128 +| @as(u16, @intCast(@backingInt(sig)))),
         else => 1,
     };
 }
