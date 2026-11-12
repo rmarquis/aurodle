@@ -52,6 +52,11 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
         stderr_color: color.Style = color.Style.disabled,
         provider_choices: std.StringHashMapUnmanaged([]const u8) = .empty,
         provider_selections: std.ArrayListUnmanaged(ProviderSelection) = .empty,
+        /// Don't count installed AUR (foreign) packages as available: only
+        /// their copies in the local repository do. Set for --chroot,
+        /// where makepkg installs dependencies inside the chroot from its
+        /// repositories and cannot see what is installed on the host.
+        ignore_installed_aur: bool = false,
 
         pub fn init(allocator: Allocator, pm: *PacmanT, ac: *AurClientT) Self {
             return .{
@@ -88,7 +93,8 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
                 if (satisfiesSpec(cached, spec)) return cached;
             }
 
-            // Tier 1: Installed locally?
+            // Tier 1: Installed locally? With ignore_installed_aur, AUR
+            // packages come from the local repository instead.
             if (self.resolveLocal(spec.name, spec.constraint)) |res| {
                 try self.cacheResult(spec.name, res);
                 return res;
@@ -236,9 +242,15 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
                     if (!self.pacman.satisfies(name, c)) return null;
                 }
 
+                if (self.pacman.isInOfficialSyncDb(name)) return .{
+                    .name = name,
+                    .source = .satisfied_repos,
+                    .version = self.pacman.installedVersion(name),
+                };
+                if (self.ignore_installed_aur) return self.resolveLocalRepo(name, constraint);
                 return .{
                     .name = name,
-                    .source = if (self.pacman.isInOfficialSyncDb(name)) .satisfied_repos else .satisfied_aur,
+                    .source = .satisfied_aur,
                     .version = self.pacman.installedVersion(name),
                 };
             }
@@ -250,15 +262,32 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
                     if (!self.pacman.satisfies(provider_name, c)) return null;
                 }
 
+                const official = self.pacman.isInOfficialSyncDb(provider_name);
+                if (!official and self.ignore_installed_aur) return self.resolveLocalRepo(name, constraint);
                 return .{
                     .name = name,
-                    .source = if (self.pacman.isInOfficialSyncDb(provider_name)) .satisfied_repos else .satisfied_aur,
+                    .source = if (official) .satisfied_repos else .satisfied_aur,
                     .version = self.pacman.installedVersion(provider_name),
                     .provider = provider_name,
                 };
             }
 
+            if (self.ignore_installed_aur) return self.resolveLocalRepo(name, constraint);
             return null;
+        }
+
+        /// `name` in the local repository, by exact name. Only used with
+        /// ignore_installed_aur; otherwise the local repository is reached
+        /// through the provider tier. Unlike that tier, this one meets a
+        /// version constraint with the local repository's copy.
+        fn resolveLocalRepo(self: *Self, name: []const u8, constraint: ?pacman_mod.VersionConstraint) ?Resolution {
+            const db = self.pacman.syncDbFor(name) orelse return null;
+            if (!self.pacman.isAurRepo(db)) return null;
+            const version = self.pacman.syncVersion(name) orelse return null;
+            if (constraint) |c| {
+                if (!pacman_mod.checkVersion(version, c)) return null;
+            }
+            return .{ .name = name, .source = .repo_aur, .version = version };
         }
 
         fn resolveSync(self: *Self, name: []const u8, constraint: ?pacman_mod.VersionConstraint) ?Resolution {
@@ -336,7 +365,9 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
 
         fn makeProviderResolution(self: *Self, name: []const u8, provider: pacman_mod.ProviderCandidate) Resolution {
             const from_aurpkgs = self.pacman.isAurRepo(provider.db_name);
-            const source: Source = if (self.pacman.isInstalled(provider.name))
+            const installed = self.pacman.isInstalled(provider.name) and
+                !(self.ignore_installed_aur and from_aurpkgs);
+            const source: Source = if (installed)
                 if (self.pacman.isInOfficialSyncDb(provider.name)) .satisfied_repos else .satisfied_aur
             else if (from_aurpkgs)
                 .repo_aur

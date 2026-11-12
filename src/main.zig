@@ -379,6 +379,9 @@ fn runWithFullStack(
         reg.provider_chooser = &utils.promptProviderChoice;
     }
     reg.stderr_color = color.Style.detect(std.posix.STDERR_FILENO, pm.color);
+    // Chroot builds install AUR dependencies from the local repository,
+    // so one installed on the host but missing from it must be built.
+    reg.ignore_installed_aur = flags.chroot;
 
     // Initialize privilege escalation (PACMAN_AUTH → sudo → su)
     var auth = auth_mod.Auth.init(allocator, repository.makepkg_conf.pacman_auth) catch |err| {

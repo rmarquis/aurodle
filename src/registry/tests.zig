@@ -751,3 +751,97 @@ test "AUR multi-provider invokes chooser" {
     try testing.expectEqual(@as(usize, 1), reg.provider_selections.items.len);
     try testing.expectEqualStrings("auracle", reg.provider_selections.items[0].dep_name);
 }
+
+// ── ignore_installed_aur (--chroot) ─────────────────────────────────────
+
+test "ignore_installed_aur builds an installed AUR package missing from the local repo" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+    pm.addInstalled("libfoo", "1.0-1");
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+    ac.addPackage("libfoo", "1.0-1");
+
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+    reg.ignore_installed_aur = true;
+
+    const res = try reg.resolve("libfoo");
+    try testing.expectEqual(Source.aur, res.source);
+}
+
+test "ignore_installed_aur takes an installed AUR package from the local repo" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+    pm.addInstalled("libfoo", "1.0-1");
+    pm.addSync("libfoo", "1.1-1", "aurpkgs");
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+    reg.ignore_installed_aur = true;
+
+    const res = try reg.resolve("libfoo");
+    try testing.expectEqual(Source.repo_aur, res.source);
+    try testing.expectEqualStrings("1.1-1", res.version.?);
+}
+
+test "ignore_installed_aur checks a constraint against the local repo copy" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+    pm.addSync("libfoo", "1.0-1", "aurpkgs");
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+    ac.addPackage("libfoo", "2.0-1");
+
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+    reg.ignore_installed_aur = true;
+
+    const ok = try reg.resolve("libfoo>=1");
+    try testing.expectEqual(Source.repo_aur, ok.source);
+
+    const newer = try reg.resolve("libfoo>=2");
+    try testing.expectEqual(Source.aur, newer.source);
+}
+
+test "ignore_installed_aur still counts installed official packages" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+    pm.addInstalled("glibc", "2.39-1");
+    pm.addSync("glibc", "2.39-1", "core");
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+    reg.ignore_installed_aur = true;
+
+    const res = try reg.resolve("glibc");
+    try testing.expectEqual(Source.satisfied_repos, res.source);
+}
+
+test "ignore_installed_aur ignores an installed AUR provider" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+    pm.addInstalled("foo-git", "r1-1");
+    pm.addProvider("foo", .{ .name = "foo-git", .version = "r1-1", .db_name = "aurpkgs" });
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+    reg.ignore_installed_aur = true;
+
+    // foo-git is installed and in the local repo: the chroot gets it
+    // from the repo.
+    const res = try reg.resolve("foo");
+    try testing.expectEqual(Source.repo_aur, res.source);
+    try testing.expectEqualStrings("foo-git", res.provider.?);
+}
