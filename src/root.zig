@@ -44,4 +44,5 @@ test {
     _ = @import("solver/tests.zig");
     _ = @import("commands/build_context.zig");
     _ = @import("commands/outdated.zig");
+    _ = @import("commands/display.zig");
 }

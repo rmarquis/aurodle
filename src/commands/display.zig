@@ -475,3 +475,104 @@ fn printSize(writer: StdWriter, label: []const u8, bytes: i64) void {
     var buf: [32]u8 = undefined;
     writer.print("{s}{s}\n", .{ label, fmtSize(bytes, &buf) });
 }
+
+// ── Tests ────────────────────────────────────────────────────────────────
+
+const testing = std.testing;
+
+fn expectSize(expected: []const u8, bytes: i64) !void {
+    var buf: [32]u8 = undefined;
+    try testing.expectEqualStrings(expected, fmtSize(bytes, &buf));
+}
+
+fn testEntry(name: []const u8, version: []const u8, target_names: []const []const u8) plan_mod.BuildEntry {
+    return .{ .name = name, .pkgbase = name, .version = version, .is_target = target_names.len > 0, .target_names = target_names };
+}
+
+test "fmtSize uses bytes below 1 KiB" {
+    try expectSize("0 B", 0);
+    try expectSize("1023 B", 1023);
+}
+
+test "fmtSize switches to KiB and MiB with two decimals" {
+    try expectSize("1.00 KiB", 1024);
+    try expectSize("1.50 KiB", 1536);
+    try expectSize("1.00 MiB", 1024 * 1024);
+    try expectSize("42.34 MiB", 44_396_380);
+}
+
+test "fmtSize keeps the sign of a shrinking net change" {
+    try expectSize("-5 B", -5);
+    try expectSize("-2.00 KiB", -2048);
+    try expectSize("-3.00 MiB", -3 * 1024 * 1024);
+}
+
+test "countDigits counts decimal digits" {
+    try testing.expectEqual(@as(usize, 1), countDigits(0));
+    try testing.expectEqual(@as(usize, 1), countDigits(9));
+    try testing.expectEqual(@as(usize, 2), countDigits(10));
+    try testing.expectEqual(@as(usize, 2), countDigits(99));
+    try testing.expectEqual(@as(usize, 3), countDigits(100));
+}
+
+test "gap pads to the column end plus a two-space gutter" {
+    try testing.expectEqual(@as(usize, 7), gap(5, 10));
+    try testing.expectEqual(@as(usize, 2), gap(10, 10));
+}
+
+test "gap keeps the gutter after an overlong value" {
+    try testing.expectEqual(@as(usize, 2), gap(11, 10));
+    try testing.expectEqual(@as(usize, 2), gap(40, 10));
+}
+
+test "displayVersion prefers the --devel version" {
+    var hint: std.StringHashMapUnmanaged([]const u8) = .empty;
+    defer hint.deinit(testing.allocator);
+    try hint.put(testing.allocator, "foo-git", "r42.abc-1");
+    try testing.expectEqualStrings("r42.abc-1", displayVersion(testEntry("foo-git", "r1-1", &.{}), &hint));
+}
+
+test "displayVersion shows latest for a VCS package without a computed version" {
+    const hint: std.StringHashMapUnmanaged([]const u8) = .empty;
+    try testing.expectEqualStrings("latest", displayVersion(testEntry("foo-git", "r1-1", &.{}), &hint));
+}
+
+test "displayVersion shows the plan version otherwise" {
+    const hint: std.StringHashMapUnmanaged([]const u8) = .empty;
+    try testing.expectEqualStrings("1.2-3", displayVersion(testEntry("foo", "1.2-3", &.{}), &hint));
+}
+
+test "aurRowCount counts a row per split target and per dependency" {
+    try testing.expectEqual(@as(usize, 0), aurRowCount(&.{}));
+    const order = [_]plan_mod.BuildEntry{
+        testEntry("dep", "1-1", &.{}),
+        testEntry("split", "1-1", &.{ "split-a", "split-b" }),
+        testEntry("single", "1-1", &.{"single"}),
+    };
+    try testing.expectEqual(@as(usize, 4), aurRowCount(&order));
+}
+
+test "ColWidths.initFromHeaders sizes columns to their headers" {
+    const w = ColWidths.initFromHeaders(5, true);
+    try testing.expectEqual(hdr_pkg.len + 1, w.name);
+    try testing.expectEqual(hdr_old_ver.len, w.old);
+    try testing.expectEqual(hdr_new_ver.len, w.ver);
+    try testing.expectEqual(hdr_net_change.len, w.nc);
+    try testing.expectEqual(hdr_dl_size.len, w.dl);
+    try testing.expect(!w.has_old);
+    try testing.expect(w.show_sizes);
+    // "Package (123)" needs room for three digits.
+    try testing.expectEqual(hdr_pkg.len + 3, ColWidths.initFromHeaders(123, false).name);
+}
+
+test "ColWidths.widenRepoPkg without pacman only widens the name column" {
+    var w = ColWidths.initFromHeaders(1, false);
+    const before = w;
+    w.widenRepoPkg(null, "short");
+    try testing.expectEqual(before.name, w.name);
+    w.widenRepoPkg(null, "a-much-longer-package-name");
+    try testing.expectEqual(@as(usize, "a-much-longer-package-name".len), w.name);
+    try testing.expectEqual(before.old, w.old);
+    try testing.expectEqual(before.ver, w.ver);
+    try testing.expect(!w.has_old);
+}
