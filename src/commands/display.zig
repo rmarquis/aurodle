@@ -446,14 +446,16 @@ fn pad(writer: StdWriter, current: usize, col: usize) void {
 /// `bytes` as pacman shows sizes: B below 1 KiB, else KiB or MiB with two
 /// decimals. Negative for a shrinking net change.
 fn fmtSize(bytes: i64, buf: *[32]u8) []const u8 {
-    const abs = if (bytes < 0) -bytes else bytes;
+    const abs = @abs(bytes);
     const sign: []const u8 = if (bytes < 0) "-" else "";
-    return if (abs >= 1024 * 1024)
-        std.fmt.bufPrint(buf, "{s}{d:.2} MiB", .{ sign, @as(f64, @floatFromInt(abs)) / (1024.0 * 1024.0) }) catch ""
-    else if (abs >= 1024)
-        std.fmt.bufPrint(buf, "{s}{d:.2} KiB", .{ sign, @as(f64, @floatFromInt(abs)) / 1024.0 }) catch ""
-    else
-        std.fmt.bufPrint(buf, "{s}{d} B", .{ sign, abs }) catch "";
+    if (abs < 1024) return std.fmt.bufPrint(buf, "{s}{d} B", .{ sign, abs }) catch "";
+    const kib = @as(f64, @floatFromInt(abs)) / 1024.0;
+    // Pick the unit after rounding: from 1023.995 KiB up, two decimals
+    // would show "1024.00 KiB" rather than "1.00 MiB".
+    if (@round(kib * 100.0) < 1024.0 * 100.0) {
+        return std.fmt.bufPrint(buf, "{s}{d:.2} KiB", .{ sign, kib }) catch "";
+    }
+    return std.fmt.bufPrint(buf, "{s}{d:.2} MiB", .{ sign, kib / 1024.0 }) catch "";
 }
 
 fn rightAlign(writer: StdWriter, str: []const u8, col: usize) void {
@@ -499,6 +501,18 @@ test "fmtSize switches to KiB and MiB with two decimals" {
     try expectSize("1.50 KiB", 1536);
     try expectSize("1.00 MiB", 1024 * 1024);
     try expectSize("42.34 MiB", 44_396_380);
+}
+
+test "fmtSize switches to MiB where KiB would round to 1024.00" {
+    try expectSize("1023.99 KiB", 1_048_570); // 1023.994 KiB
+    try expectSize("1.00 MiB", 1_048_571); // 1023.995 KiB
+    try expectSize("1.00 MiB", 1_048_575);
+    try expectSize("-1.00 MiB", -1_048_575);
+}
+
+test "fmtSize handles the most negative size" {
+    var buf: [32]u8 = undefined;
+    try testing.expect(std.mem.endsWith(u8, fmtSize(std.math.minInt(i64), &buf), " MiB"));
 }
 
 test "fmtSize keeps the sign of a shrinking net change" {
