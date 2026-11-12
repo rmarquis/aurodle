@@ -246,7 +246,8 @@ const provider_mod = @import("provider.zig");
 ///    5) jdk-openjdk-git
 /// Enter a number (default=1):
 ///
-/// Signature matches `ProviderChooserFn`.
+/// Used directly for repo-dep provider selection; the registry reaches it
+/// through `providerChooser`.
 pub fn promptProviderChoice(
     dep_name: []const u8,
     candidates: []const provider_mod.ProviderCandidate,
@@ -289,6 +290,17 @@ pub fn promptProviderChoice(
         }
         std.debug.print(":: Invalid number, try again.", .{});
     }
+}
+
+/// A registry provider chooser that prompts on the terminal, styled with
+/// `style`. `style` must outlive the chooser.
+pub fn providerChooser(style: *const color.Style) provider_mod.ProviderChooser {
+    return .{ .ctx = @constCast(style), .choose_fn = promptProviderChoiceCallback };
+}
+
+fn promptProviderChoiceCallback(ctx: ?*anyopaque, dep_name: []const u8, candidates: []const provider_mod.ProviderCandidate) ?usize {
+    const style: *const color.Style = @ptrCast(@alignCast(ctx.?));
+    return promptProviderChoice(dep_name, candidates, style.*);
 }
 
 /// Expand ~ at the start of a path to $HOME.

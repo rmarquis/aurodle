@@ -7,7 +7,6 @@ const Source = registry.Source;
 const Resolution = registry.Resolution;
 
 const pacman_mod = @import("../pacman.zig");
-const color = @import("../color.zig");
 
 const mocks_mod = @import("mocks.zig");
 const MockPacman = mocks_mod.MockPacman;
@@ -591,18 +590,18 @@ test "resolve returns unknown when no provider exists anywhere" {
 
 // ── Provider Selection Tests ────────────────────────────────────────────
 
-fn testChooserSecond(_: []const u8, candidates: []const registry.ProviderCandidate, _: color.Style) ?usize {
+fn testChooserSecond(_: ?*anyopaque, _: []const u8, candidates: []const registry.ProviderCandidate) ?usize {
     if (candidates.len >= 2) return 1;
     return 0;
 }
 
-fn testChooserFirst(_: []const u8, _: []const registry.ProviderCandidate, _: color.Style) ?usize {
+fn testChooserFirst(_: ?*anyopaque, _: []const u8, _: []const registry.ProviderCandidate) ?usize {
     return 0;
 }
 
 var test_chooser_call_count: usize = 0;
 
-fn testChooserCounting(_: []const u8, _: []const registry.ProviderCandidate, _: color.Style) ?usize {
+fn testChooserCounting(_: ?*anyopaque, _: []const u8, _: []const registry.ProviderCandidate) ?usize {
     test_chooser_call_count += 1;
     return 0;
 }
@@ -622,7 +621,7 @@ test "single provider does not invoke chooser" {
     test_chooser_call_count = 0;
     var reg = TestRegistry.init(testing.allocator, &pm, &ac);
     defer reg.deinit();
-    reg.provider_chooser = &testChooserCounting;
+    reg.provider_chooser = .{ .choose_fn = &testChooserCounting };
 
     const res = try reg.resolve("java-runtime");
     try testing.expectEqualStrings("jre-openjdk", res.provider.?);
@@ -643,7 +642,7 @@ test "multiple providers invoke chooser and select correct one" {
 
     var reg = TestRegistry.init(testing.allocator, &pm, &ac);
     defer reg.deinit();
-    reg.provider_chooser = &testChooserSecond;
+    reg.provider_chooser = .{ .choose_fn = &testChooserSecond };
 
     const res = try reg.resolve("java-runtime");
     try testing.expectEqualStrings("jre-openjdk", res.provider.?);
@@ -670,7 +669,7 @@ test "installed provider auto-selected without chooser" {
     test_chooser_call_count = 0;
     var reg = TestRegistry.init(testing.allocator, &pm, &ac);
     defer reg.deinit();
-    reg.provider_chooser = &testChooserCounting;
+    reg.provider_chooser = .{ .choose_fn = &testChooserCounting };
 
     const res = try reg.resolve("java-runtime");
     try testing.expectEqualStrings("jre-openjdk", res.provider.?);
@@ -694,7 +693,7 @@ test "provider choice is cached across resolve calls" {
     test_chooser_call_count = 0;
     var reg = TestRegistry.init(testing.allocator, &pm, &ac);
     defer reg.deinit();
-    reg.provider_chooser = &testChooserCounting;
+    reg.provider_chooser = .{ .choose_fn = &testChooserCounting };
 
     _ = try reg.resolve("java-runtime");
     // Invalidate the main cache to force re-resolution but keep provider_choices
@@ -737,7 +736,7 @@ test "AUR multi-provider invokes chooser" {
     test_chooser_call_count = 0;
     var reg = TestRegistry.init(testing.allocator, &pm, &ac);
     defer reg.deinit();
-    reg.provider_chooser = &testChooserCounting;
+    reg.provider_chooser = .{ .choose_fn = &testChooserCounting };
 
     const res = try reg.resolve("auracle");
     try testing.expectEqual(Source.aur, res.source);

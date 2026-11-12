@@ -2,7 +2,6 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const aur = @import("aur.zig");
 const alpm = @import("alpm.zig");
-const color = @import("color.zig");
 const devel = @import("devel.zig");
 const pacman_mod = @import("pacman.zig");
 const provider_types = @import("provider.zig");
@@ -10,7 +9,7 @@ const source_mod = @import("source.zig");
 const dep_spec = @import("dep_spec.zig");
 
 pub const ProviderCandidate = provider_types.ProviderCandidate;
-pub const ProviderChooserFn = provider_types.ProviderChooserFn;
+pub const ProviderChooser = provider_types.ProviderChooser;
 pub const ProviderSelection = provider_types.ProviderSelection;
 
 // ── Public Types ─────────────────────────────────────────────────────────
@@ -48,8 +47,7 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
         aur_client: *AurClientT,
         cache: std.StringHashMapUnmanaged(Resolution),
         pending_aur: std.StringArrayHashMapUnmanaged(void),
-        provider_chooser: ?ProviderChooserFn = null,
-        stderr_color: color.Style = color.Style.disabled,
+        provider_chooser: ?ProviderChooser = null,
         provider_choices: std.StringHashMapUnmanaged([]const u8) = .empty,
         provider_selections: std.ArrayListUnmanaged(ProviderSelection) = .empty,
         /// Don't count installed AUR (foreign) packages as available: only
@@ -357,7 +355,7 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
             }
 
             // Multiple matches + chooser — prompt user
-            const idx = self.provider_chooser.?(name, all, self.stderr_color) orelse 0;
+            const idx = self.provider_chooser.?.choose(name, all) orelse 0;
             const provider = all[idx];
             try self.cacheProviderChoice(name, provider.name);
             return self.makeProviderResolution(name, provider);
@@ -453,7 +451,7 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
                 });
             }
 
-            const idx = self.provider_chooser.?(name, candidates.items, self.stderr_color) orelse 0;
+            const idx = self.provider_chooser.?.choose(name, candidates.items) orelse 0;
             const provider_pkg = results[idx];
             try self.cacheProviderChoice(name, provider_pkg.name);
             return makeAurResolution(provider_pkg, provider_pkg.name);

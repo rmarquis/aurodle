@@ -374,11 +374,12 @@ fn runWithFullStack(
     var reg = registry_mod.PackageRegistry.init(allocator, &pm, aur_client);
     defer reg.deinit();
 
-    // Enable interactive provider selection unless --noconfirm
+    // Enable interactive provider selection unless --noconfirm.
+    // The chooser borrows the style, so it lives as long as reg.
+    const provider_style = color.Style.detect(std.posix.STDERR_FILENO, pm.color);
     if (!parsed.flags.noconfirm) {
-        reg.provider_chooser = &utils.promptProviderChoice;
+        reg.provider_chooser = utils.providerChooser(&provider_style);
     }
-    reg.stderr_color = color.Style.detect(std.posix.STDERR_FILENO, pm.color);
     // Chroot builds install AUR dependencies from the local repository,
     // so one installed on the host but missing from it must be built.
     reg.ignore_installed_aur = flags.chroot;
