@@ -301,7 +301,7 @@ pub fn buildLoop(
     // here would look like "no failures" and let the caller install every
     // target, so fail the whole build instead.
     const chroot_makepkg_conf: ?[]u8 = if (self.flags.chroot)
-        try chroot.prepare(self.allocator, self.auth, self.cache_root, repository.repo_name, repository.repo_dir, self.err_writer, ec) orelse
+        try chroot.prepare(self.allocator, self.auth, self.cache_root, repository.repo_name, repository.repo_dir, types.stderrReporter(&self.stderr_color)) orelse
             return error.ChrootUnavailable
     else
         null;

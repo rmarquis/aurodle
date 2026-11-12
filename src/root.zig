@@ -17,6 +17,7 @@ const _registry = @import("registry.zig");
 const _solver = @import("solver.zig");
 const _color = @import("color.zig");
 const _auth = @import("auth.zig");
+const _report = @import("report.zig");
 const _chroot = @import("chroot.zig");
 
 test {
@@ -31,6 +32,7 @@ test {
     _ = _solver;
     _ = _color;
     _ = _auth;
+    _ = _report;
     _ = _chroot;
     _ = @import("aur/tests.zig");
     _ = @import("git/tests.zig");

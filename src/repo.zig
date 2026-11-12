@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const utils = @import("utils.zig");
+const Reporter = @import("report.zig").Reporter;
 const makepkg = @import("makepkg.zig");
 const repo_conf = @import("repo_conf.zig");
 
@@ -97,6 +98,8 @@ pub const Repository = struct {
     makepkg_conf: MakepkgConfig,
     skip_repo_add: bool,
     owns_repo_name: bool,
+    /// Shows repo-add's error output. Set by the frontend.
+    reporter: Reporter = .silent,
 
     /// Create a Repository using paths derived from makepkg.conf:
     /// - repo_dir: PKGDEST from makepkg.conf (required)
@@ -259,10 +262,7 @@ pub const Repository = struct {
         defer result.deinit(self.allocator);
 
         if (!result.success()) {
-            if (result.stderr.len > 0) {
-                utils.flushStdout();
-                std.debug.print("{s}", .{result.stderr});
-            }
+            if (result.stderr.len > 0) self.reporter.message(.output, result.stderr);
             return error.RepoAddFailed;
         }
     }

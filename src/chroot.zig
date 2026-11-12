@@ -20,7 +20,7 @@ const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const utils = @import("utils.zig");
 const auth_mod = @import("auth.zig");
-const color = @import("color.zig");
+const Reporter = @import("report.zig").Reporter;
 
 pub const default_dir = "/var/lib/aurodle/chroot";
 
@@ -277,29 +277,25 @@ pub fn makepkgConfPath(allocator: Allocator, chroot_dir: []const u8, user_conf_e
 /// date. Root is updated once here so each build's `-u` only has to sync
 /// databases.
 /// Returns the makepkg.conf path (see makepkgConfPath; caller frees), or
-/// null after printing why when the chroot cannot be used.
+/// null after reporting why when the chroot cannot be used.
 pub fn prepare(
     allocator: Allocator,
     auth: *auth_mod.Auth,
     cache_root: []const u8,
     repo_name: []const u8,
     repo_dir: []const u8,
-    err_writer: anytype,
-    ec: color.Style,
+    reporter: Reporter,
 ) !?[]u8 {
     for ([_][]const u8{ "makechrootpkg", "mkarchroot", "arch-nspawn" }) |tool| {
         if (!utils.findOnPath(tool)) {
-            err_writer.print("{s}error:{s} {s} not found -- install devtools: pacman -S devtools\n", .{ ec.red, ec.reset, tool });
+            reporter.print(.err, "{s} not found -- install devtools: pacman -S devtools", .{tool});
             return null;
         }
     }
 
     const chroot_dir = dir();
     if (try onNosuidMount(allocator, chroot_dir) orelse false) {
-        err_writer.print(
-            "{s}error:{s} {s} is on a nosuid mount, where sudo cannot install build dependencies -- set CHROOT_DIR to another location\n",
-            .{ ec.red, ec.reset, chroot_dir },
-        );
+        reporter.print(.err, "{s} is on a nosuid mount, where sudo cannot install build dependencies -- set CHROOT_DIR to another location", .{chroot_dir});
         return null;
     }
 
@@ -309,19 +305,16 @@ pub fn prepare(
     defer allocator.free(root_path);
 
     if (!fileExists(conf_path)) {
-        if (!try writePacmanConf(allocator, auth, cache_root, conf_path, repo_name, err_writer, ec)) return null;
+        if (!try writePacmanConf(allocator, auth, cache_root, conf_path, repo_name, reporter)) return null;
     }
-    if (!try checkRepo(allocator, conf_path, repo_name, repo_dir, err_writer, ec)) return null;
+    if (!try checkRepo(allocator, conf_path, repo_name, repo_dir, reporter)) return null;
 
     const user_makepkg_conf = try std.fs.path.join(allocator, &.{ chroot_dir, "makepkg.conf" });
     defer allocator.free(user_makepkg_conf);
     const makepkg_conf = try makepkgConfPath(allocator, chroot_dir, fileExists(user_makepkg_conf), @tagName(builtin.cpu.arch));
     errdefer allocator.free(makepkg_conf);
     if (!fileExists(makepkg_conf)) {
-        err_writer.print(
-            "{s}error:{s} {s} not found -- write a makepkg.conf for the chroot at {s}\n",
-            .{ ec.red, ec.reset, makepkg_conf, user_makepkg_conf },
-        );
+        reporter.print(.err, "{s} not found -- write a makepkg.conf for the chroot at {s}", .{ makepkg_conf, user_makepkg_conf });
         allocator.free(makepkg_conf);
         return null;
     }
@@ -339,12 +332,10 @@ pub fn prepare(
     } else {
         try argv.appendSlice(allocator, &.{ "arch-nspawn", "-C", conf_path, "-M", makepkg_conf, root_path, "pacman", "-Syu", "--noconfirm" });
     }
-    err_writer.print("{s}::{s} {s} chroot at {s} (makepkg.conf: {s})...\n", .{
-        ec.blue, ec.reset, if (creating) "creating" else "updating", chroot_dir, makepkg_conf,
-    });
+    reporter.print(.info, "{s} chroot at {s} (makepkg.conf: {s})...", .{ if (creating) "creating" else "updating", chroot_dir, makepkg_conf });
     const exit_code = try auth.runInteractive(argv.items, null);
     if (exit_code != 0) {
-        err_writer.print("{s}error:{s} failed to set up the chroot (exit {d})\n", .{ ec.red, ec.reset, exit_code });
+        reporter.print(.err, "failed to set up the chroot (exit {d})", .{exit_code});
         allocator.free(makepkg_conf);
         return null;
     }
@@ -365,8 +356,7 @@ fn writePacmanConf(
     cache_root: []const u8,
     conf_path: []const u8,
     repo_name: []const u8,
-    err_writer: anytype,
-    ec: color.Style,
+    reporter: Reporter,
 ) !bool {
     const repo_list = try utils.runCommand(allocator, &.{ "pacman-conf", "--repo-list" });
     defer repo_list.deinit(allocator);
@@ -374,14 +364,14 @@ fn writePacmanConf(
     defer repo_dump.deinit(allocator);
     for ([_]utils.ProcessResult{ repo_list, repo_dump }) |r| {
         if (!r.success()) {
-            err_writer.print("{s}error:{s} pacman-conf failed: {s}\n", .{ ec.red, ec.reset, r.stderr });
+            reporter.print(.err, "pacman-conf failed: {s}", .{r.stderr});
             return false;
         }
     }
 
     const template_path = templatePath(repo_list.stdout, builtin.cpu.arch == .x86_64);
     const template = std.Io.Dir.readFileAlloc(std.Io.Dir.cwd(), utils.currentIo(), template_path, allocator, .limited(1024 * 1024)) catch |err| {
-        err_writer.print("{s}error:{s} could not read {s}: {} -- reinstall devtools\n", .{ ec.red, ec.reset, template_path, err });
+        reporter.print(.err, "could not read {s}: {} -- reinstall devtools", .{ template_path, err });
         return false;
     };
     defer allocator.free(template);
@@ -394,11 +384,11 @@ fn writePacmanConf(
     try std.Io.Dir.writeFile(std.Io.Dir.cwd(), utils.currentIo(), .{ .sub_path = staged, .data = conf });
     defer std.Io.Dir.deleteFile(std.Io.Dir.cwd(), utils.currentIo(), staged) catch {};
 
-    err_writer.print("{s}::{s} writing {s}\n", .{ ec.blue, ec.reset, conf_path });
+    reporter.print(.info, "writing {s}", .{conf_path});
     const result = try auth.runCaptured(&.{ "install", "-D", "-m644", staged, conf_path });
     defer result.deinit(allocator);
     if (!result.success()) {
-        err_writer.print("{s}error:{s} could not write {s}: {s}\n", .{ ec.red, ec.reset, conf_path, result.stderr });
+        reporter.print(.err, "could not write {s}: {s}", .{ conf_path, result.stderr });
         return false;
     }
     return true;
@@ -414,22 +404,15 @@ fn checkRepo(
     conf_path: []const u8,
     repo_name: []const u8,
     repo_dir: []const u8,
-    err_writer: anytype,
-    ec: color.Style,
+    reporter: Reporter,
 ) !bool {
     const servers = try utils.runCommand(allocator, &.{ "pacman-conf", "--config", conf_path, "--repo", repo_name, "Server" });
     defer servers.deinit(allocator);
     if (servers.success() and serversInclude(servers.stdout, repo_dir)) return true;
     if (servers.success()) {
-        err_writer.print(
-            "{s}error:{s} [{s}] in {s} has no Server = file://{s} -- edit the file, or delete it to generate it again\n",
-            .{ ec.red, ec.reset, repo_name, conf_path, repo_dir },
-        );
+        reporter.print(.err, "[{s}] in {s} has no Server = file://{s} -- edit the file, or delete it to generate it again", .{ repo_name, conf_path, repo_dir });
     } else {
-        err_writer.print(
-            "{s}error:{s} {s} has no usable [{s}] section ({s}) -- edit the file, or delete it to generate it again\n",
-            .{ ec.red, ec.reset, conf_path, repo_name, std.mem.trim(u8, servers.stderr, " \t\r\n") },
-        );
+        reporter.print(.err, "{s} has no usable [{s}] section ({s}) -- edit the file, or delete it to generate it again", .{ conf_path, repo_name, std.mem.trim(u8, servers.stderr, " \t\r\n") });
     }
     return false;
 }
@@ -505,7 +488,7 @@ test "buildArgv passes the user and PKGDEST and builds without -I" {
     });
     const expected = [_][]const u8{
         "env",           "SUDO_USER=alice", "PKGDEST=/home/alice/.cache/aurodle/chroot-pkgdest", "MAKEFLAGS=-j8",
-        "makechrootpkg", "-c",              "-u",                           "-U",
+        "makechrootpkg", "-c",              "-u",                                                "-U",
         "alice",         "-r",              "/var/lib/aurodle/chroot",
     };
     try testing.expectEqual(expected.len, argv.len);

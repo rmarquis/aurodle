@@ -29,7 +29,7 @@ pub fn main(init: std.process.Init) u8 {
         return 1;
     };
 
-    return @intFromEnum(result);
+    return @backingInt(result);
 }
 
 fn run(allocator: Allocator, io: std.Io, raw_args: std.process.Args) !ExitCode {
@@ -374,11 +374,14 @@ fn runWithFullStack(
     var reg = registry_mod.PackageRegistry.init(allocator, &pm, aur_client);
     defer reg.deinit();
 
+    // The chooser and the reporter borrow the style, so it lives as long
+    // as reg and repository.
+    const stderr_style = color.Style.detect(std.posix.STDERR_FILENO, pm.color);
+    repository.reporter = cmd_types.stderrReporter(&stderr_style);
+
     // Enable interactive provider selection unless --noconfirm.
-    // The chooser borrows the style, so it lives as long as reg.
-    const provider_style = color.Style.detect(std.posix.STDERR_FILENO, pm.color);
     if (!parsed.flags.noconfirm) {
-        reg.provider_chooser = utils.providerChooser(&provider_style);
+        reg.provider_chooser = utils.providerChooser(&stderr_style);
     }
     // Chroot builds install AUR dependencies from the local repository,
     // so one installed on the host but missing from it must be built.

@@ -4,6 +4,7 @@ const aur = @import("../aur.zig");
 const color = @import("../color.zig");
 const utils = @import("../utils.zig");
 const plan_mod = @import("../plan.zig");
+const report = @import("../report.zig");
 
 // ── Exit Codes ───────────────────────────────────────────────────────────
 
@@ -154,6 +155,23 @@ pub fn defaultErrWriter() ErrWriter {
 }
 
 pub const null_err_writer: ErrWriter = .{ .discard = true };
+
+/// A core Reporter that prints to stderr with pacman-style prefixes
+/// colored with `style`. `style` must outlive the reporter.
+pub fn stderrReporter(style: *const color.Style) report.Reporter {
+    return .{ .ctx = @constCast(style), .report_fn = reportToStderr };
+}
+
+fn reportToStderr(ctx: ?*anyopaque, level: report.Level, msg: []const u8) void {
+    const ec: *const color.Style = @ptrCast(@alignCast(ctx.?));
+    const w = defaultErrWriter();
+    switch (level) {
+        .info => w.print("{s}::{s} {s}\n", .{ ec.blue, ec.reset, msg }),
+        .warning => w.print("{s}warning:{s} {s}\n", .{ ec.yellow, ec.reset, msg }),
+        .err => w.print("{s}error:{s} {s}\n", .{ ec.red, ec.reset, msg }),
+        .output => w.print("{s}", .{msg}),
+    }
+}
 
 // ── Error Helpers ────────────────────────────────────────────────────────
 
