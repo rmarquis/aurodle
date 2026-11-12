@@ -32,18 +32,7 @@ pub fn collectOutdated(self: *BuildContext, filter: []const []const u8, populate
     const foreign = try pm.allForeignPackages();
     defer self.allocator.free(foreign);
 
-    // Apply name filter if provided
-    const to_check = if (filter.len > 0) blk: {
-        var name_set: std.StringHashMapUnmanaged(void) = .empty;
-        defer name_set.deinit(self.allocator);
-        for (filter) |n| try name_set.put(self.allocator, n, {});
-
-        var filtered: std.ArrayListUnmanaged(pacman_mod.InstalledPackage) = .empty;
-        for (foreign) |pkg| {
-            if (name_set.contains(pkg.name)) try filtered.append(self.allocator, pkg);
-        }
-        break :blk try filtered.toOwnedSlice(self.allocator);
-    } else foreign;
+    const to_check = if (filter.len > 0) try filterByName(self.allocator, foreign, filter) else foreign;
     defer if (filter.len > 0) self.allocator.free(to_check);
 
     if (to_check.len == 0) {
@@ -72,28 +61,11 @@ pub fn collectOutdated(self: *BuildContext, filter: []const []const u8, populate
         try pkgbase_map.put(self.allocator, pkg.name, pkg.pkgbase);
     }
 
-    // Compare versions
-    var entries: std.ArrayListUnmanaged(OutdatedEntry) = .empty;
-    errdefer entries.deinit(self.allocator);
-
-    // Track packages already flagged outdated via AUR RPC so the devel pass
-    // can refine their aur_version instead of duplicating them.
-    var already_outdated: std.StringHashMapUnmanaged(void) = .empty;
-    defer already_outdated.deinit(self.allocator);
-
-    for (to_check) |pkg| {
-        if (aur_map.get(pkg.name)) |aur_ver| {
-            if (registry_mod.PackageRegistry.vercmp(pkg.version, aur_ver) < 0) {
-                try entries.append(self.allocator, .{
-                    .name = pkg.name,
-                    .installed_version = pkg.version,
-                    .aur_version = aur_ver,
-                    .ignored = types.isIgnored(self.flags, pkg.name),
-                });
-                try already_outdated.put(self.allocator, pkg.name, {});
-            }
-        } else if (!self.flags.quiet) {
-            self.err_writer.print("{s}warning:{s} {s} not found in AUR\n", .{ ec.yellow, ec.reset, pkg.name });
+    var cmp = try compareWithAur(self.allocator, to_check, &aur_map, self.flags);
+    defer cmp.deinit(self.allocator);
+    if (!self.flags.quiet) {
+        for (cmp.not_found.items) |name| {
+            self.err_writer.print("{s}warning:{s} {s} not found in AUR\n", .{ ec.yellow, ec.reset, name });
         }
     }
 
@@ -104,11 +76,11 @@ pub fn collectOutdated(self: *BuildContext, filter: []const []const u8, populate
         devel_versions.deinit(self.allocator);
     }
     if (self.flags.devel) {
-        try checkDevelPackages(self, to_check, &pkgbase_map, &already_outdated, &entries, &devel_versions, populate_hint);
+        try checkDevelPackages(self, to_check, &pkgbase_map, &cmp.outdated, &cmp.entries, &devel_versions, populate_hint);
     }
 
     return .{
-        .entries = try entries.toOwnedSlice(self.allocator),
+        .entries = try cmp.entries.toOwnedSlice(self.allocator),
         .devel_versions = try devel_versions.toOwnedSlice(self.allocator),
         .total_checked = to_check.len,
     };
@@ -150,7 +122,7 @@ pub fn checkDevelPackages(
     self: *BuildContext,
     packages: []const pacman_mod.InstalledPackage,
     pkgbase_map: *const std.StringHashMapUnmanaged([]const u8),
-    already_outdated: *std.StringHashMapUnmanaged(void),
+    already_outdated: *const std.StringHashMapUnmanaged(void),
     entries: *std.ArrayListUnmanaged(OutdatedEntry),
     devel_versions: *std.ArrayListUnmanaged([]const u8),
     populate_hint: bool,
@@ -167,12 +139,8 @@ pub fn checkDevelPackages(
 
     // Check each VCS pkgbase once (split packages share one), all in
     // parallel: every check is a git fetch plus two makepkg runs.
-    var pkgbase_index: std.StringArrayHashMapUnmanaged(void) = .empty;
+    var pkgbase_index = try vcsPkgbases(self.allocator, packages, pkgbase_map);
     defer pkgbase_index.deinit(self.allocator);
-    for (packages) |pkg| {
-        if (!devel.isVcsPackage(pkg.name)) continue;
-        try pkgbase_index.put(self.allocator, pkgbase_map.get(pkg.name) orelse pkg.name, {});
-    }
     const pkgbases = pkgbase_index.keys();
 
     const outcomes = try self.allocator.alloc(DevelJob.Outcome, pkgbases.len);
@@ -213,20 +181,122 @@ pub fn checkDevelPackages(
             }
         }
 
-        if (already_outdated.contains(pkg.name)) {
-            for (entries.items) |*entry| {
-                if (std.mem.eql(u8, entry.name, pkg.name)) {
-                    entry.aur_version = version;
-                    break;
-                }
-            }
-        } else if (registry_mod.PackageRegistry.vercmp(pkg.version, version) < 0) {
-            try entries.append(self.allocator, .{
+        try mergeDevelVersion(self.allocator, entries, already_outdated, pkg, version, self.flags);
+    }
+}
+
+// ── Decisions (pure, no I/O) ─────────────────────────────────────────────
+
+/// The packages in `installed` whose name is in `names`, in `installed`
+/// order. Names that match nothing are ignored. Caller frees the slice;
+/// the packages are borrowed from `installed`.
+pub fn filterByName(
+    allocator: std.mem.Allocator,
+    installed: []const pacman_mod.InstalledPackage,
+    names: []const []const u8,
+) ![]pacman_mod.InstalledPackage {
+    var name_set: std.StringHashMapUnmanaged(void) = .empty;
+    defer name_set.deinit(allocator);
+    for (names) |n| try name_set.put(allocator, n, {});
+
+    var filtered: std.ArrayListUnmanaged(pacman_mod.InstalledPackage) = .empty;
+    errdefer filtered.deinit(allocator);
+    for (installed) |pkg| {
+        if (name_set.contains(pkg.name)) try filtered.append(allocator, pkg);
+    }
+    return filtered.toOwnedSlice(allocator);
+}
+
+/// Installed packages compared against their AUR versions.
+/// All strings are borrowed from the inputs of compareWithAur.
+pub const AurComparison = struct {
+    /// Packages whose AUR version is newer, in input order.
+    entries: std.ArrayListUnmanaged(OutdatedEntry) = .empty,
+    /// Names in `entries`. The --devel pass refines these entries instead
+    /// of adding a second one.
+    outdated: std.StringHashMapUnmanaged(void) = .empty,
+    /// Installed packages the AUR does not know, in input order.
+    not_found: std.ArrayListUnmanaged([]const u8) = .empty,
+
+    pub fn deinit(self: *AurComparison, allocator: std.mem.Allocator) void {
+        self.entries.deinit(allocator);
+        self.outdated.deinit(allocator);
+        self.not_found.deinit(allocator);
+    }
+};
+
+/// Compare each installed package with its AUR version (`aur_versions`
+/// maps name to version). Ignored packages are still listed, flagged
+/// `ignored`, so callers can warn about them.
+pub fn compareWithAur(
+    allocator: std.mem.Allocator,
+    installed: []const pacman_mod.InstalledPackage,
+    aur_versions: *const std.StringHashMapUnmanaged([]const u8),
+    flags: types.Flags,
+) !AurComparison {
+    var result: AurComparison = .{};
+    errdefer result.deinit(allocator);
+    for (installed) |pkg| {
+        const aur_ver = aur_versions.get(pkg.name) orelse {
+            try result.not_found.append(allocator, pkg.name);
+            continue;
+        };
+        if (registry_mod.PackageRegistry.vercmp(pkg.version, aur_ver) < 0) {
+            try result.entries.append(allocator, .{
                 .name = pkg.name,
                 .installed_version = pkg.version,
-                .aur_version = version,
-                .ignored = types.isIgnored(self.flags, pkg.name),
+                .aur_version = aur_ver,
+                .ignored = types.isIgnored(flags, pkg.name),
             });
+            try result.outdated.put(allocator, pkg.name, {});
         }
+    }
+    return result;
+}
+
+/// The pkgbases of the VCS packages in `packages`, each once and in first-
+/// seen order: split packages share a pkgbase and one version check.
+/// `pkgbase_map` maps package names to pkgbases; a missing name is its own
+/// pkgbase. Keys are borrowed. Caller deinits.
+pub fn vcsPkgbases(
+    allocator: std.mem.Allocator,
+    packages: []const pacman_mod.InstalledPackage,
+    pkgbase_map: *const std.StringHashMapUnmanaged([]const u8),
+) !std.StringArrayHashMapUnmanaged(void) {
+    var index: std.StringArrayHashMapUnmanaged(void) = .empty;
+    errdefer index.deinit(allocator);
+    for (packages) |pkg| {
+        if (!devel.isVcsPackage(pkg.name)) continue;
+        try index.put(allocator, pkgbase_map.get(pkg.name) orelse pkg.name, {});
+    }
+    return index;
+}
+
+/// Fold the VCS version computed for `pkg` into `entries`. If the AUR pass
+/// already flagged `pkg` (it is in `already_outdated`), its entry shows
+/// `version` instead of the AUR's stale one. Otherwise `pkg` is added
+/// when `version` is newer than the installed one.
+pub fn mergeDevelVersion(
+    allocator: std.mem.Allocator,
+    entries: *std.ArrayListUnmanaged(OutdatedEntry),
+    already_outdated: *const std.StringHashMapUnmanaged(void),
+    pkg: pacman_mod.InstalledPackage,
+    version: []const u8,
+    flags: types.Flags,
+) !void {
+    if (already_outdated.contains(pkg.name)) {
+        for (entries.items) |*entry| {
+            if (std.mem.eql(u8, entry.name, pkg.name)) {
+                entry.aur_version = version;
+                return;
+            }
+        }
+    } else if (registry_mod.PackageRegistry.vercmp(pkg.version, version) < 0) {
+        try entries.append(allocator, .{
+            .name = pkg.name,
+            .installed_version = pkg.version,
+            .aur_version = version,
+            .ignored = types.isIgnored(flags, pkg.name),
+        });
     }
 }
