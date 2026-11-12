@@ -8,6 +8,7 @@
 //! /var/lib/aurodle/chroot):
 //!   pacman.conf  generated once, never overwritten, so users can edit it;
 //!                must serve the local repository from its directory
+//!   makepkg.conf optional; replaces devtools' makepkg.conf for builds
 //!   root/        the pristine chroot, updated once per run
 //!   <user>/      makechrootpkg's working copy, reset from root per build
 //!
@@ -250,11 +251,24 @@ pub fn buildArgv(arena: Allocator, opts: BuildOptions) ![]const []const u8 {
     return argv.toOwnedSlice(arena);
 }
 
+/// The makepkg.conf chroot builds use, as aurutils picks it:
+/// `makepkg.conf` in the chroot directory if the user wrote one, otherwise
+/// the one devtools uses for clean builds on this architecture. Given to
+/// mkarchroot and arch-nspawn with -M, so root always has it, and to
+/// `makepkg --packagelist --config`, so the already-built check names the
+/// files the chroot produces. Caller frees.
+pub fn makepkgConfPath(allocator: Allocator, chroot_dir: []const u8, user_conf_exists: bool, arch: []const u8) ![]u8 {
+    if (user_conf_exists) return std.fs.path.join(allocator, &.{ chroot_dir, "makepkg.conf" });
+    return std.fmt.allocPrint(allocator, "/usr/share/devtools/makepkg.conf.d/{s}.conf", .{arch});
+}
+
 /// Get the chroot ready for this run: check devtools and the mount, write
 /// pacman.conf if missing and check that it serves the local repository
-/// from `repo_dir`, then create root or bring it up to date. Root is
-/// updated once here so each build's `-u` only has to sync databases.
-/// Returns false after printing why when the chroot cannot be used.
+/// from `repo_dir`, pick makepkg.conf, then create root or bring it up to
+/// date. Root is updated once here so each build's `-u` only has to sync
+/// databases.
+/// Returns the makepkg.conf path (see makepkgConfPath; caller frees), or
+/// null after printing why when the chroot cannot be used.
 pub fn prepare(
     allocator: Allocator,
     auth: *auth_mod.Auth,
@@ -263,11 +277,11 @@ pub fn prepare(
     repo_dir: []const u8,
     err_writer: anytype,
     ec: color.Style,
-) !bool {
+) !?[]u8 {
     for ([_][]const u8{ "makechrootpkg", "mkarchroot", "arch-nspawn" }) |tool| {
         if (!utils.findOnPath(tool)) {
             err_writer.print("{s}error:{s} {s} not found -- install devtools: pacman -S devtools\n", .{ ec.red, ec.reset, tool });
-            return false;
+            return null;
         }
     }
 
@@ -277,7 +291,7 @@ pub fn prepare(
             "{s}error:{s} {s} is on a nosuid mount, where sudo cannot install build dependencies -- set CHROOT_DIR to another location\n",
             .{ ec.red, ec.reset, chroot_dir },
         );
-        return false;
+        return null;
     }
 
     const conf_path = try std.fs.path.join(allocator, &.{ chroot_dir, "pacman.conf" });
@@ -286,24 +300,38 @@ pub fn prepare(
     defer allocator.free(root_path);
 
     if (!fileExists(conf_path)) {
-        if (!try writePacmanConf(allocator, auth, cache_root, conf_path, repo_name, err_writer, ec)) return false;
+        if (!try writePacmanConf(allocator, auth, cache_root, conf_path, repo_name, err_writer, ec)) return null;
     }
-    if (!try checkRepo(allocator, conf_path, repo_name, repo_dir, err_writer, ec)) return false;
+    if (!try checkRepo(allocator, conf_path, repo_name, repo_dir, err_writer, ec)) return null;
 
+    const user_makepkg_conf = try std.fs.path.join(allocator, &.{ chroot_dir, "makepkg.conf" });
+    defer allocator.free(user_makepkg_conf);
+    const makepkg_conf = try makepkgConfPath(allocator, chroot_dir, fileExists(user_makepkg_conf), @tagName(builtin.cpu.arch));
+    errdefer allocator.free(makepkg_conf);
+    if (!fileExists(makepkg_conf)) {
+        err_writer.print(
+            "{s}error:{s} {s} not found -- write a makepkg.conf for the chroot at {s}\n",
+            .{ ec.red, ec.reset, makepkg_conf, user_makepkg_conf },
+        );
+        allocator.free(makepkg_conf);
+        return null;
+    }
+
+    // -C and -M copy pacman.conf and makepkg.conf into root, so edits and
+    // chroots made before aurodle wrote them pick them up.
     const exit_code = if (!utils.dirExists(root_path)) blk: {
         err_writer.print("{s}::{s} creating chroot at {s}...\n", .{ ec.blue, ec.reset, chroot_dir });
-        break :blk try auth.runInteractive(&.{ "mkarchroot", "-C", conf_path, root_path, "base-devel" }, null);
+        break :blk try auth.runInteractive(&.{ "mkarchroot", "-C", conf_path, "-M", makepkg_conf, root_path, "base-devel" }, null);
     } else blk: {
         err_writer.print("{s}::{s} updating chroot at {s}...\n", .{ ec.blue, ec.reset, chroot_dir });
-        // -C also copies pacman.conf into root, so edits and chroots made
-        // before it existed pick it up.
-        break :blk try auth.runInteractive(&.{ "arch-nspawn", "-C", conf_path, root_path, "pacman", "-Syu", "--noconfirm" }, null);
+        break :blk try auth.runInteractive(&.{ "arch-nspawn", "-C", conf_path, "-M", makepkg_conf, root_path, "pacman", "-Syu", "--noconfirm" }, null);
     };
     if (exit_code != 0) {
         err_writer.print("{s}error:{s} failed to set up the chroot (exit {d})\n", .{ ec.red, ec.reset, exit_code });
-        return false;
+        allocator.free(makepkg_conf);
+        return null;
     }
-    return true;
+    return makepkg_conf;
 }
 
 fn fileExists(path: []const u8) bool {
@@ -532,4 +560,14 @@ test "moveStaged moves every file and returns the packages without signatures" {
     try testing.expectEqualStrings("new", data);
     try tmp.dir.access(testing.io, "repo/foo-1-1-x86_64.pkg.tar.zst.sig", .{});
     try testing.expectError(error.FileNotFound, tmp.dir.access(testing.io, "staging/foo-1-1-x86_64.pkg.tar.zst", .{}));
+}
+
+test "makepkgConfPath prefers the user's makepkg.conf over devtools'" {
+    const user = try makepkgConfPath(testing.allocator, "/c", true, "x86_64");
+    defer testing.allocator.free(user);
+    try testing.expectEqualStrings("/c/makepkg.conf", user);
+
+    const devtools = try makepkgConfPath(testing.allocator, "/c", false, "x86_64");
+    defer testing.allocator.free(devtools);
+    try testing.expectEqualStrings("/usr/share/devtools/makepkg.conf.d/x86_64.conf", devtools);
 }

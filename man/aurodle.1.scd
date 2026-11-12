@@ -330,6 +330,13 @@ _pacman.conf_
 	*file://* server pointing to the repository directory (*PKGDEST*);
 	otherwise chroot builds stop with an error.
 
+_makepkg.conf_
+	Optional. The *makepkg.conf*(5) for chroot builds; without it, the one
+	*devtools* uses for clean builds
+	(_/usr/share/devtools/makepkg.conf.d/<arch>.conf_) is used. It is
+	copied into _root_ on every run, and also decides which package files
+	count as already built.
+
 _root_
 	The pristine chroot, created with *mkarchroot*(1) on first use and
 	upgraded once at the start of each run.

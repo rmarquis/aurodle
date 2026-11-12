@@ -170,6 +170,7 @@ This document is a living specification: it describes aurodle's current behavior
   - the chroot gets its own `pacman.conf`, generated once from devtools' clean-build template (`extra.conf`, or `multilib.conf` when the host enables `[multilib]` on x86_64) followed by the host's local repository section, and never overwritten afterwards
   - fails with a clear error when that `pacman.conf` has no local repository section with a `file://` server pointing to `PKGDEST`
   - the chroot is created with `mkarchroot` on first use, and its root is upgraded once per run
+  - builds use `$CHROOT_DIR/makepkg.conf` if present, otherwise devtools' `makepkg.conf.d/<arch>.conf`; it is passed to `mkarchroot`/`arch-nspawn` with `-M`, and the already-built check runs `makepkg --packagelist --config` with it, so file names (debug packages, `PKGEXT`) match what the chroot produces. A listed debug package may be missing
   - AUR dependencies are installed from the local repository inside the chroot, so they work whether they were built in this run or earlier
   - AUR packages installed on the host do not satisfy dependencies: one missing from the local repository is built (the chroot cannot see the host)
   - makechrootpkg runs as the user (`-U`, `SUDO_USER`) whatever the `PACMAN_AUTH` tool, with makepkg's environment variables passed on

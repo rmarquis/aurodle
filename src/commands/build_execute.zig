@@ -17,13 +17,36 @@ const BuildContext = build_ctx.BuildContext;
 const BuildResult = types.BuildResult;
 const FailedBuild = types.FailedBuild;
 
+/// The makepkg configuration of chroot builds (see chroot.makepkgConfPath),
+/// for `makepkg --packagelist`. PKGDEST is the repository, where the
+/// packages end up.
+const ChrootConf = struct {
+    makepkg_conf: []const u8,
+    pkgdest: []const u8,
+};
+
 /// Package file paths reported by `makepkg --packagelist` for clone_dir,
 /// whether or not they exist yet. Null when the command fails or lists
 /// nothing. Each run sources makepkg.conf and the PKGBUILD (about half a
 /// second), so the build loop runs it once per package and reuses it.
-/// Caller frees with freePaths.
-fn packageList(allocator: Allocator, clone_dir: []const u8) !?[]const []const u8 {
-    const result = try utils.runCommandIn(allocator, &.{ "makepkg", "--packagelist" }, clone_dir);
+/// With `chroot_conf`, lists what a chroot build produces instead of a
+/// host build: names follow the chroot's makepkg.conf (debug packages,
+/// PKGEXT), not the host's. Caller frees with freePaths.
+fn packageList(allocator: Allocator, clone_dir: []const u8, chroot_conf: ?ChrootConf) !?[]const []const u8 {
+    var pkgdest_buf: [std.fs.max_path_bytes + "PKGDEST=".len]u8 = undefined;
+    var chroot_argv: [6][]const u8 = undefined;
+    const argv: []const []const u8 = if (chroot_conf) |c| blk: {
+        chroot_argv = .{
+            "env",
+            try std.fmt.bufPrint(&pkgdest_buf, "PKGDEST={s}", .{c.pkgdest}),
+            "makepkg",
+            "--packagelist",
+            "--config",
+            c.makepkg_conf,
+        };
+        break :blk &chroot_argv;
+    } else &.{ "makepkg", "--packagelist" };
+    const result = try utils.runCommandIn(allocator, argv, clone_dir);
     defer result.deinit(allocator);
     if (!result.success()) return null;
 
@@ -51,13 +74,23 @@ fn freePaths(allocator: Allocator, paths: ?[]const []const u8) void {
 }
 
 /// True if every file in a packageList result exists, i.e. the build can
-/// be skipped.
+/// be skipped. Debug packages may be missing: makepkg lists one whenever
+/// makepkg.conf enables them (devtools' does), even for packages that
+/// have nothing to put in it, so requiring it would rebuild those forever.
 fn allPackagesBuilt(paths: ?[]const []const u8) bool {
     const list = paths orelse return false;
     for (list) |path| {
-        std.Io.Dir.accessAbsolute(utils.currentIo(), path, .{}) catch return false;
+        std.Io.Dir.accessAbsolute(utils.currentIo(), path, .{}) catch {
+            if (isDebugPackage(path)) continue;
+            return false;
+        };
     }
     return true;
+}
+
+fn isDebugPackage(path: []const u8) bool {
+    const parsed = repo_mod.parsePackageFilename(std.fs.path.basename(path)) orelse return false;
+    return std.mem.endsWith(u8, parsed.name, "-debug");
 }
 
 /// The paths from `list` whose file exists and, when `since` is set, was
@@ -97,11 +130,12 @@ fn collectBuiltPackagePaths(
     clone_dir: []const u8,
     list: ?[]const []const u8,
     since: ?i96,
+    chroot_conf: ?ChrootConf,
 ) !?[]const []const u8 {
     if (list) |l| {
         if (try existingPaths(allocator, l, since)) |paths| return paths;
     }
-    const fresh = try packageList(allocator, clone_dir) orelse return null;
+    const fresh = try packageList(allocator, clone_dir, chroot_conf) orelse return null;
     defer freePaths(allocator, fresh);
     return existingPaths(allocator, fresh, null);
 }
@@ -164,7 +198,7 @@ fn runVcsBuild(
     const ver = version orelse "latest";
 
     if (!prepared) {
-        pkglist.* = packageList(self.allocator, clone_dir) catch null;
+        pkglist.* = packageList(self.allocator, clone_dir, null) catch null;
     }
     if (!prepared and allPackagesBuilt(pkglist.*)) {
         skipped.* = true;
@@ -231,14 +265,19 @@ pub fn buildLoop(
         all_built_basenames.deinit(self.allocator);
     }
 
-    if (self.flags.chroot) {
-        // Nothing can be built without a chroot. Returning an empty result
-        // here would look like "no failures" and let the caller install
-        // every target, so fail the whole build instead.
-        if (!try chroot.prepare(self.allocator, self.auth, self.cache_root, repository.repo_name, repository.repo_dir, self.err_writer, ec)) {
-            return error.ChrootUnavailable;
-        }
-    }
+    // Nothing can be built without a chroot. Returning an empty result
+    // here would look like "no failures" and let the caller install every
+    // target, so fail the whole build instead.
+    const chroot_makepkg_conf: ?[]u8 = if (self.flags.chroot)
+        try chroot.prepare(self.allocator, self.auth, self.cache_root, repository.repo_name, repository.repo_dir, self.err_writer, ec) orelse
+            return error.ChrootUnavailable
+    else
+        null;
+    defer if (chroot_makepkg_conf) |c| self.allocator.free(c);
+    const chroot_conf: ?ChrootConf = if (chroot_makepkg_conf) |c|
+        .{ .makepkg_conf = c, .pkgdest = repository.repo_dir }
+    else
+        null;
 
     // Package files already in the repo, for the VCS pre-check below.
     // Listed on first use and dropped after every build, which changes
@@ -272,7 +311,7 @@ pub fn buildLoop(
         var pkglist: ?[]const []const u8 = null;
         defer freePaths(self.allocator, pkglist);
         if (!is_vcs and !self.flags.rebuild) {
-            pkglist = packageList(self.allocator, clone_dir) catch null;
+            pkglist = packageList(self.allocator, clone_dir, chroot_conf) catch null;
         }
         var already_built = !self.flags.rebuild and
             if (is_vcs) blk: {
@@ -360,7 +399,7 @@ pub fn buildLoop(
                 continue;
             }
         else
-            collectBuiltPackagePaths(self.allocator, clone_dir, pkglist, since) catch null;
+            collectBuiltPackagePaths(self.allocator, clone_dir, pkglist, since, chroot_conf) catch null;
         defer freePaths(self.allocator, built_paths);
 
         const added = if (built_paths) |paths|
@@ -450,4 +489,22 @@ test "existingPaths keeps only files written since the build started" {
     try testing.expect(allPackagesBuilt(&.{ new_path, old_path }));
     try testing.expect(!allPackagesBuilt(list));
     try testing.expect(!allPackagesBuilt(null));
+}
+
+test "allPackagesBuilt lets a listed debug package be missing" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try std.Io.Dir.realPathFileAlloc(tmp.dir, testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "foo-1.0-1-x86_64.pkg.tar.zst", .data = "pkg" });
+
+    const pkg = try std.fs.path.join(testing.allocator, &.{ root, "foo-1.0-1-x86_64.pkg.tar.zst" });
+    defer testing.allocator.free(pkg);
+    const debug = try std.fs.path.join(testing.allocator, &.{ root, "foo-debug-1.0-1-x86_64.pkg.tar.zst" });
+    defer testing.allocator.free(debug);
+    const split = try std.fs.path.join(testing.allocator, &.{ root, "foo-docs-1.0-1-x86_64.pkg.tar.zst" });
+    defer testing.allocator.free(split);
+
+    try testing.expect(allPackagesBuilt(&.{ pkg, debug }));
+    try testing.expect(!allPackagesBuilt(&.{ pkg, debug, split }));
 }
