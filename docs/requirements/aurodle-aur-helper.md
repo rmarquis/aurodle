@@ -177,6 +177,9 @@ This document is a living specification: it describes aurodle's current behavior
   - each package is built into an empty staging `PKGDEST` in the cache; every file it produced is moved into the repository and exactly those packages are added with `repo-add`
   - VCS packages: unless `upgrade --devel` already found the version, `makepkg --nobuild --nodeps` runs `pkgver()` on the host first (installing nothing), and the build is skipped if that version is already in the repository; if it fails on the host, the package is built in the chroot
   - fails with a clear error when `$CHROOT_DIR` is on a `nosuid` mount
+  - a new chroot gets `base-devel`, plus `multilib-devel` when its `pacman.conf` enables `[multilib]` on x86_64
+  - `SSH_AUTH_SOCK` is passed on with makepkg's variables, for `git+ssh://` sources
+  - the chroot setup message names the makepkg.conf in use
   - nothing is installed on the host, including chosen providers
 
 **Priority**: Must Have (build + repo-add), Should Have (rebuild), Nice to Have (chroot)

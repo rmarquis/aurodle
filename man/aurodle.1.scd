@@ -338,8 +338,9 @@ _makepkg.conf_
 	count as already built.
 
 _root_
-	The pristine chroot, created with *mkarchroot*(1) on first use and
-	upgraded once at the start of each run.
+	The pristine chroot, created with *mkarchroot*(1) on first use, with
+	*base-devel*, and *multilib-devel* when _pacman.conf_ enables
+	*[multilib]*, and upgraded once at the start of each run.
 
 Each package is built in a fresh copy of _root_, into an empty
 staging directory in the cache (_chroot-pkgdest_), and what the build

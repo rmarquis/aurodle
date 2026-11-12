@@ -144,6 +144,7 @@ const forwarded_vars = [_][:0]const u8{
     "NPROC",
     "GNUPGHOME",
     "SOURCE_DATE_EPOCH",
+    "SSH_AUTH_SOCK",
 };
 
 /// `NAME=value` for each forwarded variable set in aurodle's environment.
@@ -251,6 +252,14 @@ pub fn buildArgv(arena: Allocator, opts: BuildOptions) ![]const []const u8 {
     return argv.toOwnedSlice(arena);
 }
 
+/// Packages a new chroot starts with: base-devel, plus multilib-devel when
+/// its pacman.conf (`pacman-conf --repo-list` output) has [multilib] on
+/// x86_64, as aurutils does, so 32-bit packages can build.
+pub fn basePackages(repo_list: []const u8, x86_64: bool) []const []const u8 {
+    if (x86_64 and listHasLine(repo_list, "multilib")) return &.{ "base-devel", "multilib-devel" };
+    return &.{"base-devel"};
+}
+
 /// The makepkg.conf chroot builds use, as aurutils picks it:
 /// `makepkg.conf` in the chroot directory if the user wrote one, otherwise
 /// the one devtools uses for clean builds on this architecture. Given to
@@ -319,13 +328,21 @@ pub fn prepare(
 
     // -C and -M copy pacman.conf and makepkg.conf into root, so edits and
     // chroots made before aurodle wrote them pick them up.
-    const exit_code = if (!utils.dirExists(root_path)) blk: {
-        err_writer.print("{s}::{s} creating chroot at {s}...\n", .{ ec.blue, ec.reset, chroot_dir });
-        break :blk try auth.runInteractive(&.{ "mkarchroot", "-C", conf_path, "-M", makepkg_conf, root_path, "base-devel" }, null);
-    } else blk: {
-        err_writer.print("{s}::{s} updating chroot at {s}...\n", .{ ec.blue, ec.reset, chroot_dir });
-        break :blk try auth.runInteractive(&.{ "arch-nspawn", "-C", conf_path, "-M", makepkg_conf, root_path, "pacman", "-Syu", "--noconfirm" }, null);
-    };
+    var argv: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer argv.deinit(allocator);
+    const creating = !utils.dirExists(root_path);
+    if (creating) {
+        const repo_list = try utils.runCommand(allocator, &.{ "pacman-conf", "--config", conf_path, "--repo-list" });
+        defer repo_list.deinit(allocator);
+        try argv.appendSlice(allocator, &.{ "mkarchroot", "-C", conf_path, "-M", makepkg_conf, root_path });
+        try argv.appendSlice(allocator, basePackages(repo_list.stdout, builtin.cpu.arch == .x86_64));
+    } else {
+        try argv.appendSlice(allocator, &.{ "arch-nspawn", "-C", conf_path, "-M", makepkg_conf, root_path, "pacman", "-Syu", "--noconfirm" });
+    }
+    err_writer.print("{s}::{s} {s} chroot at {s} (makepkg.conf: {s})...\n", .{
+        ec.blue, ec.reset, if (creating) "creating" else "updating", chroot_dir, makepkg_conf,
+    });
+    const exit_code = try auth.runInteractive(argv.items, null);
     if (exit_code != 0) {
         err_writer.print("{s}error:{s} failed to set up the chroot (exit {d})\n", .{ ec.red, ec.reset, exit_code });
         allocator.free(makepkg_conf);
@@ -570,4 +587,12 @@ test "makepkgConfPath prefers the user's makepkg.conf over devtools'" {
     const devtools = try makepkgConfPath(testing.allocator, "/c", false, "x86_64");
     defer testing.allocator.free(devtools);
     try testing.expectEqualStrings("/usr/share/devtools/makepkg.conf.d/x86_64.conf", devtools);
+}
+
+test "basePackages adds multilib-devel with multilib on x86_64" {
+    const with = "core\nextra\nmultilib\naur\n";
+    try testing.expectEqual(@as(usize, 2), basePackages(with, true).len);
+    try testing.expectEqualStrings("multilib-devel", basePackages(with, true)[1]);
+    try testing.expectEqual(@as(usize, 1), basePackages(with, false).len);
+    try testing.expectEqual(@as(usize, 1), basePackages("core\nextra\n", true).len);
 }
