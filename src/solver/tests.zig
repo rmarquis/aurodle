@@ -445,6 +445,83 @@ test "BuildPlan.all_deps contains every discovered dependency" {
     try testing.expect(plan.all_deps.len >= plan.build_order.len);
 }
 
+// ── Local repository dependencies ───────────────────────────────────────
+
+fn buildOrderHas(plan: BuildPlan, name: []const u8) bool {
+    for (plan.build_order) |entry| {
+        if (std.mem.eql(u8, entry.name, name)) return true;
+    }
+    return false;
+}
+
+test "resolve builds an AUR dependency of a local-repo package missing from the repo" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    mock.addAurPackage("app", &.{"plugin"}, &.{});
+    mock.addRepoAurWithDeps("plugin", "1.0", &.{ "base-lib", "repo-dep" });
+    mock.addAurPackage("base-lib", &.{}, &.{});
+    mock.addRepoPackage("repo-dep", "1.0");
+
+    var s = TestSolver.init(testing.allocator, &mock, .{});
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"app"});
+    defer plan.deinit(testing.allocator);
+
+    try testing.expect(buildOrderHas(plan, "base-lib"));
+    try testing.expect(!buildOrderHas(plan, "plugin"));
+    try testing.expectEqual(@as(usize, 1), plan.repo_deps.len);
+    try testing.expectEqualStrings("repo-dep", plan.repo_deps[0]);
+    try expectAllDepsOrder(plan, &.{ "base-lib", "repo-dep", "plugin", "app" });
+}
+
+test "resolve follows local-repo deps through the repository" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    mock.addAurPackage("app", &.{"plugin"}, &.{});
+    mock.addRepoAurWithDeps("plugin", "1.0", &.{"base-lib>=2"});
+    mock.addRepoAurWithDeps("base-lib", "2.1", &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock, .{});
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"app"});
+    defer plan.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), plan.build_order.len);
+    try expectAllDepsOrder(plan, &.{ "base-lib", "plugin", "app" });
+}
+
+test "resolve fails when a local-repo package's dependency exists nowhere" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    mock.addAurPackage("app", &.{"plugin"}, &.{});
+    mock.addRepoAurWithDeps("plugin", "1.0", &.{"gone"});
+
+    var s = TestSolver.init(testing.allocator, &mock, .{});
+    defer s.deinit();
+
+    try testing.expectError(error.UnresolvableDependency, s.resolve(&.{"app"}));
+    try testing.expectEqualStrings("gone", s.unresolved.?.dep);
+    try testing.expectEqualStrings("plugin", s.unresolved.?.required_by.?);
+}
+
+test "an up-to-date local-repo target follows its repository deps, not AUR makedepends" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    mock.addRepoAurWithAurVersion("tool", "1.0", "1.0", &.{}, &.{"aur-make"});
+    mock.addAurPackage("aur-make", &.{}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock, .{});
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"tool"});
+    defer plan.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), plan.build_order.len);
+    try expectAllDepsOrder(plan, &.{"tool"});
+}
+
 fn expectAllDepsOrder(plan: BuildPlan, expected: []const []const u8) !void {
     try testing.expectEqual(expected.len, plan.all_deps.len);
     for (expected, plan.all_deps) |name, dep| {

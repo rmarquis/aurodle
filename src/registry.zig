@@ -222,6 +222,12 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
             return null;
         }
 
+        /// Runtime dependencies of `name` in the local AUR repository, as
+        /// dependency strings. Empty when the repository has no such package.
+        pub fn localRepoDepends(self: *Self, name: []const u8) ![]const []const u8 {
+            return self.pacman.aurRepoDepends(name);
+        }
+
         /// Version comparison using the same algorithm as libalpm/pacman.
         pub fn vercmp(a: []const u8, b: []const u8) i32 {
             return alpm.vercmp(a, b);

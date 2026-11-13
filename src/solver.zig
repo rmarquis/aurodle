@@ -173,7 +173,13 @@ pub fn SolverImpl(comptime RegistryT: type) type {
 
                     const aur_pkg = try self.fetchAndReclassifyAurPkg(node, actual_name, name, actual_resolution);
 
-                    if (aur_pkg) |pkg| {
+                    if (node.meta.source == .repo_aur) {
+                        // Installed from the local repository, so its deps
+                        // there must be available too; an AUR one missing
+                        // from the repository has to be built first.
+                        const deps = try self.registry.localRepoDepends(actual_name);
+                        try self.collectDeps(&next_frontier, visited, node, deps);
+                    } else if (aur_pkg) |pkg| {
                         try self.collectAllDeps(&next_frontier, visited, node, pkg);
                     }
                 }

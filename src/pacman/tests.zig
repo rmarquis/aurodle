@@ -64,6 +64,34 @@ test "aurRepoPkgbase returns null for packages outside the local AUR repository"
     try testing.expect(pm.aurRepoPkgbase("zzz-not-installed") == null);
 }
 
+test "aurRepoDepends is empty for packages outside the local AUR repository" {
+    if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
+
+    var pm = try Pacman.init(testing.allocator, repo_conf.DEFAULT_REPO_NAME);
+    defer pm.deinit();
+
+    try testing.expectEqual(@as(usize, 0), (try pm.aurRepoDepends("pacman")).len);
+    try testing.expectEqual(@as(usize, 0), (try pm.aurRepoDepends("zzz-not-installed")).len);
+}
+
+test "depString renders the name, plus the constraint when there is one" {
+    const dep = alpm.Dependency{ .name = "foo", .version = "", .desc = null, .name_hash = 0, .mod = .any };
+    try testing.expectEqualStrings("foo", try pacman.depString(testing.allocator, dep));
+
+    const cases = [_]struct { mod: alpm.DepMod, want: []const u8 }{
+        .{ .mod = .eq, .want = "foo=1:2.0-1" },
+        .{ .mod = .ge, .want = "foo>=1:2.0-1" },
+        .{ .mod = .le, .want = "foo<=1:2.0-1" },
+        .{ .mod = .gt, .want = "foo>1:2.0-1" },
+        .{ .mod = .lt, .want = "foo<1:2.0-1" },
+    };
+    for (cases) |case| {
+        const str = try pacman.depString(testing.allocator, .{ .name = "foo", .version = "1:2.0-1", .desc = null, .name_hash = 0, .mod = case.mod });
+        defer testing.allocator.free(str);
+        try testing.expectEqualStrings(case.want, str);
+    }
+}
+
 test "isInSyncDb finds official packages" {
     if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
 

@@ -25,6 +25,20 @@ pub const InstalledPackage = struct {
     version: []const u8,
 };
 
+/// `dep` as a dependency string ("foo" or "foo>=1.0"). Without a version
+/// constraint this is the borrowed name; otherwise it is allocated.
+pub fn depString(allocator: Allocator, dep: alpm.Dependency) ![]const u8 {
+    const op: []const u8 = switch (dep.mod) {
+        .any => return dep.name,
+        .eq => "=",
+        .ge => ">=",
+        .le => "<=",
+        .gt => ">",
+        .lt => "<",
+    };
+    return std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ dep.name, op, dep.version });
+}
+
 // ── Pacman Struct ────────────────────────────────────────────────────────
 
 /// High-level domain queries against the local pacman database.
@@ -54,6 +68,8 @@ pub const Pacman = struct {
     /// Name/provision → provider lookup table, built on first use. Null
     /// only if allocating it failed; lookups then scan the databases.
     provides_index: ?*provides.ProvidesIndex = null,
+    /// Dependency strings built by aurRepoDepends; created on first use.
+    dep_strings: ?std.heap.ArenaAllocator = null,
 
     /// Initialize by parsing /etc/pacman.conf and registering all
     /// discovered sync databases.
@@ -126,6 +142,7 @@ pub const Pacman = struct {
 
     pub fn deinit(self: *Pacman) void {
         if (self.provides_index) |index| index.destroy();
+        if (self.dep_strings) |*arena| arena.deinit();
         self.allocator.free(self.official_dbs);
         if (self.owns_sync_dbs) self.allocator.free(self.sync_dbs);
         for (self.ignore_pkgs) |pkg| self.allocator.free(pkg);
@@ -340,6 +357,21 @@ pub const Pacman = struct {
             break :blk db.getPackage(match.name) orelse return null;
         };
         return pkg.getBase() orelse pkg.getName();
+    }
+
+    /// Runtime dependencies of `name` in the local AUR repository, as
+    /// dependency strings ("foo" or "foo>=1.0"). Empty when the repository
+    /// has no package by that name. Valid until deinit.
+    pub fn aurRepoDepends(self: *Pacman, name: []const u8) ![]const []const u8 {
+        const db = self.aurpkgs_db orelse return &.{};
+        const pkg = db.getPackage(name) orelse return &.{};
+        if (self.dep_strings == null) self.dep_strings = .init(self.allocator);
+        const arena = self.dep_strings.?.allocator();
+
+        var deps: std.ArrayListUnmanaged([]const u8) = .empty;
+        var it = pkg.getDepends();
+        while (it.next()) |dep| try deps.append(arena, try depString(arena, dep));
+        return deps.items;
     }
 
     // ── Provider Resolution ──────────────────────────────────────────────

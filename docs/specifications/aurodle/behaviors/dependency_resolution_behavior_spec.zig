@@ -86,6 +86,17 @@ test "given installed AUR target when syncing without rebuild then reinstalls fr
     //       Mimics pacman -S behavior for official repos (reinstall even if installed)
 }
 
+test "given local-repo package when resolving then follows its repository depends" {
+    // Given: "plugin" is in aurpkgs (not installed, or --chroot), and its
+    //        aurpkgs entry depends on "base-lib" (AUR, missing from aurpkgs)
+    // When: A target depends on "plugin"
+    // Then: "base-lib" is built before the target; installing "plugin"
+    //       from aurpkgs would otherwise fail
+    //       Only the repository's runtime depends are followed, not the
+    //       AUR makedepends: "plugin" is installed, not built
+    //       A depend found nowhere fails resolution, required by "plugin"
+}
+
 test "given repo package as explicit target when resolving then classifies as repo_target" {
     // Given: "expac" is an official repo package (installed or not)
     // When: `aurodle sync expac` is executed (expac is a target, not a transitive dep)

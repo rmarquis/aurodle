@@ -357,6 +357,19 @@ pub const MockRegistry = struct {
         }) catch unreachable;
     }
 
+    /// Package available in aurpkgs, not installed, with these runtime
+    /// depends in the repository database.
+    pub fn addRepoAurWithDeps(self: *MockRegistry, name: []const u8, version: []const u8, depends: []const []const u8) void {
+        self.packages.put(testing.allocator, name, .{
+            .source = .repo_aur,
+            .version = version,
+            .pkgbase = name,
+            .depends = depends,
+            .makedepends = &.{},
+            .aur_pkg = null,
+        }) catch unreachable;
+    }
+
     /// Package in aurpkgs with a different (newer) version available in AUR.
     pub fn addRepoAurWithAurVersion(self: *MockRegistry, name: []const u8, local_version: []const u8, aur_version: []const u8, depends: []const []const u8, makedepends: []const []const u8) void {
         self.packages.put(testing.allocator, name, .{
@@ -583,6 +596,11 @@ pub const MockRegistry = struct {
             .version = info.version,
             .aur_pkg = info.aur_pkg,
         };
+    }
+
+    pub fn localRepoDepends(self: *MockRegistry, name: []const u8) ![]const []const u8 {
+        const info = self.packages.get(name) orelse return &.{};
+        return if (info.source == .repo_aur) info.depends else &.{};
     }
 
     /// Lexicographic version comparison — sufficient for test versions
