@@ -64,7 +64,6 @@ for cmd in sync '-S' build '-Sw' upgrade '-Su'
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l rebuild -d 'Force rebuild'
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l asdeps -d 'Install as dependency'
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l asexplicit -d 'Install as explicitly installed'
-    complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l devel -d 'Check VCS packages for updates'
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l chroot -d 'Build in a clean chroot'
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l ignore -d 'Skip packages' -x
 end
@@ -76,6 +75,9 @@ end
 complete -c aurodle -n "__aurodle_using_subcommand buildorder" -s q -l quiet -d 'Print only the packages to build'
 
 # Outdated/upgrade options
+for cmd in outdated '-Qu' upgrade '-Su'
+    complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l devel -d 'Check VCS packages for updates'
+end
 for cmd in outdated '-Qu'
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l all -d 'Also check uninstalled local repository packages'
 end
@@ -91,12 +93,13 @@ end
 # Clean options
 for cmd in clean '-Sc' '-Scc'
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l all -d 'Remove all built packages'
+    complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l noconfirm -d 'Skip confirmation prompt'
 end
 
 # Outdated options
 for cmd in outdated '-Qu'
-    complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l devel -d 'Check VCS packages for updates'
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l quiet -d 'Reduce output verbosity'
+    complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l ignore -d 'Mark packages as ignored' -x
 end
 
 # Search options
@@ -104,5 +107,4 @@ for cmd in search '-Ss'
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l by -d 'Search by field' -xa 'name name-desc depends makedepends checkdepends optdepends maintainer submitter provides conflicts replaces keywords groups comaintainers'
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l sort -d 'Sort results' -xa 'name votes popularity'
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l rsort -d 'Reverse sort' -xa 'name votes popularity'
-    complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l raw -d 'Output raw JSON'
 end

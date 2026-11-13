@@ -40,7 +40,6 @@ _aurodle_build_options() {
         '--rebuild[Force rebuild]' \
         '--asdeps[Install as dependency]' \
         '--asexplicit[Install as explicitly installed]' \
-        '--devel[Check VCS packages for updates]' \
         '--chroot[Build in a clean chroot]' \
         '--ignore[Skip packages]:packages:' \
         '*:package:'
@@ -109,7 +108,6 @@ _aurodle() {
                 '--by[Search by field]:field:_aurodle_search_fields' \
                 '--sort[Sort results]:field:_aurodle_sort_fields' \
                 '--rsort[Reverse sort results]:field:_aurodle_sort_fields' \
-                '--raw[Output raw JSON]' \
                 '*:query:'
             ;;
         show)
@@ -130,14 +128,18 @@ _aurodle() {
             _arguments -s \
                 '--devel[Check VCS packages for updates]' \
                 '--all[Also check uninstalled local repository packages]' \
-                '(-q --quiet)'--quiet'[Reduce output verbosity]'
+                '--ignore[Mark packages as ignored]:packages:' \
+                '(-q --quiet)'{-q,--quiet}'[Reduce output verbosity]'
             ;;
         upgrade|-Su)
-            _aurodle_build_options '--all[Also rebuild uninstalled local repository packages]'
+            _aurodle_build_options \
+                '--devel[Check VCS packages for updates]' \
+                '--all[Also rebuild uninstalled local repository packages]'
             ;;
         clean|-Sc|-Scc)
             _arguments -s \
-                '--all[Remove all built packages]'
+                '--all[Remove all built packages]' \
+                '--noconfirm[Skip confirmation prompt]'
             ;;
         status)
             ;;

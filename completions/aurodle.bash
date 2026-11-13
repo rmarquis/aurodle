@@ -7,10 +7,10 @@ _aurodle() {
     local commands="sync build clone info search show resolve buildorder outdated upgrade clean status"
     local short_aliases="-S -Sw -Si -Ss -Qu -Su -Sc -Scc"
     local global_opts="-h --help -V --version -q --quiet"
-    local build_opts="--noconfirm --noshow --needed --rebuild --asdeps --asexplicit --devel --chroot --ignore"
+    local build_opts="--noconfirm --noshow --needed --rebuild --asdeps --asexplicit --chroot --ignore"
     local clone_opts="--recurse"
-    local clean_opts="--all"
-    local search_opts="--by --sort --rsort --raw"
+    local clean_opts="--all --noconfirm"
+    local search_opts="--by --sort --rsort"
 
     # Find the command (first non-option argument)
     local cmd=""
@@ -74,10 +74,10 @@ _aurodle() {
             COMPREPLY=($(compgen -W "$search_opts" -- "$cur"))
             ;;
         outdated)
-            COMPREPLY=($(compgen -W "--devel --quiet --all" -- "$cur"))
+            COMPREPLY=($(compgen -W "--devel -q --quiet --all --ignore" -- "$cur"))
             ;;
         upgrade)
-            COMPREPLY=($(compgen -W "$build_opts --all" -- "$cur"))
+            COMPREPLY=($(compgen -W "$build_opts --devel --all" -- "$cur"))
             ;;
         clean)
             COMPREPLY=($(compgen -W "$clean_opts" -- "$cur"))
