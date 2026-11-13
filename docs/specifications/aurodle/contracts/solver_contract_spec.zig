@@ -212,18 +212,16 @@ test "BuildPlan.all_deps contains every discovered dependency" {
     // try testing.expect(plan.all_deps.len >= plan.build_order.len);
 }
 
-test "DependencyEntry.depth reflects distance from targets" {
-    // Contract: Target packages have depth 0. Direct dependencies
-    // have depth 1. Transitive dependencies have depth 2+.
+test "BuildPlan.all_deps lists each package after its dependencies" {
+    // Contract: all_deps is a depth-first post-order over the graph.
+    // Targets are walked in the order given, each package's deps in
+    // declaration order (depends, makedepends, checkdepends), so each
+    // dependency chain sits just before the package that needs it.
     //
-    // Mock: target → dep1 → dep2
+    // Mock: t → a, b; b → a; a → c
     //
-    // const plan = try s.resolve(&.{"target"});
-    // for (plan.all_deps) |dep| {
-    //     if (std.mem.eql(u8, dep.name, "target")) {
-    //         try testing.expectEqual(@as(u32, 0), dep.depth);
-    //     }
-    // }
+    // const plan = try s.resolve(&.{"t"});
+    // // all_deps names: c, a, b, t
 }
 
 // ============================================================================

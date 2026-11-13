@@ -113,7 +113,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
             var frontier: std.ArrayListUnmanaged([]const u8) = .empty;
             defer frontier.deinit(self.allocator);
             try frontier.appendSlice(self.allocator, target_names);
-            try self.expand(&visited, &frontier, 0);
+            try self.expand(&visited, &frontier);
 
             // Versioned deps: a name is resolved once, by whichever edge
             // reached it first, so a later "foo>=2" may find foo 1.0 in the
@@ -121,22 +121,18 @@ pub fn SolverImpl(comptime RegistryT: type) type {
             var round: usize = 0;
             while (round < max_constraint_rounds) : (round += 1) {
                 if (!try self.upgradeUnsatisfied(&visited, &frontier)) break;
-                try self.expand(&visited, &frontier, null);
+                try self.expand(&visited, &frontier);
             }
             try self.checkConstraints();
         }
 
         /// Breadth-first discovery from the dep strings in `frontier`
-        /// (consumed). `start_depth` null means each entry is one level
-        /// below the node that required it.
+        /// (consumed), one batched registry lookup per level.
         fn expand(
             self: *Self,
             visited: *std.StringHashMapUnmanaged(void),
             frontier: *std.ArrayListUnmanaged([]const u8),
-            start_depth: ?u32,
         ) !void {
-            var depth: u32 = start_depth orelse self.frontierDepth(frontier.items);
-
             while (frontier.items.len > 0) {
                 const resolutions = try self.registry.resolveMany(frontier.items);
                 defer self.allocator.free(resolutions);
@@ -149,12 +145,9 @@ pub fn SolverImpl(comptime RegistryT: type) type {
 
                 for (frontier.items, resolutions) |dep, resolution| {
                     const name = registry_mod.parseDep(dep).name;
-                    if (visited.contains(name)) {
-                        self.graph.updateDepth(name, depth);
-                        continue;
-                    }
+                    if (visited.contains(name)) continue;
 
-                    const redirected = try self.resolveWithRedirects(dep, name, resolution, visited, depth) orelse continue;
+                    const redirected = try self.resolveWithRedirects(dep, name, resolution, visited) orelse continue;
                     const actual_name = redirected.name;
                     const actual_resolution = redirected.resolution;
 
@@ -176,33 +169,18 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                         .version = actual_resolution.version,
                         .pkgbase = if (actual_resolution.aur_pkg) |p| p.pkgbase else null,
                         .aur_pkg = actual_resolution.aur_pkg,
-                        .depth = depth,
                     });
 
                     const aur_pkg = try self.fetchAndReclassifyAurPkg(node, actual_name, name, actual_resolution);
 
                     if (aur_pkg) |pkg| {
-                        try self.collectAllDeps(&next_frontier, visited, node, pkg, depth);
+                        try self.collectAllDeps(&next_frontier, visited, node, pkg);
                     }
                 }
 
                 frontier.deinit(self.allocator);
                 frontier.* = next_frontier;
-                depth += 1;
             }
-        }
-
-        /// Depth for a frontier of deps queued by upgradeUnsatisfied: one
-        /// below the shallowest package that required them.
-        fn frontierDepth(self: *Self, deps: []const []const u8) u32 {
-            var depth: ?u32 = null;
-            for (deps) |dep| {
-                const parent = self.required_by.get(dep) orelse continue;
-                const node = self.graph.getNode(parent) orelse continue;
-                const d = node.meta.depth + 1;
-                if (depth == null or d < depth.?) depth = d;
-            }
-            return depth orelse 0;
         }
 
         // ── Phase 1b: Version constraints ───────────────────────────────
@@ -237,7 +215,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                     node.meta.aur_pkg = pkg;
                     node.meta.pkgbase = pkg.pkgbase;
                     if (res.source == .aur) {
-                        try self.collectAllDeps(frontier, visited, node, pkg, node.meta.depth);
+                        try self.collectAllDeps(frontier, visited, node, pkg);
                     }
                 }
                 changed = true;
@@ -319,7 +297,6 @@ pub fn SolverImpl(comptime RegistryT: type) type {
             name: []const u8,
             resolution: registry_mod.Resolution,
             visited: *const std.StringHashMapUnmanaged(void),
-            depth: u32,
         ) !?Redirected {
             var actual_name = name;
             var actual_resolution = resolution;
@@ -348,10 +325,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                         actual_name = provider_name;
                     }
                     if (!std.mem.eql(u8, actual_name, name)) {
-                        if (visited.contains(actual_name)) {
-                            self.graph.updateDepth(actual_name, depth);
-                            return null;
-                        }
+                        if (visited.contains(actual_name)) return null;
                         actual_resolution = try self.registry.resolve(actual_name);
                     }
                 }
@@ -380,10 +354,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                             try self.targets.put(self.allocator, prov, {});
                         }
                         actual_name = prov;
-                        if (visited.contains(actual_name)) {
-                            self.graph.updateDepth(actual_name, depth);
-                            return null;
-                        }
+                        if (visited.contains(actual_name)) return null;
                     }
                 }
             }
@@ -448,7 +419,6 @@ pub fn SolverImpl(comptime RegistryT: type) type {
             visited: *const std.StringHashMapUnmanaged(void),
             parent_node: *DepGraph.Node,
             deps: []const []const u8,
-            depth: u32,
         ) !void {
             for (deps) |dep| {
                 const spec = registry_mod.parseDep(dep);
@@ -463,8 +433,6 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                 // Queue the full dep string so the registry sees the constraint.
                 if (!visited.contains(spec.name)) {
                     try next_frontier.append(self.allocator, dep);
-                } else {
-                    self.graph.updateDepth(spec.name, depth + 1);
                 }
             }
         }
@@ -475,11 +443,10 @@ pub fn SolverImpl(comptime RegistryT: type) type {
             visited: *const std.StringHashMapUnmanaged(void),
             node: *DepGraph.Node,
             pkg: *aur.Package,
-            depth: u32,
         ) !void {
-            try self.collectDeps(next_frontier, visited, node, pkg.depends, depth);
-            try self.collectDeps(next_frontier, visited, node, pkg.makedepends, depth);
-            try self.collectDeps(next_frontier, visited, node, pkg.checkdepends, depth);
+            try self.collectDeps(next_frontier, visited, node, pkg.depends);
+            try self.collectDeps(next_frontier, visited, node, pkg.makedepends);
+            try self.collectDeps(next_frontier, visited, node, pkg.checkdepends);
         }
 
         fn isIgnoredPkg(self: *Self, name: []const u8) bool {
@@ -566,7 +533,6 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                     .pkgbase = node.meta.pkgbase,
                     .source = node.meta.source,
                     .is_target = is_target,
-                    .depth = node.meta.depth,
                 });
                 if (is_target and (node.meta.source == .repos or node.meta.source == .satisfied_repos)) {
                     try repo_targets.append(alloc, node.meta.name);

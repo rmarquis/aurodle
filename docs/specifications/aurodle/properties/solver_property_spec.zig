@@ -213,19 +213,15 @@ test "determinism: same inputs produce same build_order" {
 }
 
 // ============================================================================
-// Depth Monotonicity Property
+// all_deps Ordering Property
 // ============================================================================
 
-test "depth monotonicity: dependency depth >= dependent depth + 1" {
-    // Property: For all edges (A depends on B) in all_deps:
-    //   depth(B) > depth(A) is NOT required (B could have shorter path)
-    //   BUT depth(A) >= 0 and targets have depth == 0
-    //
-    // More precisely: target depth is 0, and for every dependency edge,
-    // the dependency was discovered at depth <= the dependent's depth + 1.
+test "all_deps ordering: every dependency precedes its dependent" {
+    // Property: For all edges (A depends on B) in an acyclic graph,
+    //   index(B) < index(A) in all_deps, whatever the source of A or B
+    //   (AUR, repo, installed) and however many paths reach B.
 
     // For 50 random DAGs:
-    //   for (plan.all_deps) |dep| {
-    //       if (dep.is_target) try testing.expectEqual(@as(u32, 0), dep.depth);
-    //   }
+    //   for each edge A → B:
+    //       try testing.expect(indexOf(plan.all_deps, B) < indexOf(plan.all_deps, A));
 }

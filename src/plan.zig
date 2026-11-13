@@ -34,7 +34,6 @@ pub const DependencyEntry = struct {
     pkgbase: ?[]const u8,
     source: source_mod.Source,
     is_target: bool,
-    depth: u32,
 };
 
 pub const Conflict = struct {

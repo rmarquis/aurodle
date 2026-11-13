@@ -9,7 +9,6 @@ pub const NodeMeta = struct {
     version: ?[]const u8 = null,
     pkgbase: ?[]const u8 = null,
     aur_pkg: ?*aur.Package = null,
-    depth: u32 = 0,
 };
 
 /// Directed dependency graph with alias (virtual-name → real-name) resolution.
@@ -72,12 +71,5 @@ pub const DepGraph = struct {
     /// Resolve a name through aliases (for edge lookups during topological sort).
     pub fn resolveName(self: *DepGraph, name: []const u8) []const u8 {
         return self.aliases.get(name) orelse name;
-    }
-
-    /// Update a node's depth to the maximum of its current value and `depth`.
-    pub fn updateDepth(self: *DepGraph, name: []const u8, depth: u32) void {
-        if (self.getNode(name)) |node| {
-            if (depth > node.meta.depth) node.meta.depth = depth;
-        }
     }
 };

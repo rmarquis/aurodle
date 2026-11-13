@@ -445,30 +445,6 @@ test "BuildPlan.all_deps contains every discovered dependency" {
     try testing.expect(plan.all_deps.len >= plan.build_order.len);
 }
 
-test "DependencyEntry.depth reflects distance from targets" {
-    var mock = MockRegistry.initEmpty();
-    defer mock.deinitMock();
-    mock.addAurPackage("target", &.{"dep1"}, &.{});
-    mock.addAurPackage("dep1", &.{"dep2"}, &.{});
-    mock.addAurPackage("dep2", &.{}, &.{});
-
-    var s = TestSolver.init(testing.allocator, &mock, .{});
-    defer s.deinit();
-
-    const plan = try s.resolve(&.{"target"});
-    defer plan.deinit(testing.allocator);
-
-    for (plan.all_deps) |dep| {
-        if (std.mem.eql(u8, dep.name, "target")) {
-            try testing.expectEqual(@as(u32, 0), dep.depth);
-        } else if (std.mem.eql(u8, dep.name, "dep1")) {
-            try testing.expectEqual(@as(u32, 1), dep.depth);
-        } else if (std.mem.eql(u8, dep.name, "dep2")) {
-            try testing.expectEqual(@as(u32, 2), dep.depth);
-        }
-    }
-}
-
 fn expectAllDepsOrder(plan: BuildPlan, expected: []const []const u8) !void {
     try testing.expectEqual(expected.len, plan.all_deps.len);
     for (expected, plan.all_deps) |name, dep| {
@@ -477,8 +453,9 @@ fn expectAllDepsOrder(plan: BuildPlan, expected: []const []const u8) !void {
 }
 
 test "all_deps lists each package after a dependency reached on two paths" {
-    // a is reached at depth 1 (from t) and depth 2 (from b); c, under a,
-    // must still come before a. Sorting by discovery depth got this wrong.
+    // a is reached directly from t and again through b; c, under a, must
+    // still come before a. Ordering by distance from the target got this
+    // wrong: a and c tied, and the name tiebreak put a first.
     var mock = MockRegistry.initEmpty();
     defer mock.deinitMock();
     mock.addAurPackage("t", &.{ "a", "b" }, &.{});

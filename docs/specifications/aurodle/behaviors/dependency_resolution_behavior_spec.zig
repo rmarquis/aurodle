@@ -142,6 +142,8 @@ test "given aurodle buildorder <packages> when resolved then shows topological o
     // When: `aurodle buildorder pkg-a pkg-b` is executed
     // Then: Output shows ordered build sequence
     //       Dependencies appear before their dependents
+    //       Targets follow the command-line order, each preceded by
+    //       its own dependency chain
 }
 
 test "given buildorder output when displaying then includes dependency classification" {
