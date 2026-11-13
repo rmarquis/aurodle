@@ -105,7 +105,7 @@ use.
 
 	Classification tokens:
 
-	*TARGETAUR*      explicitly requested, will be built from AUR
+	*TARGETAUR*      explicitly requested from AUR, built unless up to date
 
 	*TARGETREPO*     explicitly requested, available in official repositories
 
@@ -113,7 +113,8 @@ use.
 
 	*REPOS*          repository dependency, will be installed via pacman
 
-	*REPOAUR*        available in the local AUR repository, already current
+	*REPOAUR*        installed from the local AUR repository as is; a
+	warning notes a newer AUR version
 
 	*SATISFIEDAUR*   already installed from AUR, no action needed
 
