@@ -491,7 +491,6 @@ fn printHelp() void {
         \\  --rebuild              Force rebuild
         \\  --asdeps               Install as dependency
         \\  --asexplicit           Install as explicitly installed
-        \\  --devel                Check VCS packages for updates
         \\  --ignore <pkg,...>     Skip packages
         \\  --chroot               Build in a clean chroot (resolve,
         \\                         buildorder: resolve as for one)
@@ -500,11 +499,13 @@ fn printHelp() void {
         \\  --recurse              Recursively clone AUR dependencies
         \\
         \\Clean options:
-        \\  --all                  Remove all built packages
+        \\  --all                  Remove all built packages and clones
         \\
-        \\Outdated/upgrade options:
+        \\Outdated and upgrade options:
+        \\  --devel                Check VCS packages for updates
         \\  --all                  Also check local repository packages that
-        \\                         are not installed (upgrade only builds them)
+        \\                         are not installed (upgrade builds them
+        \\                         without installing)
         \\
         \\Search options:
         \\  --by <field>           Search by: name, name-desc, maintainer
