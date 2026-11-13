@@ -90,7 +90,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
             defer self.allocator.free(order);
 
             // Phase 3: Plan assembly — pkgbase dedup + classification
-            var plan = try self.assemblePlan(order);
+            var plan = try self.assemblePlan(order, target_names);
             plan.conflicts = conflicts;
 
             // Populate provider selections from registry (if available)
@@ -491,7 +491,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
 
         // ── Phase 3: Plan Assembly ───────────────────────────────────────
 
-        fn assemblePlan(self: *Self, order: []const []const u8) !BuildPlan {
+        fn assemblePlan(self: *Self, order: []const []const u8, target_names: []const []const u8) !BuildPlan {
             const alloc = self.allocator;
             var build_order: std.ArrayListUnmanaged(BuildEntry) = .empty;
             var all_deps: std.ArrayListUnmanaged(DependencyEntry) = .empty;
@@ -553,11 +553,13 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                 entry.target_names = try target_lists.items[i].toOwnedSlice(alloc);
             }
 
-            // Single pass: collect all deps + classify repo deps/targets
+            // Single pass: collect all deps + classify repo deps/targets.
+            // all_deps is in dependency-first order over the whole graph.
+            const all_order = try topo_mod.postOrder(alloc, &self.graph, target_names);
+            defer alloc.free(all_order);
             var repo_targets: std.ArrayListUnmanaged([]const u8) = .empty;
-            var node_it = self.graph.nodes.iterator();
-            while (node_it.next()) |entry| {
-                const node = entry.value_ptr;
+            for (all_order) |name| {
+                const node = self.graph.getNode(name).?;
                 const is_target = self.targets.contains(node.meta.name);
                 try all_deps.append(alloc, .{
                     .name = node.meta.name,

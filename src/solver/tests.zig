@@ -469,6 +469,66 @@ test "DependencyEntry.depth reflects distance from targets" {
     }
 }
 
+fn expectAllDepsOrder(plan: BuildPlan, expected: []const []const u8) !void {
+    try testing.expectEqual(expected.len, plan.all_deps.len);
+    for (expected, plan.all_deps) |name, dep| {
+        try testing.expectEqualStrings(name, dep.name);
+    }
+}
+
+test "all_deps lists each package after a dependency reached on two paths" {
+    // a is reached at depth 1 (from t) and depth 2 (from b); c, under a,
+    // must still come before a. Sorting by discovery depth got this wrong.
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    mock.addAurPackage("t", &.{ "a", "b" }, &.{});
+    mock.addAurPackage("b", &.{"a"}, &.{});
+    mock.addAurPackage("a", &.{"c"}, &.{});
+    mock.addAurPackage("c", &.{}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock, .{});
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"t"});
+    defer plan.deinit(testing.allocator);
+
+    try expectAllDepsOrder(plan, &.{ "c", "a", "b", "t" });
+}
+
+test "all_deps keeps target order and puts repo deps before their dependents" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    mock.addAurPackage("t2", &.{ "shared", "repo-b" }, &.{});
+    mock.addAurPackage("t1", &.{"shared"}, &.{"repo-a"});
+    mock.addAurPackage("shared", &.{"repo-b"}, &.{});
+    mock.addRepoPackage("repo-a", "1.0");
+    mock.addRepoPackage("repo-b", "1.0");
+
+    var s = TestSolver.init(testing.allocator, &mock, .{});
+    defer s.deinit();
+
+    // Targets in the order given, not alphabetical; depends before makedepends.
+    const plan = try s.resolve(&.{ "t2", "t1" });
+    defer plan.deinit(testing.allocator);
+
+    try expectAllDepsOrder(plan, &.{ "repo-b", "shared", "t2", "repo-a", "t1" });
+}
+
+test "all_deps puts a target after another target it depends on" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    mock.addAurPackage("app", &.{"lib"}, &.{});
+    mock.addAurPackage("lib", &.{}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock, .{});
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{ "app", "lib" });
+    defer plan.deinit(testing.allocator);
+
+    try expectAllDepsOrder(plan, &.{ "lib", "app" });
+}
+
 // ── Multiple Target Tests ────────────────────────────────────────────────
 
 test "resolve handles multiple targets with shared dependencies" {

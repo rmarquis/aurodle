@@ -81,6 +81,9 @@ pub const Unresolved = struct {
 /// but not the AUR client, the Pacman instance or argv.
 pub const BuildPlan = struct {
     build_order: []BuildEntry,
+    /// Every package in the graph (AUR, repo, installed), each after all
+    /// of its dependencies; targets in the order given, each dependency
+    /// chain just before the package that needs it.
     all_deps: []DependencyEntry,
     /// Direct repo deps declared by AUR packages (used for installation).
     repo_deps: [][]const u8,

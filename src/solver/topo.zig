@@ -78,3 +78,41 @@ pub fn topoSort(allocator: Allocator, graph: *DepGraph) ![][]const u8 {
 
     return try order.toOwnedSlice(allocator);
 }
+
+/// Depth-first post-order over every node in the graph: each package comes
+/// after all of its dependencies. Walks from `roots` in the given order, and
+/// each node's dependencies in declaration order, so the result depends only
+/// on the input, and a target's dependency chain sits just before it.
+///
+/// Unlike topoSort this covers all sources (repo and installed nodes are
+/// leaves), and it tolerates cycles by skipping edges to visited nodes;
+/// topoSort already rejects cycles among AUR builds.
+pub fn postOrder(allocator: Allocator, graph: *DepGraph, roots: []const []const u8) ![][]const u8 {
+    var walk: PostOrderWalk = .{ .allocator = allocator, .graph = graph };
+    defer walk.visited.deinit(allocator);
+    errdefer walk.order.deinit(allocator);
+
+    for (roots) |root| try walk.visit(root);
+    // Every node is reachable from a target; this only guards that invariant.
+    var it = graph.nodes.keyIterator();
+    while (it.next()) |name| try walk.visit(name.*);
+
+    return walk.order.toOwnedSlice(allocator);
+}
+
+const PostOrderWalk = struct {
+    allocator: Allocator,
+    graph: *DepGraph,
+    visited: std.StringHashMapUnmanaged(void) = .empty,
+    order: std.ArrayListUnmanaged([]const u8) = .empty,
+
+    fn visit(self: *PostOrderWalk, raw_name: []const u8) Allocator.Error!void {
+        const node = self.graph.getNode(raw_name) orelse return;
+        const name = node.meta.name;
+        // Marked on entry, so a cycle stops at the node already on the stack.
+        if ((try self.visited.getOrPut(self.allocator, name)).found_existing) return;
+
+        for (node.edges.keys()) |dep| try self.visit(dep);
+        try self.order.append(self.allocator, name);
+    }
+};

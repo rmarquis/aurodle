@@ -64,22 +64,7 @@ pub fn buildorder(self: *BuildContext, targets: []const []const u8) !ExitCode {
 
     const stdout = getStdout();
 
-    // Sort: non-targets first (deepest deps first), then targets last
-    std.mem.sort(solver_mod.DependencyEntry, plan.all_deps, {}, struct {
-        fn lessThan(_: void, a: solver_mod.DependencyEntry, b: solver_mod.DependencyEntry) bool {
-            // Targets always come after non-targets
-            if (a.is_target != b.is_target) return !a.is_target;
-            // Among non-targets, deeper deps come first
-            if (a.depth != b.depth) return a.depth > b.depth;
-            // Within same depth: satisfied before unsatisfied
-            const sa = @backingInt(a.source);
-            const sb = @backingInt(b.source);
-            if (sa != sb) return sa < sb;
-            // Stable tiebreak by name
-            return std.mem.order(u8, a.name, b.name) == .lt;
-        }
-    }.lessThan);
-
+    // all_deps is already in build order (dependencies first).
     // Show all dependencies with classification prefixes (FR-7)
     for (plan.all_deps) |dep| {
         const prefix: []const u8 = if (dep.is_target) switch (dep.source) {
