@@ -116,6 +116,11 @@ use.
 
 	*UNKNOWN*        not found in any source
 
+	Entries are classified against the host, and the dependencies of
+	satisfied packages are not listed. With *--chroot*, AUR packages
+	installed on the host do not count: the output is the build order
+	for a clean chroot.
+
 *status*
 	Show the status of Arch Linux infrastructure from status.archlinux.org:
 	each service's current state, daily uptime over the last 30 days, and
@@ -170,6 +175,8 @@ use.
 *--chroot*
 	Build packages inside a clean chroot using *makechrootpkg*(1), from
 	the *devtools* package. See *Clean chroot builds* under *NOTES*.
+	With *resolve* and *buildorder*, resolve dependencies as for a chroot
+	build, ignoring AUR packages installed on the host.
 
 ## Clone options
 

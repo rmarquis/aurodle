@@ -114,11 +114,10 @@ _aurodle() {
         show)
             _arguments '*:package:'
             ;;
-        resolve)
-            _arguments '*:package:'
-            ;;
-        buildorder)
-            _arguments '*:package:'
+        resolve|buildorder)
+            _arguments -s \
+                '--chroot[Resolve as for a clean chroot build]' \
+                '*:package:'
             ;;
         outdated|-Qu)
             _arguments -s \

@@ -69,6 +69,11 @@ for cmd in sync '-S' build '-Sw' upgrade '-Su'
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l ignore -d 'Skip packages' -x
 end
 
+# Resolve options
+for cmd in resolve buildorder
+    complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l chroot -d 'Resolve as for a clean chroot build'
+end
+
 # Clone options
 for cmd in clone
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l recurse -d 'Recursively clone AUR dependencies'
