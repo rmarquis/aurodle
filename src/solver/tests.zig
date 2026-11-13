@@ -522,6 +522,60 @@ test "an up-to-date local-repo target follows its repository deps, not AUR maked
     try expectAllDepsOrder(plan, &.{"tool"});
 }
 
+test "resolve reports a local-repo dependency older than the AUR, without building it" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    mock.addAurPackage("app", &.{ "old-lib", "current-lib", "gone-lib" }, &.{});
+    mock.addRepoAurWithAurVersion("old-lib", "1.0", "2.0", &.{}, &.{});
+    mock.addRepoAurWithAurVersion("current-lib", "1.0", "1.0", &.{}, &.{});
+    mock.addRepoAur("gone-lib", "1.0");
+
+    var s = TestSolver.init(testing.allocator, &mock, .{});
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"app"});
+    defer plan.deinit(testing.allocator);
+
+    try testing.expect(!buildOrderHas(plan, "old-lib"));
+    try testing.expectEqual(@as(usize, 1), plan.stale_repo_deps.len);
+    try testing.expectEqualStrings("old-lib", plan.stale_repo_deps[0].name);
+    try testing.expectEqualStrings("1.0", plan.stale_repo_deps[0].local_version);
+    try testing.expectEqualStrings("2.0", plan.stale_repo_deps[0].aur_version);
+}
+
+test "resolve does not report stale VCS packages or targets from the local repo" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    mock.addAurPackage("app", &.{"lib-git"}, &.{});
+    mock.addRepoAurWithAurVersion("lib-git", "1.0", "2.0", &.{}, &.{});
+    mock.addRepoAurWithAurVersion("tool", "1.0", "1.0", &.{}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock, .{});
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{ "app", "tool" });
+    defer plan.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), plan.stale_repo_deps.len);
+}
+
+test "resolve skips the stale check when the AUR can't be reached" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    mock.addAurPackage("app", &.{"old-lib"}, &.{});
+    mock.addRepoAurWithAurVersion("old-lib", "1.0", "2.0", &.{}, &.{});
+    mock.aur_unreachable = true;
+
+    var s = TestSolver.init(testing.allocator, &mock, .{});
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"app"});
+    defer plan.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), plan.build_order.len);
+    try testing.expectEqual(@as(usize, 0), plan.stale_repo_deps.len);
+}
+
 fn expectAllDepsOrder(plan: BuildPlan, expected: []const []const u8) !void {
     try testing.expectEqual(expected.len, plan.all_deps.len);
     for (expected, plan.all_deps) |name, dep| {

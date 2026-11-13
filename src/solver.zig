@@ -16,6 +16,7 @@ const DepGraph = graph_mod.DepGraph;
 pub const BuildEntry = plan_mod.BuildEntry;
 pub const DependencyEntry = plan_mod.DependencyEntry;
 pub const Conflict = plan_mod.Conflict;
+pub const StaleRepoDep = plan_mod.StaleRepoDep;
 pub const SolverOptions = plan_mod.SolverOptions;
 pub const BuildPlan = plan_mod.BuildPlan;
 pub const Unresolved = plan_mod.Unresolved;
@@ -92,6 +93,7 @@ pub fn SolverImpl(comptime RegistryT: type) type {
             // Phase 3: Plan assembly — pkgbase dedup + classification
             var plan = try self.assemblePlan(order, target_names);
             plan.conflicts = conflicts;
+            plan.stale_repo_deps = try self.findStaleRepoDeps(plan.all_deps);
 
             // Populate provider selections from registry (if available)
             if (comptime @hasField(RegistryT, "provider_selections")) {
@@ -460,6 +462,41 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                 if (std.mem.eql(u8, ignored, name)) return true;
             }
             return false;
+        }
+
+        /// Dependencies taken from the local repository that the AUR has a
+        /// newer version of, checked in one batched AUR request. Targets
+        /// were already compared during discovery; VCS packages are skipped,
+        /// since their AUR version is only the last pkgver pushed. The check
+        /// is informational, so an unreachable AUR just skips it.
+        fn findStaleRepoDeps(self: *Self, all_deps: []const DependencyEntry) ![]StaleRepoDep {
+            const alloc = self.allocator;
+            var names: std.ArrayListUnmanaged([]const u8) = .empty;
+            defer names.deinit(alloc);
+            for (all_deps) |dep| {
+                if (dep.source != .repo_aur or dep.is_target) continue;
+                if (RegistryT.isVcsPackage(dep.name)) continue;
+                try names.append(alloc, dep.name);
+            }
+            if (names.items.len == 0) return &.{};
+
+            self.registry.prefetchAur(names.items) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => return &.{},
+            };
+
+            var stale: std.ArrayListUnmanaged(StaleRepoDep) = .empty;
+            errdefer stale.deinit(alloc);
+            for (names.items) |name| {
+                const local = self.graph.getNode(name).?.meta.version orelse continue;
+                const aur_version = (self.registry.aurVersion(name) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => null,
+                }) orelse continue;
+                if (RegistryT.vercmp(aur_version, local) <= 0) continue;
+                try stale.append(alloc, .{ .name = name, .local_version = local, .aur_version = aur_version });
+            }
+            return stale.toOwnedSlice(alloc);
         }
 
         // ── Phase 3: Plan Assembly ───────────────────────────────────────

@@ -222,6 +222,13 @@ pub fn RegistryImpl(comptime PacmanT: type, comptime AurClientT: type) type {
             return null;
         }
 
+        /// AUR version of the package named exactly `name`, or null if the
+        /// AUR has none. Call prefetchAur first to batch the lookups.
+        pub fn aurVersion(self: *Self, name: []const u8) !?[]const u8 {
+            const pkg = try self.aur_client.info(name) orelse return null;
+            return pkg.version;
+        }
+
         /// Runtime dependencies of `name` in the local AUR repository, as
         /// dependency strings. Empty when the repository has no such package.
         pub fn localRepoDepends(self: *Self, name: []const u8) ![]const []const u8 {

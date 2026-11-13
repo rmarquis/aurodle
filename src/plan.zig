@@ -36,6 +36,14 @@ pub const DependencyEntry = struct {
     is_target: bool,
 };
 
+/// A local-repository dependency older than its AUR version. The plan
+/// still installs the local copy; this is only reported.
+pub const StaleRepoDep = struct {
+    name: []const u8,
+    local_version: []const u8,
+    aur_version: []const u8,
+};
+
 pub const Conflict = struct {
     package: []const u8,
     conflicts_with: []const u8,
@@ -89,6 +97,10 @@ pub const BuildPlan = struct {
     repo_targets: [][]const u8,
     conflicts: []Conflict = &.{},
     provider_selections: []provider_mod.ProviderSelection = &.{},
+    /// Non-VCS dependencies taken from the local repository that the AUR
+    /// has a newer version of, in all_deps order. Empty if the AUR could
+    /// not be reached.
+    stale_repo_deps: []StaleRepoDep = &.{},
 
     pub fn deinit(self: BuildPlan, allocator: Allocator) void {
         for (self.build_order) |entry| {
@@ -101,5 +113,6 @@ pub const BuildPlan = struct {
         allocator.free(self.repo_targets);
         allocator.free(self.conflicts);
         allocator.free(self.provider_selections);
+        allocator.free(self.stale_repo_deps);
     }
 };

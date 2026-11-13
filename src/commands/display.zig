@@ -82,6 +82,17 @@ pub const PlanDisplay = struct {
     stderr_color: color.Style,
 };
 
+/// Warn about local-repository dependencies the AUR has a newer version of.
+/// The plan still installs them; rebuilding is left to the user.
+pub fn warnStaleRepoDeps(plan: plan_mod.BuildPlan, err_writer: anytype, ec: anytype) void {
+    for (plan.stale_repo_deps) |dep| {
+        err_writer.print(
+            "{s}warning:{s} {s}-{s} in the local repository is older than the AUR ({s})\n",
+            .{ ec.yellow, ec.reset, dep.name, dep.local_version, dep.aur_version },
+        );
+    }
+}
+
 pub fn displayPlan(plan: plan_mod.BuildPlan, opts: PlanDisplay) void {
     const repo_deps_full = opts.repo_deps;
     const pm = opts.pacman;
@@ -141,6 +152,8 @@ pub fn displayPlan(plan: plan_mod.BuildPlan, opts: PlanDisplay) void {
             }
         }
     }
+
+    warnStaleRepoDeps(plan, err_writer, ec);
 
     // Warn about detected conflicts (informational for resolve/buildorder commands;
     // sync/build handle these interactively before reaching displayPlan)

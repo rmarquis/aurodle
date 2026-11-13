@@ -844,3 +844,23 @@ test "ignore_installed_aur ignores an installed AUR provider" {
     try testing.expectEqual(Source.repo_aur, res.source);
     try testing.expectEqualStrings("foo-git", res.provider.?);
 }
+
+// ── aurVersion ──────────────────────────────────────────────────────────
+
+test "aurVersion matches the exact name only, never an AUR provider" {
+    var pm = MockPacman.initEmpty();
+    defer pm.deinitMock();
+
+    var ac = MockAurClient.initEmpty();
+    defer ac.deinitMock();
+    ac.addPackage("foo", "2.0-1");
+    ac.addPackageWithProvides("bar-git", "r1-1", &.{"bar"});
+
+    var reg = TestRegistry.init(testing.allocator, &pm, &ac);
+    defer reg.deinit();
+
+    try reg.prefetchAur(&.{ "foo", "bar" });
+    try testing.expectEqualStrings("2.0-1", (try reg.aurVersion("foo")).?);
+    try testing.expect(try reg.aurVersion("bar") == null);
+    try testing.expectEqual(@as(usize, 0), ac.search_call_count);
+}

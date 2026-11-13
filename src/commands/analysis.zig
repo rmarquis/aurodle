@@ -63,6 +63,7 @@ pub fn buildorder(self: *BuildContext, targets: []const []const u8) !ExitCode {
     defer plan.deinit(self.allocator);
 
     const stdout = getStdout();
+    display_mod.warnStaleRepoDeps(plan, self.err_writer, ec);
 
     // all_deps is already in build order (dependencies first).
     // Show all dependencies with classification prefixes (FR-7)

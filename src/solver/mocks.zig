@@ -45,6 +45,8 @@ pub const MockRegistry = struct {
     upgrades: std.StringHashMapUnmanaged(MockPackageInfo) = .empty,
     arena: std.heap.ArenaAllocator,
     pacman: *MockInstalledSet = undefined,
+    /// Makes prefetchAur fail, as when the AUR can't be reached.
+    aur_unreachable: bool = false,
 
     const MockPackageInfo = struct {
         source: registry_mod.Source,
@@ -504,7 +506,20 @@ pub const MockRegistry = struct {
 
     // ── Interface matching PackageRegistry ────────────────────────────────
 
-    pub fn prefetchAur(_: *MockRegistry, _: []const []const u8) !void {}
+    /// Errors the real AUR client can return: allocation and network.
+    const AurError = error{ OutOfMemory, ConnectionRefused };
+
+    pub fn prefetchAur(self: *MockRegistry, names: []const []const u8) AurError!void {
+        if (self.aur_unreachable and names.len > 0) return error.ConnectionRefused;
+    }
+
+    /// AUR version registered by addRepoAurWithAurVersion (or for an AUR
+    /// package), by exact name.
+    pub fn aurVersion(self: *MockRegistry, name: []const u8) AurError!?[]const u8 {
+        if (self.aur_overrides.get(name)) |info| return info.version;
+        const info = self.packages.get(name) orelse return null;
+        return if (info.aur_pkg != null) info.version else null;
+    }
 
     pub fn resolveMany(self: *MockRegistry, dep_strings: []const []const u8) ![]registry_mod.Resolution {
         var results: std.ArrayListUnmanaged(registry_mod.Resolution) = .empty;
