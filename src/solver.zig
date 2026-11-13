@@ -86,12 +86,11 @@ pub fn SolverImpl(comptime RegistryT: type) type {
                 self.registry.pacman,
             );
 
-            // Phase 2: Topological sort — Kahn's algorithm on AUR nodes
-            const order = try topo_mod.topoSort(self.allocator, &self.graph);
-            defer self.allocator.free(order);
+            // Phase 2: Reject cycles among the pkgbases to build
+            try topo_mod.checkBuildCycles(self.allocator, &self.graph);
 
-            // Phase 3: Plan assembly — pkgbase dedup + classification
-            var plan = try self.assemblePlan(order, target_names);
+            // Phase 3: Plan assembly — ordering, pkgbase dedup, classification
+            var plan = try self.assemblePlan(target_names);
             plan.conflicts = conflicts;
             plan.stale_repo_deps = try self.findStaleRepoDeps(plan.all_deps);
 
@@ -505,72 +504,73 @@ pub fn SolverImpl(comptime RegistryT: type) type {
 
         // ── Phase 3: Plan Assembly ───────────────────────────────────────
 
-        fn assemblePlan(self: *Self, order: []const []const u8, target_names: []const []const u8) !BuildPlan {
+        fn assemblePlan(self: *Self, target_names: []const []const u8) !BuildPlan {
             const alloc = self.allocator;
             var build_order: std.ArrayListUnmanaged(BuildEntry) = .empty;
             var all_deps: std.ArrayListUnmanaged(DependencyEntry) = .empty;
             var repo_deps: std.ArrayListUnmanaged([]const u8) = .empty;
 
+            // Dependency-first order over the whole graph, with the packages
+            // of each pkgbase to build kept together after all their deps.
+            const all_order = try topo_mod.postOrder(alloc, &self.graph, target_names);
+            defer alloc.free(all_order);
+
             // Track seen pkgbases for deduplication (maps to build_order index)
             var seen_pkgbase = std.StringHashMapUnmanaged(usize){};
             defer seen_pkgbase.deinit(alloc);
 
-            // Temporary per-entry target name collectors
+            // Temporary per-entry collectors: target names, and the pkgbases
+            // of the AUR deps of every package in the pkgbase.
             var target_lists: std.ArrayListUnmanaged(std.ArrayListUnmanaged([]const u8)) = .empty;
             defer target_lists.deinit(alloc);
+            var dep_base_sets: std.ArrayListUnmanaged(std.StringArrayHashMapUnmanaged(void)) = .empty;
+            defer {
+                for (dep_base_sets.items) |*set| set.deinit(alloc);
+                dep_base_sets.deinit(alloc);
+            }
 
-            // Build order: AUR packages, deduplicated by pkgbase
-            for (order) |name| {
+            // Build order: packages that get built, deduplicated by pkgbase
+            for (all_order) |name| {
                 const node = self.graph.getNode(name).?;
+                if (node.meta.source != .aur) continue;
                 const pkgbase = node.meta.pkgbase orelse name;
+                const is_target = self.targets.contains(name);
 
-                if (seen_pkgbase.get(pkgbase)) |idx| {
-                    // Pkgbase already has a build entry — accumulate target name if applicable
-                    if (self.targets.contains(name)) {
-                        try target_lists.items[idx].append(alloc, name);
-                        build_order.items[idx].is_target = true;
-                    }
-                } else {
+                const idx = if (seen_pkgbase.get(pkgbase)) |idx| idx else blk: {
                     const idx = build_order.items.len;
                     try seen_pkgbase.put(alloc, pkgbase, idx);
-
-                    // Collect pkgbases of AUR deps (deduplicated)
-                    var dep_bases: std.StringArrayHashMapUnmanaged(void) = .empty;
-                    defer dep_bases.deinit(alloc);
-                    for (node.edges.keys()) |dep_name| {
-                        const dep_node = self.graph.getNode(dep_name) orelse continue;
-                        if (dep_node.meta.source != .aur) continue;
-                        const dep_pkgbase = dep_node.meta.pkgbase orelse dep_name;
-                        try dep_bases.put(alloc, dep_pkgbase, {});
-                    }
-
-                    const is_target = self.targets.contains(name);
-
-                    // Start target name list for this entry
-                    var tgt_list: std.ArrayListUnmanaged([]const u8) = .empty;
-                    if (is_target) try tgt_list.append(alloc, name);
-                    try target_lists.append(alloc, tgt_list);
-
+                    try target_lists.append(alloc, .empty);
+                    try dep_base_sets.append(alloc, .empty);
                     try build_order.append(alloc, .{
                         .name = name,
                         .pkgbase = pkgbase,
                         .version = node.meta.version orelse "unknown",
-                        .is_target = is_target,
+                        .is_target = false,
                         .out_of_date = if (node.meta.aur_pkg) |pkg| pkg.out_of_date else null,
-                        .aur_dep_bases = try alloc.dupe([]const u8, dep_bases.keys()),
                     });
+                    break :blk idx;
+                };
+
+                if (is_target) {
+                    try target_lists.items[idx].append(alloc, name);
+                    build_order.items[idx].is_target = true;
+                }
+                for (node.edges.keys()) |dep_name| {
+                    const dep_node = self.graph.getNode(dep_name) orelse continue;
+                    if (dep_node.meta.source != .aur) continue;
+                    const dep_pkgbase = dep_node.meta.pkgbase orelse dep_name;
+                    if (std.mem.eql(u8, dep_pkgbase, pkgbase)) continue;
+                    try dep_base_sets.items[idx].put(alloc, dep_pkgbase, {});
                 }
             }
 
-            // Finalize target_names slices
+            // Finalize per-entry slices
             for (build_order.items, 0..) |*entry, i| {
                 entry.target_names = try target_lists.items[i].toOwnedSlice(alloc);
+                entry.aur_dep_bases = try alloc.dupe([]const u8, dep_base_sets.items[i].keys());
             }
 
             // Single pass: collect all deps + classify repo deps/targets.
-            // all_deps is in dependency-first order over the whole graph.
-            const all_order = try topo_mod.postOrder(alloc, &self.graph, target_names);
-            defer alloc.free(all_order);
             var repo_targets: std.ArrayListUnmanaged([]const u8) = .empty;
             for (all_order) |name| {
                 const node = self.graph.getNode(name).?;

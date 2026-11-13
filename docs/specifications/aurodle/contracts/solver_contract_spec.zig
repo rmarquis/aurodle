@@ -2,8 +2,9 @@
 //
 // Verifies the formal contract for the three-phase dependency resolver:
 //   Phase 1: Discovery (DFS with cycle detection)
-//   Phase 2: Topological Sort (Kahn's algorithm)
-//   Phase 3: Plan Assembly (pkgbase dedup, classification)
+//   Phase 2: Build cycle check (Kahn's algorithm over pkgbases)
+//   Phase 3: Plan Assembly (dependency-first order, pkgbase dedup,
+//            classification)
 //
 // Architecture: docs/architecture/class_solver.md
 // Module: solver.Solver
@@ -131,7 +132,10 @@ test "resolve marks target packages with is_target=true" {
 test "resolve returns CircularDependency error on cycles" {
     // Contract: When a circular dependency is detected (A → B → A),
     // resolve returns error.CircularDependency. Detection happens
-    // during Phase 2 (Kahn's algorithm: remaining nodes with edges).
+    // during Phase 2 (Kahn's algorithm over the pkgbases to build:
+    // pkgbases left with unmet deps). A cycle that only appears at
+    // pkgbase level (b1 → x → b2, b1 and b2 in one pkgbase) counts;
+    // a package depending on its sibling does not.
     //
     // Mock: A.depends = ["B"], B.depends = ["A"]
     //
@@ -153,6 +157,19 @@ test "resolve returns UnresolvableDependency for unknown packages" {
 // ============================================================================
 // pkgbase Deduplication Contracts
 // ============================================================================
+
+test "resolve orders a split pkgbase after the deps of all its packages" {
+    // Contract: makepkg builds a whole pkgbase, so its build_order entry
+    // comes after the AUR deps of every one of its packages, and its
+    // aur_dep_bases holds all of them. In all_deps, its packages are
+    // listed together at that point.
+    //
+    // Mock: t → b1, b2 (pkgbase "B"); b2 → x
+    //
+    // const plan = try s.resolve(&.{"t"});
+    // // build_order pkgbases: x, B, t; B.aur_dep_bases: x
+    // // all_deps names: x, b1, b2, t
+}
 
 test "resolve deduplicates packages sharing the same pkgbase" {
     // Contract: Split packages (e.g., python-attrs and python-attrs-tests)

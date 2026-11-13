@@ -1488,6 +1488,62 @@ test "needed allows build when AUR version is newer" {
     try testing.expectEqualStrings("pacaur", plan.build_order[0].name);
 }
 
+test "split package: built after the deps of all its packages" {
+    // Only b2 needs x, but makepkg builds b1 and b2 together.
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    mock.addAurPackage("t", &.{ "b1", "b2" }, &.{});
+    mock.addAurPackageWithBase("b1", "B", &.{}, &.{});
+    mock.addAurPackageWithBase("b2", "B", &.{"x"}, &.{});
+    mock.addAurPackage("x", &.{}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock, .{});
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"t"});
+    defer plan.deinit(testing.allocator);
+
+    try expectAllDepsOrder(plan, &.{ "x", "b1", "b2", "t" });
+    try testing.expectEqual(@as(usize, 3), plan.build_order.len);
+    try testing.expectEqualStrings("x", plan.build_order[0].pkgbase);
+    try testing.expectEqualStrings("B", plan.build_order[1].pkgbase);
+    try testing.expectEqualStrings("t", plan.build_order[2].pkgbase);
+    // A failed x must skip B, whichever of its packages needs it.
+    try testing.expectEqual(@as(usize, 1), plan.build_order[1].aur_dep_bases.len);
+    try testing.expectEqualStrings("x", plan.build_order[1].aur_dep_bases[0]);
+}
+
+test "split package: a package depending on its sibling is not a cycle" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    mock.addAurPackageWithBase("b1", "B", &.{}, &.{});
+    mock.addAurPackageWithBase("b2", "B", &.{"b1"}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock, .{});
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"b2"});
+    defer plan.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), plan.build_order.len);
+    try testing.expectEqual(@as(usize, 0), plan.build_order[0].aur_dep_bases.len);
+    try expectAllDepsOrder(plan, &.{ "b1", "b2" });
+}
+
+test "split package: a cycle through two packages of a pkgbase is rejected" {
+    // b1 needs x, x needs b2: B must be built both before and after x.
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    mock.addAurPackageWithBase("b1", "B", &.{"x"}, &.{});
+    mock.addAurPackageWithBase("b2", "B", &.{}, &.{});
+    mock.addAurPackage("x", &.{"b2"}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock, .{});
+    defer s.deinit();
+
+    try testing.expectError(error.CircularDependency, s.resolve(&.{"b1"}));
+}
+
 test "split package: multiple targets from same pkgbase all tracked as targets" {
     var mock = MockRegistry.initEmpty();
     defer mock.deinitMock();
