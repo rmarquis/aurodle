@@ -34,7 +34,9 @@ use.
 	Upgrade outdated AUR packages. Without arguments, upgrades all
 	installed foreign packages, including those installed from the local
 	AUR repository, that have a newer version in the AUR. If _targets_ are
-	given, only those packages are upgraded.
+	given, only those packages are upgraded. With *--all*, packages in the
+	local AUR repository that are not installed are also rebuilt into it,
+	but not installed.
 
 ## Query commands
 
@@ -52,10 +54,11 @@ use.
 	Without arguments, checks all such packages. With *--devel*, also
 	checks VCS packages by fetching their upstream source.
 
-	Packages in the local AUR repository that are not installed are not
-	checked, since the repository may be shared. Instead, *sync*, *build*,
-	*resolve* and *buildorder* warn when a dependency they take from it is
-	older than the AUR.
+	Packages in the local AUR repository that are not installed are only
+	checked with *--all*, since the repository may be shared; they are
+	marked *[not installed]*. Without it, *sync*, *build*, *resolve* and
+	*buildorder* still warn when a dependency they take from the
+	repository is older than the AUR.
 
 ## Repository management commands
 
@@ -199,6 +202,13 @@ use.
 *--all*
 	Remove all built packages and all sources, not just stale ones.
 	Equivalent to *-Scc*.
+
+## Outdated and upgrade options
+
+*--all*
+	Also check the packages in the local AUR repository that are not
+	installed. *upgrade* rebuilds the outdated ones into the repository
+	without installing them. Debug packages are skipped.
 
 ## Search options
 
