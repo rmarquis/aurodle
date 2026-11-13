@@ -126,6 +126,9 @@ use.
 	installed on the host do not count: the output is the build order
 	for a clean chroot.
 
+	With *--quiet*, only the *AUR* and *TARGETAUR* lines of packages that
+	get built are printed.
+
 *status*
 	Show the status of Arch Linux infrastructure from status.archlinux.org:
 	each service's current state, daily uptime over the last 30 days, and
@@ -142,7 +145,8 @@ use.
 	Show version and exit.
 
 *-q*, *--quiet*
-	Reduce output verbosity. For *search*, shows only package names.
+	Reduce output verbosity. For *search*, shows only package names; for
+	*buildorder*, only the packages to build.
 
 ## Build options
 
