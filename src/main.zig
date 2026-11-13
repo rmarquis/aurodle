@@ -502,6 +502,10 @@ fn printHelp() void {
         \\Clean options:
         \\  --all                  Remove all built packages
         \\
+        \\Outdated/upgrade options:
+        \\  --all                  Also check local repository packages that
+        \\                         are not installed (upgrade only builds them)
+        \\
         \\Search options:
         \\  --by <field>           Search by: name, name-desc, maintainer
         \\  --sort <field>         Sort by: name, votes, popularity

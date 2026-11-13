@@ -96,6 +96,10 @@ pub const OutdatedEntry = struct {
     installed_version: []const u8,
     aur_version: []const u8,
     ignored: bool = false,
+    /// False for a package only in the local AUR repository (--all):
+    /// `installed_version` is then its repository version, and upgrade
+    /// rebuilds it without installing it.
+    installed: bool = true,
 };
 
 /// Result of `outdated.collectOutdated`.  Shared by `outdated` and `upgrade`.
@@ -105,8 +109,9 @@ pub const OutdatedEntry = struct {
 /// display, filter, or warn.  `devel_versions` owns the strings produced by
 /// the --devel pass (borrowed from by `entries[i].aur_version` for VCS-only
 /// entries and by `devel_version_hint` when populated).  `total_checked` is
-/// the number of installed foreign packages compared against the AUR —
-/// zero means "nothing to compare" (distinct from "compared but none outdated").
+/// the number of packages compared against the AUR (installed foreign ones,
+/// plus with --all those only in the local repository) — zero means
+/// "nothing to compare" (distinct from "compared but none outdated").
 pub const OutdatedList = struct {
     entries: []OutdatedEntry,
     devel_versions: [][]const u8,

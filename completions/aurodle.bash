@@ -74,10 +74,10 @@ _aurodle() {
             COMPREPLY=($(compgen -W "$search_opts" -- "$cur"))
             ;;
         outdated)
-            COMPREPLY=($(compgen -W "--devel --quiet" -- "$cur"))
+            COMPREPLY=($(compgen -W "--devel --quiet --all" -- "$cur"))
             ;;
         upgrade)
-            COMPREPLY=($(compgen -W "$build_opts" -- "$cur"))
+            COMPREPLY=($(compgen -W "$build_opts --all" -- "$cur"))
             ;;
         clean)
             COMPREPLY=($(compgen -W "$clean_opts" -- "$cur"))

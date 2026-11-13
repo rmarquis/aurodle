@@ -13,7 +13,9 @@ const OutdatedList = types.OutdatedList;
 const printError = types.printError;
 
 /// Shared core for `outdated` and `upgrade`: find installed AUR packages whose
-/// AUR (or --devel) version is newer than the installed one.
+/// AUR (or --devel) version is newer than the installed one. With --all,
+/// packages only in the local AUR repository are checked too, by their
+/// repository version, and their entries are marked not `installed`.
 ///
 /// When `filter` is non-empty, only packages matching those names are checked.
 /// When `flags.devel` is set, VCS packages are additionally probed via
@@ -31,8 +33,12 @@ pub fn collectOutdated(self: *BuildContext, filter: []const []const u8, populate
 
     const foreign = try pm.allForeignPackages();
     defer self.allocator.free(foreign);
+    const repo_only: []pacman_mod.InstalledPackage = if (self.flags.all) try pm.uninstalledAurRepoPackages() else &.{};
+    defer self.allocator.free(repo_only);
+    const candidates = try std.mem.concat(self.allocator, pacman_mod.InstalledPackage, &.{ foreign, repo_only });
+    defer self.allocator.free(candidates);
 
-    const to_check = if (filter.len > 0) try filterByName(self.allocator, foreign, filter) else foreign;
+    const to_check = if (filter.len > 0) try filterByName(self.allocator, candidates, filter) else candidates;
     defer if (filter.len > 0) self.allocator.free(to_check);
 
     if (to_check.len == 0) {
@@ -78,6 +84,8 @@ pub fn collectOutdated(self: *BuildContext, filter: []const []const u8, populate
     if (self.flags.devel) {
         try checkDevelPackages(self, to_check, &pkgbase_map, &cmp.outdated, &cmp.entries, &devel_versions, populate_hint);
     }
+
+    markNotInstalled(cmp.entries.items, repo_only);
 
     return .{
         .entries = try cmp.entries.toOwnedSlice(self.allocator),
@@ -186,6 +194,15 @@ pub fn checkDevelPackages(
 }
 
 // ── Decisions (pure, no I/O) ─────────────────────────────────────────────
+
+/// Mark the entries of packages in `repo_only` (not installed) as such.
+pub fn markNotInstalled(entries: []OutdatedEntry, repo_only: []const pacman_mod.InstalledPackage) void {
+    for (entries) |*entry| {
+        for (repo_only) |pkg| {
+            if (std.mem.eql(u8, entry.name, pkg.name)) entry.installed = false;
+        }
+    }
+}
 
 /// The packages in `installed` whose name is in `names`, in `installed`
 /// order. Names that match nothing are ignored. Caller frees the slice;
@@ -491,4 +508,14 @@ test "mergeDevelVersion skips a VCS package that is up to date" {
     try mergeDevelVersion(testing.allocator, &entries, &flagged, .{ .name = "z-git", .version = "r6-1" }, "r5-1", .{});
 
     try testing.expectEqual(@as(usize, 0), entries.items.len);
+}
+
+test "markNotInstalled flags only the packages from the local repository" {
+    var entries = [_]OutdatedEntry{
+        .{ .name = "installed", .installed_version = "1-1", .aur_version = "2-1" },
+        .{ .name = "repo-only", .installed_version = "1-1", .aur_version = "2-1" },
+    };
+    markNotInstalled(&entries, &.{.{ .name = "repo-only", .version = "1-1" }});
+    try testing.expect(entries[0].installed);
+    try testing.expect(!entries[1].installed);
 }

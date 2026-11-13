@@ -303,27 +303,19 @@ pub fn formatOutdated(entries: []const OutdatedEntry, c: color.Style, quiet: boo
     for (entries) |entry| {
         if (quiet) {
             stdout.print("{s}\n", .{entry.name});
-        } else if (entry.ignored) {
-            stdout.print("{s} {s}{s}{s} -> {s}{s}{s} [ignored]\n", .{
-                entry.name,
-                c.red,
-                entry.installed_version,
-                c.reset,
-                c.green,
-                entry.aur_version,
-                c.reset,
-            });
-        } else {
-            stdout.print("{s} {s}{s}{s} -> {s}{s}{s}\n", .{
-                entry.name,
-                c.red,
-                entry.installed_version,
-                c.reset,
-                c.green,
-                entry.aur_version,
-                c.reset,
-            });
+            continue;
         }
+        stdout.print("{s} {s}{s}{s} -> {s}{s}{s}{s}{s}\n", .{
+            entry.name,
+            c.red,
+            entry.installed_version,
+            c.reset,
+            c.green,
+            entry.aur_version,
+            c.reset,
+            if (entry.installed) "" else " [not installed]",
+            if (entry.ignored) " [ignored]" else "",
+        });
     }
 }
 

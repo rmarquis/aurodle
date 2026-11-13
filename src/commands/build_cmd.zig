@@ -192,7 +192,7 @@ pub fn sync(self: *BuildContext, targets: []const []const u8) !ExitCode {
     var ignore_buf: [256][]const u8 = undefined;
     const filtered = types.filterIgnored(self.stdout_color, self.stderr_color, self.err_writer, self.flags, targets, &ignore_buf);
     if (filtered.len == 0) return .success;
-    return runBuildPipeline(self, filtered, .sync);
+    return runBuildPipeline(self, filtered, .sync, &.{});
 }
 
 /// Build packages and add to repository without installing.
@@ -200,14 +200,16 @@ pub fn build(self: *BuildContext, targets: []const []const u8) !ExitCode {
     var ignore_buf: [256][]const u8 = undefined;
     const filtered = types.filterIgnored(self.stdout_color, self.stderr_color, self.err_writer, self.flags, targets, &ignore_buf);
     if (filtered.len == 0) return .success;
-    return runBuildPipeline(self, filtered, .build_only);
+    return runBuildPipeline(self, filtered, .build_only, &.{});
 }
 
 /// Shared pipeline for sync, build, and upgrade. Callers pass pre-filtered
 /// targets (ignore prompting handled upstream).
 /// Phases: resolve -> conflicts -> providers -> display -> clone -> review ->
-///         build -> [install].  The final install phase runs only in .sync mode.
-pub fn runBuildPipeline(self: *BuildContext, filtered: []const []const u8, mode: BuildMode) !ExitCode {
+///         build -> [install].  The final install phase runs only in .sync mode,
+///         and never installs the targets in `not_installed` (upgrade --all
+///         rebuilds those into the local repository only).
+pub fn runBuildPipeline(self: *BuildContext, filtered: []const []const u8, mode: BuildMode, not_installed: []const []const u8) !ExitCode {
     const ec = self.stderr_color;
     const repository = self.repository;
     const c_root = self.cache_root;
@@ -232,7 +234,7 @@ pub fn runBuildPipeline(self: *BuildContext, filtered: []const []const u8, mode:
     defer self.allocator.free(removals);
 
     if (plan.build_order.len == 0) {
-        return handleEmptyBuildOrder(self, plan, mode);
+        return handleEmptyBuildOrder(self, plan, mode, not_installed);
     }
 
     // Phase 1.6: Provider selection for transitive repo deps
@@ -354,6 +356,7 @@ pub fn runBuildPipeline(self: *BuildContext, filtered: []const []const u8, mode:
         defer aur_targets.deinit(self.allocator);
         for (plan.build_order) |entry| {
             for (entry.target_names) |tname| {
+                if (containsName(not_installed, tname)) continue;
                 try aur_targets.append(self.allocator, tname);
             }
         }
@@ -361,11 +364,15 @@ pub fn runBuildPipeline(self: *BuildContext, filtered: []const []const u8, mode:
         install_phase.purgePacmanCache(self, build_result.built_pkg_basenames);
 
         if (build_result.failed.len == 0) {
-            if (!try install_phase.installAllTargets(self, aur_targets.items, plan.repo_targets)) {
-                return .general_error;
+            if (aur_targets.items.len > 0 or plan.repo_targets.len > 0) {
+                if (!try install_phase.installAllTargets(self, aur_targets.items, plan.repo_targets)) {
+                    return .general_error;
+                }
             }
         } else {
-            const installable = try install_phase.filterInstallable(self.allocator, plan.build_order, build_result.failed);
+            const all_installable = try install_phase.filterInstallable(self.allocator, plan.build_order, build_result.failed);
+            defer self.allocator.free(all_installable);
+            const installable = try withoutNames(self.allocator, all_installable, not_installed);
             defer self.allocator.free(installable);
             if (installable.len > 0 or plan.repo_targets.len > 0) {
                 // Already returning build_failed; a failed install is
@@ -383,7 +390,7 @@ pub fn runBuildPipeline(self: *BuildContext, filtered: []const []const u8, mode:
     return .success;
 }
 
-fn handleEmptyBuildOrder(self: *BuildContext, plan: solver_mod.BuildPlan, mode: BuildMode) !ExitCode {
+fn handleEmptyBuildOrder(self: *BuildContext, plan: solver_mod.BuildPlan, mode: BuildMode, not_installed: []const []const u8) !ExitCode {
     if (mode == .build_only) {
         getStdout().writeAll(" nothing to do -- all targets are up to date\n");
         return .success;
@@ -392,7 +399,7 @@ fn handleEmptyBuildOrder(self: *BuildContext, plan: solver_mod.BuildPlan, mode: 
     var aurpkgs_targets: std.ArrayListUnmanaged([]const u8) = .empty;
     defer aurpkgs_targets.deinit(self.allocator);
     for (plan.all_deps) |dep| {
-        if (!dep.is_target) continue;
+        if (!dep.is_target or containsName(not_installed, dep.name)) continue;
         if (dep.source == .repo_aur) {
             try aurpkgs_targets.append(self.allocator, dep.name);
         } else if (dep.source == .satisfied_aur and !self.flags.needed) {
@@ -442,6 +449,9 @@ pub fn upgrade(self: *BuildContext, targets: []const []const u8) !ExitCode {
     var to_upgrade: std.ArrayListUnmanaged([]const u8) = .empty;
     defer to_upgrade.deinit(self.allocator);
     try to_upgrade.ensureUnusedCapacity(self.allocator, result.entries.len);
+    // --all: packages only in the local repository are rebuilt, not installed.
+    var not_installed: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer not_installed.deinit(self.allocator);
     for (result.entries) |entry| {
         if (entry.ignored) {
             self.err_writer.print(
@@ -451,6 +461,7 @@ pub fn upgrade(self: *BuildContext, targets: []const []const u8) !ExitCode {
             continue;
         }
         to_upgrade.appendAssumeCapacity(entry.name);
+        if (!entry.installed) try not_installed.append(self.allocator, entry.name);
     }
 
     if (to_upgrade.items.len == 0) {
@@ -458,7 +469,24 @@ pub fn upgrade(self: *BuildContext, targets: []const []const u8) !ExitCode {
         return .success;
     }
 
-    return runBuildPipeline(self, to_upgrade.items, .sync);
+    return runBuildPipeline(self, to_upgrade.items, .sync, not_installed.items);
+}
+
+fn containsName(names: []const []const u8, name: []const u8) bool {
+    for (names) |n| {
+        if (std.mem.eql(u8, n, name)) return true;
+    }
+    return false;
+}
+
+/// `names` without those in `exclude`, in order. Caller frees the slice.
+fn withoutNames(allocator: std.mem.Allocator, names: []const []const u8, exclude: []const []const u8) ![]const []const u8 {
+    var kept: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer kept.deinit(allocator);
+    for (names) |name| {
+        if (!containsName(exclude, name)) try kept.append(allocator, name);
+    }
+    return kept.toOwnedSlice(allocator);
 }
 
 // ── Clean Command ────────────────────────────────────────────────────

@@ -75,6 +75,14 @@ for cmd in resolve buildorder
 end
 complete -c aurodle -n "__aurodle_using_subcommand buildorder" -s q -l quiet -d 'Print only the packages to build'
 
+# Outdated/upgrade options
+for cmd in outdated '-Qu'
+    complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l all -d 'Also check uninstalled local repository packages'
+end
+for cmd in upgrade '-Su'
+    complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l all -d 'Also rebuild uninstalled local repository packages'
+end
+
 # Clone options
 for cmd in clone
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l recurse -d 'Recursively clone AUR dependencies'

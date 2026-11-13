@@ -53,6 +53,16 @@ test "given AUR packages when outdated identifies them via foreign package list"
     //       Official repo packages are never queried against AUR
 }
 
+test "given local repo packages not installed when outdated then they are not checked" {
+    // Given: "shared-lib" is in the local AUR repository (e.g. shared with
+    //        other machines) but not installed, and the AUR has a newer version
+    // When: `aurodle outdated` is executed
+    // Then: "shared-lib" is not listed
+    // When: `aurodle outdated --all` is executed
+    // Then: "shared-lib" is listed with its repository version, marked
+    //       "[not installed]"; debug packages (pkgbase-debug) are skipped
+}
+
 // ============================================================================
 // FR-12: Outdated — --devel Flag — Should Have
 // ============================================================================
@@ -176,4 +186,12 @@ test "given VCS package already in upgrade list when upgrade --devel then not du
     // When: `aurodle upgrade --devel` is executed
     // Then: "foo-git" appears exactly once in the upgrade list
     //       The VCS check is skipped since already flagged by AUR comparison
+}
+
+test "given local repo packages not installed when upgrade --all then rebuilds without installing" {
+    // Given: "shared-lib" (in the local repository, not installed) and
+    //        "tool" (installed) both have newer AUR versions
+    // When: `aurodle upgrade --all` is executed
+    // Then: Both are rebuilt into the local repository
+    //       Only "tool" is installed; "shared-lib" stays uninstalled
 }

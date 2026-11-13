@@ -31,8 +31,9 @@ _aurodle_sort_fields() {
     _describe 'sort field' fields
 }
 
+# Extra option specs given as arguments are added to the build options.
 _aurodle_build_options() {
-    _arguments -s \
+    _arguments -s "$@" \
         '--noconfirm[Skip confirmation prompts]' \
         '--noshow[Skip build file review]' \
         '--needed[Skip up-to-date packages]' \
@@ -128,10 +129,11 @@ _aurodle() {
         outdated|-Qu)
             _arguments -s \
                 '--devel[Check VCS packages for updates]' \
+                '--all[Also check uninstalled local repository packages]' \
                 '(-q --quiet)'--quiet'[Reduce output verbosity]'
             ;;
         upgrade|-Su)
-            _aurodle_build_options
+            _aurodle_build_options '--all[Also rebuild uninstalled local repository packages]'
             ;;
         clean|-Sc|-Scc)
             _arguments -s \

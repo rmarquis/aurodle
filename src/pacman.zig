@@ -39,6 +39,16 @@ pub fn depString(allocator: Allocator, dep: alpm.Dependency) ![]const u8 {
     return std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ dep.name, op, dep.version });
 }
 
+/// True for the debug package makepkg splits off a pkgbase: named after
+/// the pkgbase with a "-debug" suffix.
+pub fn isDebugPackage(name: []const u8, pkgbase: ?[]const u8) bool {
+    const base = pkgbase orelse return false;
+    const suffix = "-debug";
+    return name.len == base.len + suffix.len and
+        std.mem.startsWith(u8, name, base) and
+        std.mem.endsWith(u8, name, suffix);
+}
+
 // ── Pacman Struct ────────────────────────────────────────────────────────
 
 /// High-level domain queries against the local pacman database.
@@ -486,6 +496,26 @@ pub const Pacman = struct {
         }
 
         return try names.toOwnedSlice(self.allocator);
+    }
+
+    /// Packages in the local AUR repository that are not installed, with
+    /// their repository version. Debug packages (pkgbase + "-debug") are
+    /// left out: they are not on the AUR. Empty without a local repository.
+    pub fn uninstalledAurRepoPackages(self: Pacman) ![]InstalledPackage {
+        const aurdb = self.aurpkgs_db orelse return &.{};
+
+        var pkgs: std.ArrayList(InstalledPackage) = .empty;
+        errdefer pkgs.deinit(self.allocator);
+
+        var it = aurdb.getPkgcache();
+        while (it.next()) |pkg| {
+            const name = pkg.getName();
+            if (self.isInstalled(name)) continue;
+            if (isDebugPackage(name, pkg.getBase())) continue;
+            try pkgs.append(self.allocator, .{ .name = name, .version = pkg.getVersion() });
+        }
+
+        return try pkgs.toOwnedSlice(self.allocator);
     }
 
     // ── Foreign Package Detection ────────────────────────────────────────

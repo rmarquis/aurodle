@@ -74,6 +74,29 @@ test "aurRepoDepends is empty for packages outside the local AUR repository" {
     try testing.expectEqual(@as(usize, 0), (try pm.aurRepoDepends("zzz-not-installed")).len);
 }
 
+test "uninstalledAurRepoPackages lists neither installed nor debug packages" {
+    if (!pacman_conf.isArchLinux()) return error.SkipZigTest;
+
+    var pm = try Pacman.init(testing.allocator, repo_conf.DEFAULT_REPO_NAME);
+    defer pm.deinit();
+
+    const pkgs = try pm.uninstalledAurRepoPackages();
+    defer testing.allocator.free(pkgs);
+    for (pkgs) |pkg| {
+        try testing.expect(!pm.isInstalled(pkg.name));
+        try testing.expect(pkg.version.len > 0);
+    }
+}
+
+test "isDebugPackage matches the pkgbase plus -debug only" {
+    try testing.expect(pacman.isDebugPackage("foo-debug", "foo"));
+    try testing.expect(!pacman.isDebugPackage("foo", "foo"));
+    // A package whose own pkgbase ends in -debug is a regular package.
+    try testing.expect(!pacman.isDebugPackage("gdb-debug", "gdb-debug"));
+    try testing.expect(!pacman.isDebugPackage("bar-debug", "foo"));
+    try testing.expect(!pacman.isDebugPackage("foo-debug", null));
+}
+
 test "depString renders the name, plus the constraint when there is one" {
     const dep = alpm.Dependency{ .name = "foo", .version = "", .desc = null, .name_hash = 0, .mod = .any };
     try testing.expectEqualStrings("foo", try pacman.depString(testing.allocator, dep));
