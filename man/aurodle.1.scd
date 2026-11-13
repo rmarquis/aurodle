@@ -34,9 +34,9 @@ use.
 	Upgrade outdated AUR packages. Without arguments, upgrades all
 	installed foreign packages, including those installed from the local
 	AUR repository, that have a newer version in the AUR. If _targets_ are
-	given, only those packages are upgraded. With *--all*, packages in the
-	local AUR repository that are not installed are also rebuilt into it,
-	but not installed.
+	given, only those packages are upgraded. With *--all*, outdated
+	packages in the local AUR repository that are not installed are also
+	rebuilt into it, but not installed.
 
 ## Query commands
 
@@ -76,8 +76,7 @@ use.
 	includes the packages *outdated* and *upgrade* check with *--all*.
 
 *clean --all*, *-Scc*
-	Remove all built packages and sources from the local repository and
-	cache.
+	Remove all built packages, their database entries, and all clones.
 
 ## Utility commands
 
@@ -176,11 +175,6 @@ use.
 *--asexplicit*
 	Mark installed packages as explicitly installed.
 
-*--devel*
-	Also consider VCS packages (names ending in *-git*, *-svn*, *-hg*,
-	*-bzr*) when checking for upgrades. Each package's upstream source is
-	fetched to determine the current version.
-
 *--ignore* <pkg>[,<pkg>...]
 	Skip _pkg_ during build and upgrade operations. Accepts a
 	comma-separated list or multiple *--ignore* flags. Packages listed in
@@ -201,16 +195,22 @@ use.
 ## Clean options
 
 *--all*
-	Remove all built packages and all sources, not just stale ones.
+	Remove all built packages, their database entries, and all clones.
 	Equivalent to *-Scc*.
 
 ## Outdated and upgrade options
 
+*--devel*
+	Also consider VCS packages (names ending in *-git*, *-svn*, *-hg*,
+	*-bzr*) when checking for upgrades. Each package's upstream source is
+	fetched to determine the current version.
+
 *--all*
 	Also check the packages in the local AUR repository that are not
-	installed. *upgrade* rebuilds the outdated ones into the repository
-	without installing them. Debug packages are skipped. *clean* removes
-	these packages.
+	installed, including as _targets_. *upgrade* rebuilds the outdated ones
+	into the repository without installing them. Debug packages are
+	skipped. With *--devel*, their VCS packages are checked too. *clean*
+	removes these packages.
 
 ## Search options
 
