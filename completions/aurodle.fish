@@ -73,6 +73,7 @@ end
 for cmd in resolve buildorder
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l chroot -d 'Resolve as for a clean chroot build'
 end
+complete -c aurodle -n "__aurodle_using_subcommand buildorder" -s q -l quiet -d 'Print only the packages to build'
 
 # Clone options
 for cmd in clone

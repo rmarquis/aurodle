@@ -82,8 +82,11 @@ _aurodle() {
         clean)
             COMPREPLY=($(compgen -W "$clean_opts" -- "$cur"))
             ;;
-        resolve|buildorder)
+        resolve)
             COMPREPLY=($(compgen -W "--chroot" -- "$cur"))
+            ;;
+        buildorder)
+            COMPREPLY=($(compgen -W "--chroot -q --quiet" -- "$cur"))
             ;;
         *)
             # info, show: no extra options

@@ -202,6 +202,8 @@ test "given impossible topological sort when cycle exists then fails with error"
 test "given --quiet flag when displaying buildorder then shows only AUR packages" {
     // Given: Build order includes AUR, repo, and satisfied dependencies
     // When: `aurodle buildorder --quiet pkg` is executed
-    // Then: Output shows only AUR packages that need building
-    //       Repo and satisfied dependencies are hidden
+    // Then: Output shows only the lines of packages that get built
+    //       (AUR, and TARGETAUR for targets that are built), in the
+    //       same format and order as without --quiet
+    //       Repo, local-repo, satisfied and up-to-date target lines are hidden
 }

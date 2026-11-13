@@ -114,9 +114,15 @@ _aurodle() {
         show)
             _arguments '*:package:'
             ;;
-        resolve|buildorder)
+        resolve)
             _arguments -s \
                 '--chroot[Resolve as for a clean chroot build]' \
+                '*:package:'
+            ;;
+        buildorder)
+            _arguments -s \
+                '--chroot[Resolve as for a clean chroot build]' \
+                '(-q --quiet)'{-q,--quiet}'[Print only the packages to build]' \
                 '*:package:'
             ;;
         outdated|-Qu)

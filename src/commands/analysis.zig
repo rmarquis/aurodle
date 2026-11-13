@@ -68,6 +68,9 @@ pub fn buildorder(self: *BuildContext, targets: []const []const u8) !ExitCode {
     // all_deps is already in build order (dependencies first).
     // Show all dependencies with classification prefixes (FR-7)
     for (plan.all_deps) |dep| {
+        // --quiet: only the packages that get built, so TARGETAUR there
+        // always means the target is built.
+        if (self.flags.quiet and dep.source != .aur) continue;
         const prefix: []const u8 = if (dep.is_target) switch (dep.source) {
             .aur, .satisfied_aur, .repo_aur => "TARGETAUR",
             .repos, .satisfied_repos => "TARGETREPO",
@@ -96,3 +99,4 @@ pub fn buildorder(self: *BuildContext, targets: []const []const u8) !ExitCode {
     }
     return .success;
 }
+
