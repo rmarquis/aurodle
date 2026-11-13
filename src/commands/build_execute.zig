@@ -202,7 +202,7 @@ fn runVcsBuild(
     }
     if (!prepared and allPackagesBuilt(pkglist.*)) {
         skipped.* = true;
-        stdout.print("{s}::{s} {s} {s} already built, skipping\n", .{ sc.yellow, sc.reset, entry.name, ver });
+        stdout.print("{s}::{s} {s} {s} already built, skipping\n", .{ sc.blue, sc.reset, entry.name, ver });
         return 0;
     }
 
@@ -319,7 +319,7 @@ pub fn buildLoop(
 
     for (plan.build_order, 0..) |entry, i| {
         if (hasFailedDep(entry, &failed_bases)) {
-            self.err_writer.print("{s}::{s} skipping {s} -- a dependency failed to build\n", .{ ec.yellow, ec.reset, entry.name });
+            self.err_writer.print("{s}warning:{s} skipping {s} -- a dependency failed to build\n", .{ ec.yellow, ec.reset, entry.name });
             try failed_bases.put(self.allocator, entry.pkgbase, {});
             try failed.append(self.allocator, .{ .pkgbase = entry.pkgbase, .exit_code = 0, .skipped = true });
             continue;
@@ -376,7 +376,7 @@ pub fn buildLoop(
         const build_start = std.Io.Timestamp.now(self.io, .real).nanoseconds - std.time.ns_per_s;
 
         if (already_built) {
-            types.getStdout().print("{s}::{s} {s} {s} already built, skipping\n", .{ sc.yellow, sc.reset, entry.name, shown_ver });
+            types.getStdout().print("{s}::{s} {s} {s} already built, skipping\n", .{ sc.blue, sc.reset, entry.name, shown_ver });
         } else {
             const split_vcs = is_vcs and !self.flags.chroot and !self.flags.rebuild;
             if (!split_vcs) {

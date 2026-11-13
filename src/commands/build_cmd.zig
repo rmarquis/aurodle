@@ -225,7 +225,7 @@ pub fn runBuildPipeline(self: *BuildContext, filtered: []const []const u8, mode:
     var removals: []const []const u8 = &.{};
     if (plan.conflicts.len > 0 and !self.flags.noconfirm) {
         removals = try review_phase.resolveConflicts(self.allocator, plan.conflicts, self.stdout_color) orelse {
-            self.err_writer.print("{s}::{s} unresolvable package conflicts detected\n", .{ ec.red, ec.reset });
+            self.err_writer.print("{s}error:{s} unresolvable package conflicts detected\n", .{ ec.red, ec.reset });
             return .general_error;
         };
     }

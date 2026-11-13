@@ -92,14 +92,11 @@ pub fn promptProviderChoice(
         const response = std.mem.trim(u8, buf[0..n], " \t\n\r");
         if (response.len == 0) return 0; // default
 
-        const choice = std.fmt.parseInt(usize, response, 10) catch {
-            std.debug.print(":: Invalid number, try again.", .{});
-            continue;
-        };
+        const choice = std.fmt.parseInt(usize, response, 10) catch 0;
         if (choice >= 1 and choice <= candidates.len) {
             return choice - 1;
         }
-        std.debug.print(":: Invalid number, try again.", .{});
+        std.debug.print("{s}warning:{s} invalid number: {s}", .{ c.yellow, c.reset, response });
     }
 }
 
