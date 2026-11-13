@@ -472,7 +472,7 @@ fn printHelp() void {
         \\  search, -Ss <term>     Search AUR packages
         \\  info,  -Si             Display AUR package information
         \\  outdated, -Qu          List outdated AUR packages
-        \\  clean, -Sc, -Scc       Remove stale or all cache files
+        \\  clean, -Sc, -Scc       Remove uninstalled or all built packages
         \\  clone                  Clone AUR package repositories
         \\  show                   Display package build files
         \\  resolve                Show dependency tree

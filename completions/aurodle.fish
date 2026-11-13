@@ -43,7 +43,7 @@ complete -c aurodle -n __aurodle_no_subcommand -a resolve -d 'Show dependency tr
 complete -c aurodle -n __aurodle_no_subcommand -a buildorder -d 'Show build order'
 complete -c aurodle -n __aurodle_no_subcommand -a outdated -d 'List outdated AUR packages'
 complete -c aurodle -n __aurodle_no_subcommand -a upgrade -d 'Upgrade outdated AUR packages'
-complete -c aurodle -n __aurodle_no_subcommand -a clean -d 'Remove stale cache files'
+complete -c aurodle -n __aurodle_no_subcommand -a clean -d 'Remove uninstalled built packages'
 complete -c aurodle -n __aurodle_no_subcommand -a status -d 'Check online service status'
 
 # Short aliases
@@ -53,8 +53,8 @@ complete -c aurodle -n __aurodle_no_subcommand -a '-Si' -d 'Display AUR package 
 complete -c aurodle -n __aurodle_no_subcommand -a '-Ss' -d 'Search AUR packages'
 complete -c aurodle -n __aurodle_no_subcommand -a '-Qu' -d 'List outdated AUR packages'
 complete -c aurodle -n __aurodle_no_subcommand -a '-Su' -d 'Upgrade outdated AUR packages'
-complete -c aurodle -n __aurodle_no_subcommand -a '-Sc' -d 'Remove stale cache files'
-complete -c aurodle -n __aurodle_no_subcommand -a '-Scc' -d 'Remove all cache files'
+complete -c aurodle -n __aurodle_no_subcommand -a '-Sc' -d 'Remove uninstalled built packages'
+complete -c aurodle -n __aurodle_no_subcommand -a '-Scc' -d 'Remove all built packages and clones'
 
 # Build options (sync, build, upgrade)
 for cmd in sync '-S' build '-Sw' upgrade '-Su'
@@ -92,7 +92,7 @@ end
 
 # Clean options
 for cmd in clean '-Sc' '-Scc'
-    complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l all -d 'Remove all built packages'
+    complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l all -d 'Remove all built packages and clones'
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l noconfirm -d 'Skip confirmation prompt'
 end
 

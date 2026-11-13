@@ -57,7 +57,7 @@ _aurodle() {
         'buildorder:Show build order (machine-readable)'
         'outdated:List outdated AUR packages'
         'upgrade:Upgrade outdated AUR packages'
-        'clean:Remove stale or all cache files'
+        'clean:Remove uninstalled or all built packages'
         'status:Check online service status'
     )
 
@@ -68,8 +68,8 @@ _aurodle() {
         '-Ss:Search AUR packages'
         '-Qu:List outdated AUR packages'
         '-Su:Upgrade outdated AUR packages'
-        '-Sc:Remove stale cache files'
-        '-Scc:Remove all cache files'
+        '-Sc:Remove uninstalled built packages'
+        '-Scc:Remove all built packages and clones'
     )
 
     local -a global_options=(
@@ -138,7 +138,7 @@ _aurodle() {
             ;;
         clean|-Sc|-Scc)
             _arguments -s \
-                '--all[Remove all built packages]' \
+                '--all[Remove all built packages and clones]' \
                 '--noconfirm[Skip confirmation prompt]'
             ;;
         status)
