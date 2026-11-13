@@ -31,10 +31,10 @@ use.
 	Does not invoke pacman to install them.
 
 *upgrade*, *-Su* [target...]
-	Upgrade outdated AUR packages. Without arguments, upgrades all foreign
-	packages and packages present in the local AUR repository that have a
-	newer version in the AUR. If _targets_ are given, only those packages
-	are upgraded.
+	Upgrade outdated AUR packages. Without arguments, upgrades all
+	installed foreign packages, including those installed from the local
+	AUR repository, that have a newer version in the AUR. If _targets_ are
+	given, only those packages are upgraded.
 
 ## Query commands
 
@@ -47,10 +47,15 @@ use.
 	Display detailed information for _target(s)_ from the AUR.
 
 *outdated*, *-Qu* [target...]
-	List foreign packages and packages present in the local AUR repository
-	that have a newer version available in the AUR. Without arguments,
-	checks all such packages. With *--devel*, also checks VCS packages by
-	fetching their upstream source.
+	List installed foreign packages, including those installed from the
+	local AUR repository, that have a newer version available in the AUR.
+	Without arguments, checks all such packages. With *--devel*, also
+	checks VCS packages by fetching their upstream source.
+
+	Packages in the local AUR repository that are not installed are not
+	checked, since the repository may be shared. Instead, *sync*, *build*,
+	*resolve* and *buildorder* warn when a dependency they take from it is
+	older than the AUR.
 
 ## Repository management commands
 
