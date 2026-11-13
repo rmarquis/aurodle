@@ -175,14 +175,18 @@ pub fn SolverImpl(comptime RegistryT: type) type {
 
                     const aur_pkg = try self.fetchAndReclassifyAurPkg(node, actual_name, name, actual_resolution);
 
-                    if (node.meta.source == .repo_aur) {
-                        // Installed from the local repository, so its deps
-                        // there must be available too; an AUR one missing
-                        // from the repository has to be built first.
+                    // Follow deps by how the package is obtained. Built: its
+                    // AUR depends and makedepends. Installed from the local
+                    // repository, including an installed target that is
+                    // reinstalled from it: its depends there, which must be
+                    // available too (an AUR one missing from the repository
+                    // is built first). Already installed: nothing.
+                    const reinstalled = node.meta.source == .satisfied_aur and self.targets.contains(actual_name);
+                    if (node.meta.source == .repo_aur or reinstalled) {
                         const deps = try self.registry.localRepoDepends(actual_name);
                         try self.collectDeps(&next_frontier, visited, node, deps);
-                    } else if (aur_pkg) |pkg| {
-                        try self.collectAllDeps(&next_frontier, visited, node, pkg);
+                    } else if (node.meta.source == .aur) {
+                        if (aur_pkg) |pkg| try self.collectAllDeps(&next_frontier, visited, node, pkg);
                     }
                 }
 

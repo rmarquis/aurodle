@@ -45,6 +45,10 @@ pub const MockRegistry = struct {
     upgrades: std.StringHashMapUnmanaged(MockPackageInfo) = .empty,
     arena: std.heap.ArenaAllocator,
     pacman: *MockInstalledSet = undefined,
+    /// Depends of packages in the local repository, for packages not
+    /// registered with addRepoAurWithDeps (e.g. installed ones). See
+    /// addToLocalRepo.
+    local_repo: std.StringHashMapUnmanaged([]const []const u8) = .empty,
     /// Makes prefetchAur fail, as when the AUR can't be reached.
     aur_unreachable: bool = false,
 
@@ -75,6 +79,7 @@ pub const MockRegistry = struct {
         self.aur_overrides.deinit(testing.allocator);
         self.deferred_providers.deinit(testing.allocator);
         self.upgrades.deinit(testing.allocator);
+        self.local_repo.deinit(testing.allocator);
         self.pacman.deinit();
         self.arena.deinit();
     }
@@ -372,6 +377,12 @@ pub const MockRegistry = struct {
         }) catch unreachable;
     }
 
+    /// Also place an already registered package (e.g. an installed one) in
+    /// the local repository, with these runtime depends there.
+    pub fn addToLocalRepo(self: *MockRegistry, name: []const u8, depends: []const []const u8) void {
+        self.local_repo.put(testing.allocator, name, depends) catch unreachable;
+    }
+
     /// Package in aurpkgs with a different (newer) version available in AUR.
     pub fn addRepoAurWithAurVersion(self: *MockRegistry, name: []const u8, local_version: []const u8, aur_version: []const u8, depends: []const []const u8, makedepends: []const []const u8) void {
         self.packages.put(testing.allocator, name, .{
@@ -614,6 +625,7 @@ pub const MockRegistry = struct {
     }
 
     pub fn localRepoDepends(self: *MockRegistry, name: []const u8) ![]const []const u8 {
+        if (self.local_repo.get(name)) |deps| return deps;
         const info = self.packages.get(name) orelse return &.{};
         return if (info.source == .repo_aur) info.depends else &.{};
     }

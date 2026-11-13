@@ -84,6 +84,8 @@ test "given installed AUR target when syncing without rebuild then reinstalls fr
     // When: `aurodle sync auracle` is executed (no --rebuild)
     // Then: auracle-git is reinstalled via `pacman -S aurpkgs/auracle-git`
     //       Mimics pacman -S behavior for official repos (reinstall even if installed)
+    //       Only its aurpkgs depends are resolved, not its AUR depends or
+    //       makedepends: it is not built. Not in aurpkgs: nothing is resolved
 }
 
 test "given local-repo package when resolving then follows its repository depends" {

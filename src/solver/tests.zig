@@ -701,7 +701,7 @@ test "resolve handles diamond dependency patterns" {
     try testing.expect(indices.get("C").? < indices.get("A").?);
 }
 
-test "resolve discovers deps of installed target via AUR fallback" {
+test "resolve walks the AUR deps of an installed target that is rebuilt" {
     var mock = MockRegistry.initEmpty();
     defer mock.deinitMock();
 
@@ -710,23 +710,55 @@ test "resolve discovers deps of installed target via AUR fallback" {
     mock.addAurPackage("auracle-git", &.{}, &.{});
     mock.addRepoPackage("expac", "10-3");
 
-    var s = TestSolver.init(testing.allocator, &mock, .{});
+    var s = TestSolver.init(testing.allocator, &mock, .{ .rebuild = true });
     defer s.deinit();
 
     const plan = try s.resolve(&.{"pacaur"});
     defer plan.deinit(testing.allocator);
 
-    // Should discover auracle-git (AUR dep) and expac (repo dep)
-    try testing.expect(plan.all_deps.len >= 3); // pacaur + auracle-git + expac
     try testing.expectEqual(@as(usize, 1), plan.repo_deps.len);
     try testing.expectEqualStrings("expac", plan.repo_deps[0]);
+    try testing.expect(buildOrderHas(plan, "auracle-git"));
+    try testing.expect(buildOrderHas(plan, "pacaur"));
+}
 
-    // auracle-git should be in build_order
-    var found_auracle = false;
-    for (plan.build_order) |entry| {
-        if (std.mem.eql(u8, entry.name, "auracle-git")) found_auracle = true;
-    }
-    try testing.expect(found_auracle);
+test "resolve does not walk the AUR deps of an installed target that is not rebuilt" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    mock.addSatisfiedWithAurDeps("tool", "1.0", &.{"expac"}, &.{"aur-make"});
+    mock.addAurPackage("aur-make", &.{}, &.{});
+    mock.addRepoPackage("expac", "10-3");
+
+    var s = TestSolver.init(testing.allocator, &mock, .{});
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"tool"});
+    defer plan.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), plan.build_order.len);
+    try testing.expectEqual(@as(usize, 0), plan.repo_deps.len);
+    try expectAllDepsOrder(plan, &.{"tool"});
+}
+
+test "resolve follows the local-repo deps of an installed target reinstalled from it" {
+    // The local repository may hold a newer build than the one installed
+    // (e.g. built on another machine), with new depends.
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    mock.addSatisfiedWithAurDeps("tool", "1.0", &.{}, &.{"aur-make"});
+    mock.addToLocalRepo("tool", &.{"new-lib"});
+    mock.addAurPackage("aur-make", &.{}, &.{});
+    mock.addAurPackage("new-lib", &.{}, &.{});
+
+    var s = TestSolver.init(testing.allocator, &mock, .{});
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"tool"});
+    defer plan.deinit(testing.allocator);
+
+    try testing.expect(buildOrderHas(plan, "new-lib"));
+    try testing.expect(!buildOrderHas(plan, "aur-make"));
+    try expectAllDepsOrder(plan, &.{ "new-lib", "tool" });
 }
 
 test "resolve handles makedepends in addition to depends" {
@@ -1000,9 +1032,9 @@ test "resolve discovers dependencies of provider-redirected packages" {
     defer mock.deinitMock();
     // pacaur depends on "auracle", which is provided by "auracle-git"
     mock.addAurPackage("pacaur", &.{"auracle"}, &.{});
-    // auracle-git has its own AUR deps (meson) and repo deps (expac)
-    mock.addSatisfiedWithAurDeps("auracle-git", "r427-1", &.{"dep-a"}, &.{"dep-b"});
-    mock.addProvider("auracle", "auracle-git", .satisfied_aur, "r427-1");
+    // auracle-git, to be built, has its own depends and makedepends
+    mock.addAurPackage("auracle-git", &.{"dep-a"}, &.{"dep-b"});
+    mock.addProvider("auracle", "auracle-git", .aur, "r427-1");
     mock.addRepoPackage("dep-a", "1.0");
     mock.addRepoPackage("dep-b", "1.0");
 
@@ -1022,6 +1054,26 @@ test "resolve discovers dependencies of provider-redirected packages" {
     }
     try testing.expect(found_a);
     try testing.expect(found_b);
+}
+
+test "resolve does not walk the deps of an installed provider" {
+    var mock = MockRegistry.initEmpty();
+    defer mock.deinitMock();
+    mock.addAurPackage("pacaur", &.{"auracle"}, &.{});
+    // auracle-git is installed: its makedepends are not needed
+    mock.addSatisfiedWithAurDeps("auracle-git", "r427-1", &.{"dep-a"}, &.{"dep-b"});
+    mock.addProvider("auracle", "auracle-git", .satisfied_aur, "r427-1");
+    mock.addRepoPackage("dep-a", "1.0");
+    mock.addRepoPackage("dep-b", "1.0");
+
+    var s = TestSolver.init(testing.allocator, &mock, .{});
+    defer s.deinit();
+
+    const plan = try s.resolve(&.{"pacaur"});
+    defer plan.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), plan.repo_deps.len);
+    try expectAllDepsOrder(plan, &.{ "auracle-git", "pacaur" });
 }
 
 test "resolve discovers deps of deferred AUR provider (search returns empty deps)" {
