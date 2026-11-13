@@ -45,4 +45,5 @@ test {
     _ = @import("commands/build_context.zig");
     _ = @import("commands/outdated.zig");
     _ = @import("commands/display.zig");
+    _ = @import("commands/analysis.zig");
 }
