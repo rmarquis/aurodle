@@ -72,7 +72,8 @@ use.
 *clean*, *-Sc*
 	Remove built packages and clones of packages no longer installed, old
 	package files the repository database no longer references, and
-	database entries of uninstalled packages whose file is missing.
+	database entries of uninstalled packages whose file is missing. This
+	includes the packages *outdated* and *upgrade* check with *--all*.
 
 *clean --all*, *-Scc*
 	Remove all built packages and sources from the local repository and
@@ -208,7 +209,8 @@ use.
 *--all*
 	Also check the packages in the local AUR repository that are not
 	installed. *upgrade* rebuilds the outdated ones into the repository
-	without installing them. Debug packages are skipped.
+	without installing them. Debug packages are skipped. *clean* removes
+	these packages.
 
 ## Search options
 
