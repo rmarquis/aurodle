@@ -22,15 +22,15 @@ use.
 
 ## Build and install commands
 
-*sync*, *-S* <target>...
+*sync* <target>...
 	Resolve dependencies, clone build files, build, and install _target(s)_.
 	Missing AUR dependencies are built and installed automatically.
 
-*build*, *-Sw* <target>...
+*build* <target>...
 	Like *sync* but stops after adding packages to the local repository.
 	Does not invoke pacman to install them.
 
-*upgrade*, *-Su* [target...]
+*upgrade* [target...]
 	Upgrade outdated AUR packages. Without arguments, upgrades all
 	installed foreign packages, including those installed from the local
 	AUR repository, that have a newer version in the AUR. If _targets_ are
@@ -40,15 +40,15 @@ use.
 
 ## Query commands
 
-*search*, *-Ss* <term>...
+*search* <term>...
 	Search the AUR for packages matching _term_. Multiple terms return the
 	intersection of results. Output shows name, version, votes, and
 	popularity. Packages marked out of date are highlighted.
 
-*info*, *-Si* <target>...
+*info* <target>...
 	Display detailed information for _target(s)_ from the AUR.
 
-*outdated*, *-Qu* [target...]
+*outdated* [target...]
 	List installed foreign packages, including those installed from the
 	local AUR repository, that have a newer version available in the AUR.
 	Without arguments, checks all such packages. With *--devel*, also
@@ -69,13 +69,13 @@ use.
 *show* <target>
 	Display the PKGBUILD and install scripts for _target_.
 
-*clean*, *-Sc*
+*clean*
 	Remove built packages and clones of packages no longer installed, old
 	package files the repository database no longer references, and
 	database entries of uninstalled packages whose file is missing. This
 	includes the packages *outdated* and *upgrade* check with *--all*.
 
-*clean --all*, *-Scc*
+*clean --all*
 	Remove all built packages, their database entries, and all clones.
 
 ## Utility commands
@@ -196,7 +196,6 @@ use.
 
 *--all*
 	Remove all built packages, their database entries, and all clones.
-	Equivalent to *-Scc*.
 
 ## Outdated and upgrade options
 

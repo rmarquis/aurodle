@@ -38,7 +38,7 @@ This document is a living specification: it describes aurodle's current behavior
 **Description**: Display detailed metadata for one or more AUR packages.
 
 **Acceptance Criteria**:
-- `aurodle info <packages...>` (alias `-Si`) fetches and displays package metadata
+- `aurodle info <packages...>` fetches and displays package metadata
 - Shows: name, version, description, URL, licenses, maintainer, submitter
 - Shows: depends, makedepends, checkdepends, optdepends
 - Shows: votes, popularity, last modified date, out-of-date status
@@ -53,7 +53,7 @@ This document is a living specification: it describes aurodle's current behavior
 **Description**: Search AUR packages and display results.
 
 **Acceptance Criteria**:
-- `aurodle search <terms...>` (alias `-Ss`) queries AUR and displays matching packages
+- `aurodle search <terms...>` queries AUR and displays matching packages
 - Multiple terms return the intersection of results: the first term is sent to the AUR, the remaining terms filter the results client-side
 - Default output shows: name, version, votes, popularity, and description; out-of-date packages are highlighted
 - Returns exit code 0 with no output if no results found
@@ -155,7 +155,7 @@ This document is a living specification: it describes aurodle's current behavior
 **Description**: Build packages using makepkg into the local repository.
 
 **Acceptance Criteria**:
-- `aurodle build <packages...>` (alias `-Sw`) runs the sync workflow (FR-10) up to adding packages to the local repository, without installing them
+- `aurodle build <packages...>` runs the sync workflow (FR-10) up to adding packages to the local repository, without installing them
 - Builds each package via `makepkg -s --noconfirm` in its clone directory (pkgbase directory); `makepkg -s` installs missing dependencies (both official repo and AUR deps from local repo) and marks them with `--asdeps`
 - makepkg writes built packages directly into `$PKGDEST`, which is the local repository directory (see FR-14); aurodle then adds them via `repo-add -R`
 - When building multiple packages, builds in topological order (see FR-7). After each successful build, the local repository database is copied into pacman's sync directory so subsequent `makepkg -s` calls can resolve newly built AUR dependencies without a `pacman -Sy` (which would cause a partial system update)
@@ -191,7 +191,7 @@ This document is a living specification: it describes aurodle's current behavior
 **Description**: Complete workflow combining resolution, clone, review, build, and install operations.
 
 **Acceptance Criteria**:
-- `aurodle sync <packages...>` (alias `-S`) executes: resolve -> conflicts -> provider selection -> display plan and confirm -> clone/fetch -> review -> build -> install
+- `aurodle sync <packages...>` executes: resolve -> conflicts -> provider selection -> display plan and confirm -> clone/fetch -> review -> build -> install
 - Resolves full dependency tree and displays the build plan before proceeding
 - Detected conflicts and replacements are offered for resolution one by one (remove the conflicting package, or continue anyway); declining any of them aborts
 - When a repository dependency has several providers, prompts the user to choose one; choices are reused for later dependencies the same package provides
@@ -232,7 +232,7 @@ This document is a living specification: it describes aurodle's current behavior
 **Description**: Compare installed AUR packages against current AUR versions.
 
 **Acceptance Criteria**:
-- `aurodle outdated [packages...]` (alias `-Qu`) lists installed packages with newer AUR versions available
+- `aurodle outdated [packages...]` lists installed packages with newer AUR versions available
 - Considers foreign packages (not in any official sync database) and packages present in the local repository
 - Compares installed version against AUR version using `alpm_pkg_vercmp()`
 - Displays: package name, installed version, AUR version
@@ -250,7 +250,7 @@ This document is a living specification: it describes aurodle's current behavior
 **Description**: Upgrade outdated AUR packages through the full build workflow.
 
 **Acceptance Criteria**:
-- `aurodle upgrade [packages...]` (alias `-Su`) upgrades outdated AUR packages
+- `aurodle upgrade [packages...]` upgrades outdated AUR packages
 - With no arguments, upgrades all outdated AUR packages (as found by FR-12)
 - With arguments, upgrades only specified packages
 - Runs the outdated check, then the sync workflow (FR-10) on the outdated packages, including the review diff of AUR changes
@@ -285,9 +285,9 @@ This document is a living specification: it describes aurodle's current behavior
 - `-V, --version` displays version information
 - Unknown commands or flags produce clear usage errors (exit code 2)
 - `-q, --quiet` reduces output verbosity
-- Pacman-style aliases for the main commands: `-S` (sync), `-Sw` (build), `-Su` (upgrade), `-Ss` (search), `-Si` (info), `-Qu` (outdated), `-Sc` (clean), `-Scc` (clean --all)
+- Commands are names only: pacman-style operations such as `-S` or `-Ss` are unknown commands
 
-**Priority**: Must Have (help/version), Should Have (quiet, aliases)
+**Priority**: Must Have (help/version), Should Have (quiet)
 
 ---
 
@@ -325,8 +325,8 @@ This document is a living specification: it describes aurodle's current behavior
 **Description**: Remove stale clone directories, built packages, and database entries.
 
 **Acceptance Criteria**:
-- `aurodle clean` (alias `-Sc`) removes built packages and clones of packages no longer installed, old package files the repository database no longer references, and database entries of uninstalled packages whose file is missing
-- `aurodle clean --all` (alias `-Scc`) removes all built packages and clone directories
+- `aurodle clean` removes built packages and clones of packages no longer installed, old package files the repository database no longer references, and database entries of uninstalled packages whose file is missing
+- `aurodle clean --all` removes all built packages and clone directories
 - Displays what will be removed and prompts for confirmation before deleting (the `--all` prompt defaults to no); `--noconfirm` skips the prompt
 
 **Priority**: Should Have
@@ -443,7 +443,7 @@ This document is a living specification: it describes aurodle's current behavior
 - **Topological sort**: Correct ordering, cycle detection, multiple valid orderings
 - **AUR RPC response parsing**: Valid responses, malformed JSON, empty results, error responses
 - **Dependency classification**: Correct REPOS/AUR/REPOAUR/SATISFIED/UNKNOWN categorization
-- **CLI argument parsing**: Valid commands, aliases, invalid flags, missing required arguments, help/version output
+- **CLI argument parsing**: Valid commands, pacman-style operations rejected, invalid flags, missing required arguments, help/version output
 - **Configuration parsing**: makepkg.conf (`PKGDEST`, `PACMAN_AUTH`) and pacman.conf
 
 ### Integration Tests
