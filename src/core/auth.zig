@@ -96,6 +96,12 @@ pub const Auth = struct {
         return utils.runInteractive(self.allocator, argv, null);
     }
 
+    /// Whether the tool caches credentials (sudo, doas), so that checking
+    /// them once spares a prompt later. su asks every time.
+    pub fn cachesCredentials(self: Auth) bool {
+        return self.validationArgv() != null;
+    }
+
     /// Spawn a background thread that refreshes credentials periodically.
     /// No-op if the auth tool doesn't support credential caching (e.g. su).
     pub fn startKeepalive(self: *Auth) void {

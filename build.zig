@@ -84,6 +84,23 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
+    const pacsaur_exe = b.addExecutable(.{
+        .name = "pacsaur",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/pacsaur/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "core", .module = core_mod },
+                .{ .name = "ui", .module = ui_mod },
+                .{ .name = "commands", .module = commands_mod },
+                .{ .name = "build_options", .module = version_mod },
+            },
+        }),
+    });
+
+    b.installArtifact(pacsaur_exe);
+
     const run_step = b.step("run", "Run the app");
 
     const run_cmd = b.addRunArtifact(exe);
@@ -94,7 +111,7 @@ pub fn build(b: *std.Build) void {
     run_cmd.addPassthruArgs();
 
     const test_step = b.step("test", "Run tests");
-    for ([_]*std.Build.Module{ core_mod, ui_mod, commands_mod, exe.root_module }) |m| {
+    for ([_]*std.Build.Module{ core_mod, ui_mod, commands_mod, exe.root_module, pacsaur_exe.root_module }) |m| {
         const t = b.addTest(.{ .root_module = m });
         test_step.dependOn(&b.addRunArtifact(t).step);
     }

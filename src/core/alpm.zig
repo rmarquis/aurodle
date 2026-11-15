@@ -137,6 +137,12 @@ pub const Database = struct {
         return .{ .raw = pkg.? };
     }
 
+    /// Is `name` a package group in this database?
+    pub fn hasGroup(self: Database, name: []const u8) bool {
+        const c_name = CStringBuf.init(name) catch return false;
+        return c.alpm_db_get_group(self.raw, c_name.ptr()) != null;
+    }
+
     /// Iterate over all packages in this database.
     pub fn getPkgcache(self: Database) PackageIterator {
         return .{ .current = c.alpm_db_get_pkgcache(self.raw) };

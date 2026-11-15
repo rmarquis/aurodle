@@ -200,6 +200,14 @@ pub const Pacman = struct {
         return self.findInOfficialDbs(name) != null;
     }
 
+    /// Is this a package group in an official sync database?
+    pub fn isOfficialGroup(self: Pacman, name: []const u8) bool {
+        for (self.official_dbs) |db| {
+            if (db.hasGroup(name)) return true;
+        }
+        return false;
+    }
+
     /// Which sync database provides this package? Returns db name or null.
     pub fn syncDbFor(self: Pacman, name: []const u8) ?[]const u8 {
         for (self.sync_dbs) |db| {
