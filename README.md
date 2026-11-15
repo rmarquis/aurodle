@@ -4,6 +4,11 @@ An AUR helper that builds packages into a local pacman repository.
 
 Packages are built with makepkg, and pacman then installs and upgrades them like any other package.
 
+Two programs share the same code:
+
+- `aurodle` works on AUR packages only, with its own commands (`sync`, `upgrade`, `search`, ...).
+- `pacsaur` takes pacman's command line (`-S`, `-Syu`, `-Ss`, ...) and runs each operation on pacman, on the AUR, or on both in turn.
+
 Named after Urodela, the salamander order, as a nod to Zig's mascot Suzie.
 
 ## Dependencies
@@ -11,6 +16,7 @@ Named after Urodela, the salamander order, as a nod to Zig's mascot Suzie.
 - zig
 - libalpm (pacman)
 - git
+- scdoc (for the man pages)
 
 ## Installation
 
@@ -24,6 +30,8 @@ makepkg -si
 
 ## Usage
 
+### aurodle
+
 ```bash
 aurodle sync <package>        # build and install a package
 aurodle build <package>       # build without installing
@@ -31,13 +39,30 @@ aurodle upgrade               # upgrade outdated AUR packages
 aurodle search <query>        # search the AUR
 aurodle info <package>        # show package details
 aurodle outdated              # list outdated AUR packages
-aurodle clean                 # remove stale packages from the local repo
+aurodle clean                 # remove uninstalled built packages
 aurodle clone <package>       # clone AUR package repositories
 aurodle show <package>        # display package build files
 aurodle resolve <package>     # show dependency tree
 aurodle buildorder <package>  # show build order (machine-readable)
 aurodle status                # show infrastructure status
 ```
+
+### pacsaur
+
+```bash
+pacsaur -S <package>...       # install official and AUR packages
+pacsaur -S aur/<package>      # take a package from the AUR
+pacsaur -Sw <package>...      # download or build without installing
+pacsaur -Syu                  # upgrade the system, then AUR packages
+pacsaur -Ss <query>           # search the sync databases and the AUR
+pacsaur -Si <package>...      # show package details
+pacsaur -Qu                   # list upgradable packages
+pacsaur -Sc                   # clean the package cache and built packages
+pacsaur -Rns <package>        # any other operation goes to pacman
+pacsaur --dry-run -Syu        # show what would run, without running it
+```
+
+Official targets go to pacman, others to the AUR. Run pacsaur as a normal user: pacman steps that need root use `PACMAN_AUTH`. See `pacsaur(1)`.
 
 ## Building
 
@@ -52,6 +77,15 @@ zig build
 ```bash
 zig build --release=safe
 ```
+
+Both build `zig-out/bin/aurodle` and `zig-out/bin/pacsaur`. The man pages are built with scdoc:
+
+```bash
+scdoc < man/aurodle.1.scd > aurodle.1
+scdoc < man/pacsaur.1.scd > pacsaur.1
+```
+
+Shell completions are in `completions/`.
 
 ## Setup
 
@@ -92,6 +126,8 @@ sudo pacman -Syu
 ```
 
 After setup, packages built with `aurodle sync <package>` will be added to the local repository and installed via pacman.
+
+pacsaur needs this setup for AUR packages only; official packages work without it.
 
 ## Environment variables
 
