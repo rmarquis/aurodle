@@ -1,12 +1,12 @@
 const std = @import("std");
-const plan_mod = @import("../plan.zig");
-const pacman_mod = @import("../pacman.zig");
-const devel = @import("../devel.zig");
-const color = @import("../color.zig");
-const types = @import("types.zig");
-const StdWriter = types.StdWriter;
+const plan_mod = @import("core").plan;
+const pacman_mod = @import("core").pacman;
+const devel = @import("core").devel;
+const color = @import("color.zig");
+const output = @import("output.zig");
+const StdWriter = output.StdWriter;
 
-const getStdout = types.getStdout;
+const getStdout = output.getStdout;
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -77,7 +77,7 @@ pub const PlanDisplay = struct {
     pacman: ?*pacman_mod.Pacman,
     /// Versions computed by `--devel`, by package name.
     devel_versions: *const std.StringHashMapUnmanaged([]const u8),
-    err_writer: types.ErrWriter,
+    err_writer: output.ErrWriter,
     stdout_color: color.Style,
     stderr_color: color.Style,
 };
@@ -220,7 +220,7 @@ pub fn displayPlan(plan: plan_mod.BuildPlan, opts: PlanDisplay) void {
 
 /// Display an install-only package list (all packages from sync dbs),
 /// respecting VerbosePkgLists from pacman.conf.
-pub fn displayInstallList(names: []const []const u8, pm: ?*pacman_mod.Pacman, err_writer: types.ErrWriter, c: color.Style, ec: color.Style) void {
+pub fn displayInstallList(names: []const []const u8, pm: ?*pacman_mod.Pacman, err_writer: output.ErrWriter, c: color.Style, ec: color.Style) void {
     if (names.len == 0) return;
     const stdout = getStdout();
     const verbose = if (pm) |p| p.verbose_pkg_lists else false;

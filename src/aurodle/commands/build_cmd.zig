@@ -1,18 +1,19 @@
 const std = @import("std");
+const output = @import("ui").output;
 const Allocator = std.mem.Allocator;
-const aur = @import("../aur.zig");
-const git = @import("../git.zig");
-const devel = @import("../devel.zig");
-const solver_mod = @import("../solver.zig");
-const repo_mod = @import("../repo.zig");
-const pacman_mod = @import("../pacman.zig");
-const utils = @import("../utils.zig");
-const term = @import("../term.zig");
-const color = @import("../color.zig");
+const aur = @import("core").aur;
+const git = @import("core").git;
+const devel = @import("core").devel;
+const solver_mod = @import("core").solver;
+const repo_mod = @import("core").repo;
+const pacman_mod = @import("core").pacman;
+const utils = @import("core").utils;
+const term = @import("ui").term;
+const color = @import("ui").color;
 const types = @import("types.zig");
 const query_ctx = @import("query_context.zig");
 const build_ctx = @import("build_context.zig");
-const display_mod = @import("display.zig");
+const display_mod = @import("ui").display;
 const outdated_mod = @import("outdated.zig");
 
 const build_phase = @import("build_execute.zig");
@@ -24,7 +25,7 @@ const BuildContext = build_ctx.BuildContext;
 const ExitCode = types.ExitCode;
 const BuildResult = types.BuildResult;
 const FailedBuild = types.FailedBuild;
-const getStdout = types.getStdout;
+const getStdout = output.getStdout;
 const printError = types.printError;
 const handleResolveError = types.handleResolveError;
 const displayPlan = display_mod.displayPlan;
@@ -564,7 +565,7 @@ pub fn clean(self: *BuildContext) !ExitCode {
     return .success;
 }
 
-fn printBuildSummary(result: BuildResult, err_writer: types.ErrWriter, ec: color.Style) void {
+fn printBuildSummary(result: BuildResult, err_writer: output.ErrWriter, ec: color.Style) void {
     err_writer.print("\n{s}::{s} Build summary: {d} succeeded, {d} failed\n", .{
         ec.blue, ec.reset, result.succeeded.len, result.failed.len,
     });

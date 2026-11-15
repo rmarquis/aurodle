@@ -1,9 +1,9 @@
 const std = @import("std");
-const registry_mod = @import("../registry.zig");
-const devel = @import("../devel.zig");
-const pacman_mod = @import("../pacman.zig");
-const git = @import("../git.zig");
-const utils = @import("../utils.zig");
+const registry_mod = @import("core").registry;
+const devel = @import("core").devel;
+const pacman_mod = @import("core").pacman;
+const git = @import("core").git;
+const utils = @import("core").utils;
 const types = @import("types.zig");
 const build_ctx = @import("build_context.zig");
 

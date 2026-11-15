@@ -1,15 +1,16 @@
 const std = @import("std");
-const registry_mod = @import("../registry.zig");
-const solver_mod = @import("../solver.zig");
-const Source = @import("../source.zig").Source;
+const output = @import("ui").output;
+const registry_mod = @import("core").registry;
+const solver_mod = @import("core").solver;
+const Source = @import("core").source.Source;
 const types = @import("types.zig");
 const build_ctx = @import("build_context.zig");
-const display_mod = @import("display.zig");
-const color = @import("../color.zig");
+const display_mod = @import("ui").display;
+const color = @import("ui").color;
 
 const BuildContext = build_ctx.BuildContext;
 const ExitCode = types.ExitCode;
-const getStdout = types.getStdout;
+const getStdout = output.getStdout;
 const handleResolveError = types.handleResolveError;
 const displayPlan = display_mod.displayPlan;
 

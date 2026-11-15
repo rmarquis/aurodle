@@ -1,17 +1,18 @@
 const std = @import("std");
-const aur = @import("aur.zig");
+const output = @import("ui").output;
+const aur = @import("core").aur;
 const commands = @import("commands.zig");
 const cmd_types = @import("commands/types.zig");
 const query_context = @import("commands/query_context.zig");
 const build_context = @import("commands/build_context.zig");
-const git = @import("git.zig");
-const pacman_mod = @import("pacman.zig");
-const registry_mod = @import("registry.zig");
-const repo_mod = @import("repo.zig");
-const auth_mod = @import("auth.zig");
-const utils = @import("utils.zig");
-const term = @import("term.zig");
-const color = @import("color.zig");
+const git = @import("core").git;
+const pacman_mod = @import("core").pacman;
+const registry_mod = @import("core").registry;
+const repo_mod = @import("core").repo;
+const auth_mod = @import("core").auth;
+const utils = @import("core").utils;
+const term = @import("ui").term;
+const color = @import("ui").color;
 const Allocator = std.mem.Allocator;
 
 const ExitCode = cmd_types.ExitCode;
@@ -378,7 +379,7 @@ fn runWithFullStack(
     // The chooser and the reporter borrow the style, so it lives as long
     // as reg and repository.
     const stderr_style = color.Style.detect(std.posix.STDERR_FILENO, pm.color);
-    repository.reporter = cmd_types.stderrReporter(&stderr_style);
+    repository.reporter = output.stderrReporter(&stderr_style);
 
     // Enable interactive provider selection unless --noconfirm.
     if (!parsed.flags.noconfirm) {
@@ -460,7 +461,7 @@ fn mergeIgnore(allocator: Allocator, cli: []const []const u8, conf: []const []co
 }
 
 fn printHelp() void {
-    cmd_types.getStdout().writeAll(
+    output.getStdout().writeAll(
         \\aurodle: an AUR helper that builds packages into a local pacman repository
         \\
         \\Usage: aurodle <command> [options] [targets...]
@@ -516,7 +517,7 @@ fn printHelp() void {
 }
 
 fn printVersion() void {
-    cmd_types.getStdout().writeAll("aurodle " ++ version_string ++ "\n");
+    output.getStdout().writeAll("aurodle " ++ version_string ++ "\n");
 }
 
 fn printUsageError(message: []const u8) void {
@@ -822,4 +823,12 @@ test "mergeIgnore appends pacman.conf names not given on the command line" {
     try std.testing.expectEqualStrings("a", merged[0]);
     try std.testing.expectEqualStrings("b", merged[1]);
     try std.testing.expectEqualStrings("c", merged[2]);
+}
+
+test {
+    _ = commands;
+    _ = @import("commands/types.zig");
+    _ = @import("commands/build_context.zig");
+    _ = @import("commands/outdated.zig");
+    _ = @import("commands/analysis.zig");
 }

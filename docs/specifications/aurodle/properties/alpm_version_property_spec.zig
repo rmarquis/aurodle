@@ -12,7 +12,7 @@
 const std = @import("std");
 const testing = std.testing;
 
-const alpm = @import("aurodle").alpm;
+const alpm = @import("core").alpm;
 
 // ============================================================================
 // Generators

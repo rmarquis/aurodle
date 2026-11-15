@@ -1,8 +1,8 @@
 const std = @import("std");
+const output = @import("ui").output;
 const Allocator = std.mem.Allocator;
-const color_mod = @import("../color.zig");
-const utils = @import("../utils.zig");
-const cmd_types = @import("../commands/types.zig");
+const color_mod = @import("ui").color;
+const utils = @import("core").utils;
 
 const MONITOR_URL = "https://status.archlinux.org/api/getMonitorList/vmM5ruWEAB";
 const MAX_RESPONSE_SIZE = 512 * 1024;
@@ -106,7 +106,7 @@ fn monitorColor(sty: color_mod.Style, monitor: Monitor) []const u8 {
 }
 
 fn printStatus(data: MonitorList, sty: color_mod.Style) !u8 {
-    const w = cmd_types.getStdout();
+    const w = output.getStdout();
 
     var aur: ?Monitor = null;
     var others_buf: [16]Monitor = undefined;

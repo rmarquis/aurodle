@@ -1,14 +1,15 @@
 const std = @import("std");
+const output = @import("ui").output;
 const Allocator = std.mem.Allocator;
-const aur = @import("../aur.zig");
-const registry_mod = @import("../registry.zig");
-const devel = @import("../devel.zig");
-const pacman_mod = @import("../pacman.zig");
+const aur = @import("core").aur;
+const registry_mod = @import("core").registry;
+const devel = @import("core").devel;
+const pacman_mod = @import("core").pacman;
 const types = @import("types.zig");
 const query_ctx = @import("query_context.zig");
 const build_ctx = @import("build_context.zig");
 const outdated_mod = @import("outdated.zig");
-const color = @import("../color.zig");
+const color = @import("ui").color;
 
 const QueryContext = query_ctx.QueryContext;
 const BuildContext = build_ctx.BuildContext;
@@ -17,7 +18,7 @@ const Flags = types.Flags;
 const SortField = types.SortField;
 const OutdatedEntry = types.OutdatedEntry;
 const OutdatedList = types.OutdatedList;
-const getStdout = types.getStdout;
+const getStdout = output.getStdout;
 const printError = types.printError;
 
 pub const collectOutdated = outdated_mod.collectOutdated;

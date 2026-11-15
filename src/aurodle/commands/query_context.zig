@@ -1,9 +1,10 @@
 const std = @import("std");
+const output = @import("ui").output;
 const Allocator = std.mem.Allocator;
-const aur = @import("../aur.zig");
-const pacman_mod = @import("../pacman.zig");
-const registry_mod = @import("../registry.zig");
-const color = @import("../color.zig");
+const aur = @import("core").aur;
+const pacman_mod = @import("core").pacman;
+const registry_mod = @import("core").registry;
+const color = @import("ui").color;
 const types = @import("types.zig");
 
 /// Lightweight context for commands that only need the AUR client
@@ -18,7 +19,7 @@ pub const QueryContext = struct {
     flags: types.Flags,
     stdout_color: color.Style,
     stderr_color: color.Style,
-    err_writer: types.ErrWriter,
+    err_writer: output.ErrWriter,
 
     pub fn init(
         allocator: Allocator,
@@ -39,7 +40,7 @@ pub const QueryContext = struct {
             .flags = flags,
             .stdout_color = stdout_color,
             .stderr_color = stderr_color,
-            .err_writer = types.defaultErrWriter(),
+            .err_writer = output.defaultErrWriter(),
         };
     }
 };

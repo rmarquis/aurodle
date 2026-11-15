@@ -29,33 +29,45 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
-    const mod = b.addModule("aurodle", .{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-        .link_libc = true,
-    });
-
-    mod.linkSystemLibrary("alpm", .{});
-
+    // Three modules: `core` (package mechanics, no terminal I/O), `ui`
+    // (terminal presentation shared by the frontends) and one root module
+    // per frontend executable.
     const alpm_translate_c = b.addTranslateC(.{
-        .root_source_file = b.path("src/alpm_c.h"),
+        .root_source_file = b.path("src/core/alpm_c.h"),
         .target = target,
         .optimize = optimize,
     });
     alpm_translate_c.linkSystemLibrary("alpm", .{});
     const alpm_c_module = alpm_translate_c.createModule();
-    mod.addImport("alpm_c", alpm_c_module);
+
+    const core_mod = b.addModule("core", .{
+        .root_source_file = b.path("src/core/root.zig"),
+        .target = target,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "alpm_c", .module = alpm_c_module },
+        },
+    });
+    core_mod.linkSystemLibrary("alpm", .{});
+
+    const ui_mod = b.addModule("ui", .{
+        .root_source_file = b.path("src/ui/root.zig"),
+        .target = target,
+        .imports = &.{
+            .{ .name = "core", .module = core_mod },
+        },
+    });
 
     const exe = b.addExecutable(.{
         .name = "aurodle",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
+            .root_source_file = b.path("src/aurodle/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "aurodle", .module = mod },
+                .{ .name = "core", .module = core_mod },
+                .{ .name = "ui", .module = ui_mod },
                 .{ .name = "build_options", .module = version_mod },
-                .{ .name = "alpm_c", .module = alpm_c_module },
             },
         }),
     });
@@ -71,21 +83,11 @@ pub fn build(b: *std.Build) void {
 
     run_cmd.addPassthruArgs();
 
-    const mod_tests = b.addTest(.{
-        .root_module = mod,
-    });
-
-    const run_mod_tests = b.addRunArtifact(mod_tests);
-
-    const exe_tests = b.addTest(.{
-        .root_module = exe.root_module,
-    });
-
-    const run_exe_tests = b.addRunArtifact(exe_tests);
-
     const test_step = b.step("test", "Run tests");
-    test_step.dependOn(&run_mod_tests.step);
-    test_step.dependOn(&run_exe_tests.step);
+    for ([_]*std.Build.Module{ core_mod, ui_mod, exe.root_module }) |m| {
+        const t = b.addTest(.{ .root_module = m });
+        test_step.dependOn(&b.addRunArtifact(t).step);
+    }
 
     // Specification tests (docs/specifications/)
     const spec_tests = b.addTest(.{
@@ -94,7 +96,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .link_libc = true,
             .imports = &.{
-                .{ .name = "aurodle", .module = mod },
+                .{ .name = "core", .module = core_mod },
             },
         }),
     });

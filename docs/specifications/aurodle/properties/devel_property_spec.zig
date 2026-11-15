@@ -11,7 +11,7 @@
 const std = @import("std");
 const testing = std.testing;
 
-const devel = @import("aurodle").devel;
+const devel = @import("core").devel;
 
 // ============================================================================
 // isVcsPackage Properties

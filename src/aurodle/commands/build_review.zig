@@ -1,13 +1,13 @@
 /// Review phase: present PKGBUILD files and diffs to the user for inspection,
 /// and prompt for conflict resolution before any packages are installed.
 const std = @import("std");
+const output = @import("ui").output;
 const Allocator = std.mem.Allocator;
-const git = @import("../git.zig");
-const plan_mod = @import("../plan.zig");
-const utils = @import("../utils.zig");
-const term = @import("../term.zig");
-const color = @import("../color.zig");
-const types = @import("types.zig");
+const git = @import("core").git;
+const plan_mod = @import("core").plan;
+const utils = @import("core").utils;
+const term = @import("ui").term;
+const color = @import("ui").color;
 const build_ctx = @import("build_context.zig");
 
 const BuildContext = build_ctx.BuildContext;
@@ -53,7 +53,7 @@ pub fn reviewPackages(
 
 /// Offer to open every file of a clone in the viewer.
 fn reviewFiles(self: *BuildContext, pkgbase: []const u8, clone_dir: []const u8) !void {
-    const stdout = types.getStdout();
+    const stdout = output.getStdout();
     const sc = self.stdout_color;
     const msg = try std.fmt.allocPrint(self.allocator, "Review {s} files?", .{pkgbase});
     defer self.allocator.free(msg);
@@ -78,7 +78,7 @@ fn reviewDiff(
     comptime prompt: []const u8,
     argv: []const []const u8,
 ) !void {
-    const stdout = types.getStdout();
+    const stdout = output.getStdout();
     const sc = self.stdout_color;
     const msg = try std.fmt.allocPrint(self.allocator, prompt, .{pkgbase});
     defer self.allocator.free(msg);

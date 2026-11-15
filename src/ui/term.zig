@@ -4,8 +4,8 @@
 
 const std = @import("std");
 const color = @import("color.zig");
-const provider_mod = @import("provider.zig");
-const utils = @import("utils.zig");
+const provider_mod = @import("core").provider;
+const utils = @import("core").utils;
 
 const stdout = utils.stdout;
 const flushStdout = utils.flushStdout;

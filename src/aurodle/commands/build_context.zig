@@ -1,11 +1,12 @@
 const std = @import("std");
+const output = @import("ui").output;
 const Allocator = std.mem.Allocator;
-const aur = @import("../aur.zig");
-const pacman_mod = @import("../pacman.zig");
-const registry_mod = @import("../registry.zig");
-const repo_mod = @import("../repo.zig");
-const auth_mod = @import("../auth.zig");
-const color = @import("../color.zig");
+const aur = @import("core").aur;
+const pacman_mod = @import("core").pacman;
+const registry_mod = @import("core").registry;
+const repo_mod = @import("core").repo;
+const auth_mod = @import("core").auth;
+const color = @import("ui").color;
 const types = @import("types.zig");
 
 pub const BuildContext = struct {
@@ -20,7 +21,7 @@ pub const BuildContext = struct {
     flags: types.Flags,
     stdout_color: color.Style,
     stderr_color: color.Style,
-    err_writer: types.ErrWriter,
+    err_writer: output.ErrWriter,
     /// Populated by --devel upgrade check; used by displayPlan to show real versions.
     devel_version_hint: std.StringHashMapUnmanaged([]const u8) = .empty,
     /// Populated alongside devel_version_hint, for packages whose version
@@ -53,7 +54,7 @@ pub const BuildContext = struct {
             .flags = flags,
             .stdout_color = color.Style.detect(std.posix.STDOUT_FILENO, use_color),
             .stderr_color = color.Style.detect(std.posix.STDERR_FILENO, use_color),
-            .err_writer = types.defaultErrWriter(),
+            .err_writer = output.defaultErrWriter(),
         };
     }
 };

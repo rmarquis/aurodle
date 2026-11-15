@@ -1,17 +1,18 @@
 /// Build phase: invoke makepkg or makechrootpkg per plan entry, add built
 /// packages to the local repo, and propagate failures to downstream entries.
 const std = @import("std");
+const output = @import("ui").output;
 const Allocator = std.mem.Allocator;
-const git = @import("../git.zig");
-const devel = @import("../devel.zig");
-const plan_mod = @import("../plan.zig");
-const repo_mod = @import("../repo.zig");
-const utils = @import("../utils.zig");
-const auth_mod = @import("../auth.zig");
-const color = @import("../color.zig");
+const git = @import("core").git;
+const devel = @import("core").devel;
+const plan_mod = @import("core").plan;
+const repo_mod = @import("core").repo;
+const utils = @import("core").utils;
+const auth_mod = @import("core").auth;
+const color = @import("ui").color;
 const types = @import("types.zig");
 const build_ctx = @import("build_context.zig");
-const chroot = @import("../chroot.zig");
+const chroot = @import("core").chroot;
 
 const BuildContext = build_ctx.BuildContext;
 const BuildResult = types.BuildResult;
@@ -185,7 +186,7 @@ fn runVcsBuild(
     skipped: *bool,
 ) !u8 {
     const sc = self.stdout_color;
-    const stdout = types.getStdout();
+    const stdout = output.getStdout();
 
     if (!prepared) {
         stdout.print("{s}::{s} Preparing {s} sources...\n", .{ sc.blue, sc.reset, entry.name });
@@ -227,7 +228,7 @@ fn chrootVcsBuilt(
 ) !bool {
     if (!sourcesStillPrepared(self, entry.name, clone_dir)) {
         const sc = self.stdout_color;
-        types.getStdout().print("{s}::{s} Preparing {s} sources...\n", .{ sc.blue, sc.reset, entry.name });
+        output.getStdout().print("{s}::{s} Preparing {s} sources...\n", .{ sc.blue, sc.reset, entry.name });
         const code = try utils.runInteractive(self.allocator, &.{ "makepkg", "--nobuild", "--nodeps", "--noconfirm" }, clone_dir);
         if (code != 0) {
             const ec = self.stderr_color;
@@ -301,7 +302,7 @@ pub fn buildLoop(
     // here would look like "no failures" and let the caller install every
     // target, so fail the whole build instead.
     const chroot_makepkg_conf: ?[]u8 = if (self.flags.chroot)
-        try chroot.prepare(self.allocator, self.auth, self.cache_root, repository.repo_name, repository.repo_dir, types.stderrReporter(&self.stderr_color)) orelse
+        try chroot.prepare(self.allocator, self.auth, self.cache_root, repository.repo_name, repository.repo_dir, output.stderrReporter(&self.stderr_color)) orelse
             return error.ChrootUnavailable
     else
         null;
@@ -376,11 +377,11 @@ pub fn buildLoop(
         const build_start = std.Io.Timestamp.now(self.io, .real).nanoseconds - std.time.ns_per_s;
 
         if (already_built) {
-            types.getStdout().print("{s}::{s} {s} {s} already built, skipping\n", .{ sc.blue, sc.reset, entry.name, shown_ver });
+            output.getStdout().print("{s}::{s} {s} {s} already built, skipping\n", .{ sc.blue, sc.reset, entry.name, shown_ver });
         } else {
             const split_vcs = is_vcs and !self.flags.chroot and !self.flags.rebuild;
             if (!split_vcs) {
-                types.getStdout().print("{s}::{s} Building {s} {s}...\n", .{ sc.blue, sc.reset, entry.name, shown_ver });
+                output.getStdout().print("{s}::{s} Building {s} {s}...\n", .{ sc.blue, sc.reset, entry.name, shown_ver });
             }
 
             const exit_code = if (self.flags.chroot) blk: {
