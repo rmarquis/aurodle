@@ -393,7 +393,8 @@ is not aborted automatically.
 
 # SEE ALSO
 
-*pacman*(8), *makepkg*(8), *repo-add*(8), *run0*(1), *doas*(1), *sudoers*(5)
+*pacsaur*(1), *pacman*(8), *makepkg*(8), *repo-add*(8), *run0*(1), *doas*(1),
+*sudoers*(5)
 
 # AUTHORS
 
