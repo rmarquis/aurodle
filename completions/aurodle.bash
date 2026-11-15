@@ -5,7 +5,6 @@ _aurodle() {
     _init_completion || return
 
     local commands="sync build clone info search show resolve buildorder outdated upgrade clean status"
-    local short_aliases="-S -Sw -Si -Ss -Qu -Su -Sc -Scc"
     local global_opts="-h --help -V --version -q --quiet"
     local build_opts="--noconfirm --noshow --needed --rebuild --asdeps --asexplicit --chroot --ignore"
     local clone_opts="--recurse"
@@ -17,18 +16,18 @@ _aurodle() {
     local i
     for ((i = 1; i < cword; i++)); do
         case "${words[i]}" in
-            sync|-S)       cmd=sync ;;
-            build|-Sw)     cmd=build ;;
+            sync)          cmd=sync ;;
+            build)         cmd=build ;;
             clone)         cmd=clone ;;
-            info|-Si)      cmd=info ;;
-            search|-Ss)    cmd=search ;;
+            info)          cmd=info ;;
+            search)        cmd=search ;;
             show)          cmd=show ;;
             resolve)       cmd=resolve ;;
             buildorder)    cmd=buildorder ;;
-            outdated|-Qu)  cmd=outdated ;;
-            upgrade|-Su)   cmd=upgrade ;;
-            clean|-Sc|-Scc) cmd=clean ;;
-            status)         cmd=status ;;
+            outdated)      cmd=outdated ;;
+            upgrade)       cmd=upgrade ;;
+            clean)         cmd=clean ;;
+            status)        cmd=status ;;
             -*) ;;
             *)  break ;;
         esac
@@ -55,7 +54,7 @@ _aurodle() {
 
     # If no command yet, complete commands and global options
     if [[ -z "$cmd" ]]; then
-        COMPREPLY=($(compgen -W "$commands $short_aliases $global_opts" -- "$cur"))
+        COMPREPLY=($(compgen -W "$commands $global_opts" -- "$cur"))
         return
     fi
 

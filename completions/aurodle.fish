@@ -8,8 +8,7 @@ function __aurodle_no_subcommand
     set -l cmd (commandline -opc)
     for c in $cmd[2..]
         switch $c
-            case sync build clone info search show resolve buildorder outdated upgrade clean status \
-                 '-S' '-Sw' '-Si' '-Ss' '-Qu' '-Su' '-Sc' '-Scc'
+            case sync build clone info search show resolve buildorder outdated upgrade clean status
                 return 1
         end
     end
@@ -46,18 +45,8 @@ complete -c aurodle -n __aurodle_no_subcommand -a upgrade -d 'Upgrade outdated A
 complete -c aurodle -n __aurodle_no_subcommand -a clean -d 'Remove uninstalled built packages'
 complete -c aurodle -n __aurodle_no_subcommand -a status -d 'Check online service status'
 
-# Short aliases
-complete -c aurodle -n __aurodle_no_subcommand -a '-S' -d 'Install AUR packages'
-complete -c aurodle -n __aurodle_no_subcommand -a '-Sw' -d 'Build packages into local repository'
-complete -c aurodle -n __aurodle_no_subcommand -a '-Si' -d 'Display AUR package information'
-complete -c aurodle -n __aurodle_no_subcommand -a '-Ss' -d 'Search AUR packages'
-complete -c aurodle -n __aurodle_no_subcommand -a '-Qu' -d 'List outdated AUR packages'
-complete -c aurodle -n __aurodle_no_subcommand -a '-Su' -d 'Upgrade outdated AUR packages'
-complete -c aurodle -n __aurodle_no_subcommand -a '-Sc' -d 'Remove uninstalled built packages'
-complete -c aurodle -n __aurodle_no_subcommand -a '-Scc' -d 'Remove all built packages and clones'
-
 # Build options (sync, build, upgrade)
-for cmd in sync '-S' build '-Sw' upgrade '-Su'
+for cmd in sync build upgrade
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l noconfirm -d 'Skip confirmation prompts'
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l noshow -d 'Skip build file review'
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l needed -d 'Skip up-to-date packages'
@@ -75,13 +64,13 @@ end
 complete -c aurodle -n "__aurodle_using_subcommand buildorder" -s q -l quiet -d 'Print only the packages to build'
 
 # Outdated/upgrade options
-for cmd in outdated '-Qu' upgrade '-Su'
+for cmd in outdated upgrade
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l devel -d 'Check VCS packages for updates'
 end
-for cmd in outdated '-Qu'
+for cmd in outdated
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l all -d 'Also check uninstalled local repository packages'
 end
-for cmd in upgrade '-Su'
+for cmd in upgrade
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l all -d 'Also rebuild uninstalled local repository packages'
 end
 
@@ -91,19 +80,19 @@ for cmd in clone
 end
 
 # Clean options
-for cmd in clean '-Sc' '-Scc'
+for cmd in clean
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l all -d 'Remove all built packages and clones'
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l noconfirm -d 'Skip confirmation prompt'
 end
 
 # Outdated options
-for cmd in outdated '-Qu'
+for cmd in outdated
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l quiet -d 'Reduce output verbosity'
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l ignore -d 'Mark packages as ignored' -x
 end
 
 # Search options
-for cmd in search '-Ss'
+for cmd in search
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l by -d 'Search by field' -xa 'name name-desc depends makedepends checkdepends optdepends maintainer submitter provides conflicts replaces keywords groups comaintainers'
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l sort -d 'Sort results' -xa 'name votes popularity'
     complete -c aurodle -n "__aurodle_using_subcommand $cmd" -l rsort -d 'Reverse sort' -xa 'name votes popularity'

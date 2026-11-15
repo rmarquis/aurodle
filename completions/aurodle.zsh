@@ -61,17 +61,6 @@ _aurodle() {
         'status:Check online service status'
     )
 
-    local -a short_commands=(
-        '-S:Install AUR packages'
-        '-Sw:Build packages into local repository'
-        '-Si:Display AUR package information'
-        '-Ss:Search AUR packages'
-        '-Qu:List outdated AUR packages'
-        '-Su:Upgrade outdated AUR packages'
-        '-Sc:Remove uninstalled built packages'
-        '-Scc:Remove all built packages and clones'
-    )
-
     local -a global_options=(
         '(-h --help)'{-h,--help}'[Show help]'
         '(-V --version)'{-V,--version}'[Show version]'
@@ -81,7 +70,6 @@ _aurodle() {
     # If we haven't completed the subcommand yet
     if (( CURRENT == 2 )); then
         _describe 'command' commands
-        _describe 'short command' short_commands
         _arguments -s $global_options
         return
     fi
@@ -89,10 +77,10 @@ _aurodle() {
     # Determine the subcommand
     local cmd="${words[2]}"
     case "$cmd" in
-        sync|-S)
+        sync)
             _aurodle_build_options
             ;;
-        build|-Sw)
+        build)
             _aurodle_build_options
             ;;
         clone)
@@ -100,10 +88,10 @@ _aurodle() {
                 '--recurse[Recursively clone AUR dependencies]' \
                 '*:package:'
             ;;
-        info|-Si)
+        info)
             _arguments '*:package:'
             ;;
-        search|-Ss)
+        search)
             _arguments -s \
                 '--by[Search by field]:field:_aurodle_search_fields' \
                 '--sort[Sort results]:field:_aurodle_sort_fields' \
@@ -124,19 +112,19 @@ _aurodle() {
                 '(-q --quiet)'{-q,--quiet}'[Print only the packages to build]' \
                 '*:package:'
             ;;
-        outdated|-Qu)
+        outdated)
             _arguments -s \
                 '--devel[Check VCS packages for updates]' \
                 '--all[Also check uninstalled local repository packages]' \
                 '--ignore[Mark packages as ignored]:packages:' \
                 '(-q --quiet)'{-q,--quiet}'[Reduce output verbosity]'
             ;;
-        upgrade|-Su)
+        upgrade)
             _aurodle_build_options \
                 '--devel[Check VCS packages for updates]' \
                 '--all[Also rebuild uninstalled local repository packages]'
             ;;
-        clean|-Sc|-Scc)
+        clean)
             _arguments -s \
                 '--all[Remove all built packages and clones]' \
                 '--noconfirm[Skip confirmation prompt]'
