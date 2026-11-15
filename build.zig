@@ -29,9 +29,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
-    // Three modules: `core` (package mechanics, no terminal I/O), `ui`
-    // (terminal presentation shared by the frontends) and one root module
-    // per frontend executable.
+    // Shared modules: `core` (package mechanics, no terminal I/O), `ui`
+    // (terminal presentation) and `commands` (the AUR commands), plus one
+    // root module per frontend executable.
     const alpm_translate_c = b.addTranslateC(.{
         .root_source_file = b.path("src/core/alpm_c.h"),
         .target = target,
@@ -58,6 +58,15 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const commands_mod = b.addModule("commands", .{
+        .root_source_file = b.path("src/commands/root.zig"),
+        .target = target,
+        .imports = &.{
+            .{ .name = "core", .module = core_mod },
+            .{ .name = "ui", .module = ui_mod },
+        },
+    });
+
     const exe = b.addExecutable(.{
         .name = "aurodle",
         .root_module = b.createModule(.{
@@ -67,6 +76,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "core", .module = core_mod },
                 .{ .name = "ui", .module = ui_mod },
+                .{ .name = "commands", .module = commands_mod },
                 .{ .name = "build_options", .module = version_mod },
             },
         }),
@@ -84,7 +94,7 @@ pub fn build(b: *std.Build) void {
     run_cmd.addPassthruArgs();
 
     const test_step = b.step("test", "Run tests");
-    for ([_]*std.Build.Module{ core_mod, ui_mod, exe.root_module }) |m| {
+    for ([_]*std.Build.Module{ core_mod, ui_mod, commands_mod, exe.root_module }) |m| {
         const t = b.addTest(.{ .root_module = m });
         test_step.dependOn(&b.addRunArtifact(t).step);
     }

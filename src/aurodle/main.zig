@@ -1,18 +1,11 @@
 const std = @import("std");
 const output = @import("ui").output;
 const aur = @import("core").aur;
-const commands = @import("commands.zig");
-const cmd_types = @import("commands/types.zig");
-const query_context = @import("commands/query_context.zig");
-const build_context = @import("commands/build_context.zig");
+const commands = @import("commands");
+const cmd_types = commands.types;
+const query_context = commands.query_context;
 const git = @import("core").git;
-const pacman_mod = @import("core").pacman;
-const registry_mod = @import("core").registry;
-const repo_mod = @import("core").repo;
-const auth_mod = @import("core").auth;
 const utils = @import("core").utils;
-const term = @import("ui").term;
-const color = @import("ui").color;
 const Allocator = std.mem.Allocator;
 
 const ExitCode = cmd_types.ExitCode;
@@ -320,80 +313,13 @@ fn runWithFullStack(
     cache_root: []const u8,
     parsed: ParsedCommand,
 ) !ExitCode {
-    // Initialize local repository first (derives repo name from pacman.conf + PKGDEST)
-    var repository = repo_mod.Repository.init(allocator, io, cache_root) catch |err| {
-        if (err == error.PkgdestNotSet) {
-            // Usually the first thing a new user hits: give the whole setup.
-            std.debug.print("error: PKGDEST is not set in makepkg.conf\n", .{});
-            std.debug.print("{s}\n", .{repo_mod.Repository.configInstructions()});
-        } else if (err == error.RepoNotInPacmanConf) {
-            std.debug.print("error: no pacman.conf repo has a Server = file:// matching PKGDEST\n", .{});
-            std.debug.print("{s}\n", .{repo_mod.Repository.configInstructions()});
-        } else {
-            std.debug.print("error: failed to initialize repository: {}\n", .{err});
-        }
-        return .general_error;
+    var stack: commands.stack.Stack = undefined;
+    stack.init(allocator, io, aur_client, cache_root, parsed.flags) catch |err| switch (err) {
+        error.Reported => return .general_error,
+        error.OutOfMemory => return error.OutOfMemory,
     };
-    defer repository.deinit();
-
-    // Initialize pacman (libalpm) with the derived repo name
-    var pm = pacman_mod.Pacman.init(allocator, repository.repo_name) catch |err| {
-        std.debug.print("error: failed to initialize pacman: {}\n", .{err});
-        return .general_error;
-    };
-    defer pm.deinit();
-
-    // Merge IgnorePkg from pacman.conf with --ignore flag.
-    var flags = parsed.flags;
-    const merged_ignore = try mergeIgnore(allocator, flags.ignore, pm.ignore_pkgs);
-    defer allocator.free(merged_ignore);
-    flags.ignore = merged_ignore;
-
-    // Initialize registry (cascade lookup: installed -> sync -> AUR -> provider)
-    var reg = registry_mod.PackageRegistry.init(allocator, &pm, aur_client);
-    defer reg.deinit();
-
-    // The chooser and the reporter borrow the style, so it lives as long
-    // as reg and repository.
-    const stderr_style = color.Style.detect(std.posix.STDERR_FILENO, pm.color);
-    repository.reporter = output.stderrReporter(&stderr_style);
-
-    // Enable interactive provider selection unless --noconfirm.
-    if (!parsed.flags.noconfirm) {
-        reg.provider_chooser = term.providerChooser(&stderr_style);
-    }
-    // Chroot builds install AUR dependencies from the local repository,
-    // so one installed on the host but missing from it must be built.
-    reg.ignore_installed_aur = flags.chroot;
-
-    // Initialize privilege escalation (PACMAN_AUTH → sudo → su)
-    var auth = auth_mod.Auth.init(allocator, repository.makepkg_conf.pacman_auth) catch |err| {
-        if (err == error.NoAuthMethod) {
-            std.debug.print("error: no privilege escalation method found (sudo/su not on PATH)\n", .{});
-            std.debug.print("hint: set PACMAN_AUTH in makepkg.conf or install sudo/doas\n", .{});
-        } else {
-            std.debug.print("error: failed to initialize auth: {}\n", .{err});
-        }
-        return .general_error;
-    };
-    defer auth.deinit();
-
-    // Note: credential acquisition is deferred to build_cmd.zig, after the user
-    // has confirmed the plan and reviewed PKGBUILDs.  Auth.init() is still done
-    // here so the struct is available; acquireCredentials()+startKeepalive() are
-    // called just before the build loop begins.
-
-    var bctx = build_context.BuildContext.init(
-        allocator,
-        io,
-        aur_client,
-        &pm,
-        &reg,
-        &repository,
-        &auth,
-        cache_root,
-        flags,
-    );
+    defer stack.deinit();
+    var bctx = stack.buildContext();
 
     return switch (parsed.operation) {
         .sync => try commands.build_cmd.sync(&bctx, parsed.targets),
@@ -420,21 +346,6 @@ fn runWithFullStack(
         },
         else => unreachable,
     };
-}
-
-/// `cli` followed by the names in `conf` not already in it.
-/// Caller frees the slice (the names are borrowed).
-fn mergeIgnore(allocator: Allocator, cli: []const []const u8, conf: []const []const u8) ![]const []const u8 {
-    var merged: std.ArrayListUnmanaged([]const u8) = .empty;
-    errdefer merged.deinit(allocator);
-    try merged.appendSlice(allocator, cli);
-    next: for (conf) |pkg| {
-        for (cli) |existing| {
-            if (std.mem.eql(u8, existing, pkg)) continue :next;
-        }
-        try merged.append(allocator, pkg);
-    }
-    return merged.toOwnedSlice(allocator);
 }
 
 fn printHelp() void {
@@ -754,21 +665,4 @@ test "parseArgs: overflowing an argument buffer is TooManyArguments" {
     }
     const names = names_buf[0 .. names_buf.len - 1];
     try std.testing.expectError(ParseError.TooManyArguments, testParse(&.{ "sync", "--ignore", names, "pkg" }));
-}
-
-test "mergeIgnore appends pacman.conf names not given on the command line" {
-    const merged = try mergeIgnore(std.testing.allocator, &.{ "a", "b" }, &.{ "b", "c" });
-    defer std.testing.allocator.free(merged);
-    try std.testing.expectEqual(@as(usize, 3), merged.len);
-    try std.testing.expectEqualStrings("a", merged[0]);
-    try std.testing.expectEqualStrings("b", merged[1]);
-    try std.testing.expectEqualStrings("c", merged[2]);
-}
-
-test {
-    _ = commands;
-    _ = @import("commands/types.zig");
-    _ = @import("commands/build_context.zig");
-    _ = @import("commands/outdated.zig");
-    _ = @import("commands/analysis.zig");
 }
