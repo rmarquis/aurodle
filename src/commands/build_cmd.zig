@@ -157,7 +157,7 @@ pub fn clonePackages(self: *QueryContext, targets: []const []const u8) !ExitCode
 
 // ── Sync / Build Commands ────────────────────────────────────────────
 
-const BuildMode = enum { sync, build_only };
+pub const BuildMode = enum { sync, build_only };
 
 /// One parallelFor job: clone or fetch `entries[i].pkgbase`.
 const CloneJob = struct {
@@ -435,14 +435,26 @@ fn handleEmptyBuildOrder(self: *BuildContext, plan: solver_mod.BuildPlan, mode: 
 
 // ── Upgrade Command ──────────────────────────────────────────────────
 
-/// Upgrade outdated AUR packages via the full sync workflow.
+/// Upgrade outdated AUR packages via the full sync workflow. With
+/// `targets`, only those packages are checked.
 pub fn upgrade(self: *BuildContext, targets: []const []const u8) !ExitCode {
+    return upgradeOutdated(self, targets, &.{}, .sync);
+}
+
+/// Upgrade every outdated AUR package and add `extra` targets to the same
+/// plan, as pacman's -Su does with targets. In `.build_only` mode nothing is
+/// installed: the packages are only built into the local repository.
+pub fn systemUpgrade(self: *BuildContext, extra: []const []const u8, mode: BuildMode) !ExitCode {
+    return upgradeOutdated(self, &.{}, extra, mode);
+}
+
+fn upgradeOutdated(self: *BuildContext, filter: []const []const u8, extra: []const []const u8, mode: BuildMode) !ExitCode {
     const ec = self.stderr_color;
     const sc = self.stdout_color;
 
     getStdout().print("{s}::{s} Starting AUR upgrade...\n", .{ sc.blue, sc.reset });
 
-    const result = (try outdated_mod.collectOutdated(self, targets, true)) orelse return .general_error;
+    const result = (try outdated_mod.collectOutdated(self, filter, true)) orelse return .general_error;
     defer result.deinit(self.allocator);
     defer self.devel_version_hint.clearAndFree(self.allocator);
     defer self.devel_prepared.clearAndFree(self.allocator);
@@ -465,12 +477,18 @@ pub fn upgrade(self: *BuildContext, targets: []const []const u8) !ExitCode {
         if (!entry.installed) try not_installed.append(self.allocator, entry.name);
     }
 
+    var ignore_buf: [256][]const u8 = undefined;
+    const wanted = types.filterIgnored(self.stdout_color, self.stderr_color, self.err_writer, self.flags, extra, &ignore_buf);
+    for (wanted) |name| {
+        if (!containsName(to_upgrade.items, name)) try to_upgrade.append(self.allocator, name);
+    }
+
     if (to_upgrade.items.len == 0) {
         getStdout().writeAll(" there is nothing to do\n");
         return .success;
     }
 
-    return runBuildPipeline(self, to_upgrade.items, .sync, not_installed.items);
+    return runBuildPipeline(self, to_upgrade.items, mode, not_installed.items);
 }
 
 fn containsName(names: []const []const u8, name: []const u8) bool {

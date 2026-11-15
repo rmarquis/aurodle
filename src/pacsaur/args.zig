@@ -34,12 +34,12 @@ pub const Op = enum {
     /// How the operation is routed.
     ///
     /// Split operations take package names, so each target goes to pacman
-    /// or the AUR. Broadcast operations take no package names (or none at
-    /// all), so both sides run them.
+    /// or the AUR (and both sides upgrade with -Su). Broadcast operations
+    /// take no package names (or none at all), so both sides run them.
     pub fn class(self: Op) Class {
         return switch (self) {
-            .sync, .build, .info => .split,
-            .sysupgrade, .search, .upgrades, .clean => .broadcast,
+            .sync, .build, .info, .sysupgrade => .split,
+            .search, .upgrades, .clean => .broadcast,
             .refresh, .other => .pacman_only,
         };
     }
@@ -78,6 +78,8 @@ pub const Modifiers = struct {
     refresh: bool = false,
     /// `-u`: `--sysupgrade` for sync, `--upgrades` for query.
     upgrade: bool = false,
+    /// `-w`: pacman downloads and the AUR side builds into the local
+    /// repository; neither installs anything.
     downloadonly: bool = false,
     /// How many times `-c` / `--clean` was given (`-Scc` is 2).
     clean: u8 = 0,
@@ -259,11 +261,8 @@ fn opOf(m: Modifiers, has_targets: bool) Op {
             if (m.info) break :blk .info;
             if (m.search) break :blk .search;
             if (m.clean > 0) break :blk .clean;
-            if (m.upgrade) {
-                // -Suw downloads upgrades without installing them: the AUR
-                // side has no such step, so pacman alone runs it.
-                break :blk if (m.downloadonly) .other else .sysupgrade;
-            }
+            // With -w, nothing is installed (see `Modifiers.downloadonly`).
+            if (m.upgrade) break :blk .sysupgrade;
             if (m.downloadonly) break :blk .build;
             if (m.refresh and !has_targets) break :blk .refresh;
             break :blk .sync;
@@ -439,13 +438,14 @@ test "parse classifies split operations" {
     try expectOp(&.{ "p", "-Si", "foo" }, .info, .split);
     try expectOp(&.{ "p", "--sync", "foo" }, .sync, .split);
     try expectOp(&.{ "p", "--sync", "--downloadonly", "foo" }, .build, .split);
+    try expectOp(&.{ "p", "-Su" }, .sysupgrade, .split);
+    try expectOp(&.{ "p", "-Syu", "foo" }, .sysupgrade, .split);
+    try expectOp(&.{ "p", "-S", "-y", "-u" }, .sysupgrade, .split);
+    try expectOp(&.{ "p", "--sync", "--refresh", "--sysupgrade" }, .sysupgrade, .split);
+    try expectOp(&.{ "p", "-Suw" }, .sysupgrade, .split);
 }
 
 test "parse classifies broadcast operations in every spelling" {
-    try expectOp(&.{ "p", "-Su" }, .sysupgrade, .broadcast);
-    try expectOp(&.{ "p", "-Syu" }, .sysupgrade, .broadcast);
-    try expectOp(&.{ "p", "-S", "-y", "-u" }, .sysupgrade, .broadcast);
-    try expectOp(&.{ "p", "--sync", "--refresh", "--sysupgrade" }, .sysupgrade, .broadcast);
     try expectOp(&.{ "p", "-Ss", "foo" }, .search, .broadcast);
     try expectOp(&.{ "p", "-Qu" }, .upgrades, .broadcast);
     try expectOp(&.{ "p", "--query", "--upgrades" }, .upgrades, .broadcast);
@@ -465,10 +465,6 @@ test "parse counts -c for -Scc" {
 test "parse tells -Sy alone from -Sy with targets" {
     try expectOp(&.{ "p", "-Sy" }, .refresh, .pacman_only);
     try expectOp(&.{ "p", "-Sy", "foo" }, .sync, .split);
-}
-
-test "parse keeps -Suw with pacman" {
-    try expectOp(&.{ "p", "-Suw" }, .other, .pacman_only);
 }
 
 test "parse classifies other families as pacman_only" {

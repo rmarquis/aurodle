@@ -181,7 +181,7 @@ fn runAur(allocator: Allocator, io: std.Io, step: route.AurStep, flags: commands
     return switch (step.op) {
         .sync => commands.build_cmd.sync(&bctx, step.targets),
         .build => commands.build_cmd.build(&bctx, step.targets),
-        .upgrade => commands.build_cmd.upgrade(&bctx, step.targets),
+        .upgrade => commands.build_cmd.systemUpgrade(&bctx, step.targets, if (step.build_only) .build_only else .sync),
         .outdated => commands.query.outdated(&bctx, step.targets),
         .clean => commands.build_cmd.clean(&bctx),
         .info, .search => unreachable,
@@ -208,7 +208,7 @@ fn printPlan(plan: *const route.Plan) void {
             w.writeByte('\n');
         },
         .aur => |a| {
-            w.print("aur: {s}", .{@tagName(a.op)});
+            w.print("aur: {s}{s}", .{ @tagName(a.op), if (a.build_only) " --downloadonly" else "" });
             for (plan.aur_options) |opt| w.print(" {s}", .{opt});
             for (a.targets) |t| w.print(" {s}", .{t});
             w.writeByte('\n');

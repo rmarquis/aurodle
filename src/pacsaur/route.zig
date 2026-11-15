@@ -19,6 +19,7 @@ pub const AurOp = enum {
     build,
     info,
     search,
+    /// Upgrade every outdated AUR package, and install the targets too.
     upgrade,
     outdated,
     clean,
@@ -42,6 +43,8 @@ pub const PacmanStep = struct {
 pub const AurStep = struct {
     op: AurOp,
     targets: []const []const u8,
+    /// For `upgrade`: build into the local repository, install nothing.
+    build_only: bool = false,
 };
 
 pub const Step = union(enum) {
@@ -151,7 +154,7 @@ pub fn build(allocator: Allocator, inv: *const args.Invocation, classifier: anyt
         .pacman => try steps.append(a, .{ .pacman = .{ .argv = try pacmanArgv(a, inv, null), .elevate = elevate } }),
         .aur => {
             const op = aurOpFor(inv.op) orelse return error.NotAurOperation;
-            try steps.append(a, .{ .aur = .{ .op = op, .targets = try allTargets(a, inv) } });
+            try steps.append(a, .{ .aur = .{ .op = op, .targets = try allTargets(a, inv), .build_only = inv.mods.downloadonly } });
         },
     } else switch (inv.class) {
         .pacman_only => {
@@ -169,14 +172,19 @@ pub fn build(allocator: Allocator, inv: *const args.Invocation, classifier: anyt
         },
         .split => {
             const part = try partition(a, inv, classifier);
+            const upgrade = inv.op == .sysupgrade;
             // Without targets, pacman reports the missing targets itself.
             // With -y, pacman refreshes the databases even if it installs
-            // nothing, before the AUR packages build.
-            if (part.pacman.len > 0 or part.aur.len == 0 or inv.mods.refresh) {
+            // nothing, before the AUR packages build. Both sides upgrade.
+            if (part.pacman.len > 0 or part.aur.len == 0 or inv.mods.refresh or upgrade) {
                 try steps.append(a, .{ .pacman = .{ .argv = try pacmanArgv(a, inv, part.pacman), .elevate = elevate } });
             }
-            if (part.aur.len > 0) {
-                try steps.append(a, .{ .aur = .{ .op = aurOpFor(inv.op).?, .targets = part.aur } });
+            if (part.aur.len > 0 or upgrade) {
+                try steps.append(a, .{ .aur = .{
+                    .op = aurOpFor(inv.op).?,
+                    .targets = part.aur,
+                    .build_only = inv.mods.downloadonly,
+                } });
             }
         },
     }
@@ -398,6 +406,22 @@ test "-Sw builds AUR targets and -Si splits without elevating" {
     defer i.deinit();
     try expectPacman(i.steps[0], &.{ "-Si", "ofoo" }, false);
     try expectAur(i.steps[1], .info, &.{"baz"});
+}
+
+test "-Syu splits targets, and both sides upgrade" {
+    var plan = try planOf(&.{ "p", "-Syu", "ofoo", "baz" });
+    defer plan.deinit();
+    try expectPacman(plan.steps[0], &.{ "-Syu", "ofoo" }, true);
+    try expectAur(plan.steps[1], .upgrade, &.{"baz"});
+    try testing.expect(!plan.steps[1].aur.build_only);
+}
+
+test "-Suw downloads and builds the upgrades and targets, installing nothing" {
+    var plan = try planOf(&.{ "p", "-Suw", "baz" });
+    defer plan.deinit();
+    try expectPacman(plan.steps[0], &.{"-Suw"}, true);
+    try expectAur(plan.steps[1], .upgrade, &.{"baz"});
+    try testing.expect(plan.steps[1].aur.build_only);
 }
 
 test "-Syu runs pacman, then the AUR upgrade" {
