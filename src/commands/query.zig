@@ -5,6 +5,7 @@ const aur = @import("core").aur;
 const registry_mod = @import("core").registry;
 const devel = @import("core").devel;
 const pacman_mod = @import("core").pacman;
+const alpm = @import("core").alpm;
 const types = @import("types.zig");
 const query_ctx = @import("query_context.zig");
 const build_ctx = @import("build_context.zig");
@@ -50,9 +51,13 @@ pub fn info(self: *QueryContext, targets: []const []const u8) !ExitCode {
         }
     }
 
+    var owned: ?pacman_mod.Pacman = null;
+    defer if (owned) |*p| p.deinit();
+    const pacman = self.pacman orelse openPacman(self.allocator, &owned);
+
     const c = self.stdout_color;
     for (packages) |pkg| {
-        const installed_version = if (self.pacman) |pm| pm.installedVersion(pkg.name) else null;
+        const installed_version = if (pacman) |pm| pm.installedVersion(pkg.name) else null;
         displayInfo(pkg, installed_version, c);
     }
 
@@ -92,9 +97,43 @@ pub fn search(self: *QueryContext, terms: []const []const u8) !ExitCode {
     const sorted = try sortPackages(self.allocator, self.flags, filtered.items);
     defer self.allocator.free(sorted);
 
-    displaySearchResults(sorted, self.stdout_color, self.pacman, self.flags.quiet);
+    var owned: ?pacman_mod.Pacman = null;
+    defer if (owned) |*p| p.deinit();
+    const pacman = if (self.flags.quiet) null else self.pacman orelse openPacman(self.allocator, &owned);
+
+    displaySearchResults(sorted, self.stdout_color, pacman, self.flags.quiet);
 
     return .success;
+}
+
+// ── Installed Versions ───────────────────────────────────────────────
+
+/// Open pacman into `owned` to look up installed versions. Null if it
+/// can't be opened; nothing is then shown as installed.
+fn openPacman(allocator: Allocator, owned: *?pacman_mod.Pacman) ?*pacman_mod.Pacman {
+    owned.* = pacman_mod.Pacman.init(allocator, "") catch return null;
+    return &owned.*.?;
+}
+
+/// How the installed version of a package compares with the AUR's.
+const InstalledStatus = enum { same, newer, older };
+
+fn installedStatus(installed: []const u8, aur_version: []const u8) InstalledStatus {
+    const cmp = alpm.vercmp(installed, aur_version);
+    if (cmp > 0) return .newer;
+    if (cmp < 0) return .older;
+    return .same;
+}
+
+/// " [installed]", or " [installed: X]" with X green when newer than the
+/// AUR version and red when older.
+fn writeInstalled(stdout: output.StdWriter, installed: []const u8, aur_version: []const u8, c: color.Style) void {
+    const ver_color = switch (installedStatus(installed, aur_version)) {
+        .same => return stdout.writeAll(" [installed]"),
+        .newer => c.green,
+        .older => c.red,
+    };
+    stdout.print(" [installed: {s}{s}{s}]", .{ ver_color, installed, c.reset });
 }
 
 // ── Outdated Command ─────────────────────────────────────────────────
@@ -219,15 +258,9 @@ fn displayInfo(pkg: *aur.Package, installed_version: ?[]const u8, c: color.Style
     }
     const is_ood = pkg.out_of_date != null;
     const ver_color = if (is_ood) c.red else c.green;
-    if (installed_version) |iv| {
-        if (std.mem.eql(u8, iv, pkg.version)) {
-            stdout.print("{s:<16}: {s}{s}{s} [installed]\n", .{ "Version", ver_color, pkg.version, c.reset });
-        } else {
-            stdout.print("{s:<16}: {s}{s}{s} [installed: {s}{s}{s}]\n", .{ "Version", ver_color, pkg.version, c.reset, c.green, iv, c.reset });
-        }
-    } else {
-        stdout.print("{s:<16}: {s}{s}{s}\n", .{ "Version", ver_color, pkg.version, c.reset });
-    }
+    stdout.print("{s:<16}: {s}{s}{s}", .{ "Version", ver_color, pkg.version, c.reset });
+    if (installed_version) |iv| writeInstalled(stdout, iv, pkg.version, c);
+    stdout.writeByte('\n');
     write.optionalField(stdout, "Description", pkg.description);
     if (pkg.url) |url| {
         stdout.print("{s:<16}: {s}{s}{s}\n", .{ "URL", c.cyan, url, c.reset });
@@ -282,13 +315,7 @@ fn displaySearchResults(packages: []const *aur.Package, c: color.Style, pm: ?*pa
         });
 
         if (pm) |pacman| {
-            if (pacman.installedVersion(pkg.name)) |iv| {
-                if (std.mem.eql(u8, iv, pkg.version)) {
-                    stdout.writeAll(" [installed]");
-                } else {
-                    stdout.print(" [installed: {s}{s}{s}]", .{ c.green, iv, c.reset });
-                }
-            }
+            if (pacman.installedVersion(pkg.name)) |iv| writeInstalled(stdout, iv, pkg.version, c);
         }
 
         stdout.writeByte('\n');
@@ -437,4 +464,11 @@ test "OutdatedEntry struct has required fields" {
     try testing.expectEqualStrings("foo", entry.name);
     try testing.expectEqualStrings("1.0-1", entry.installed_version);
     try testing.expectEqualStrings("2.0-1", entry.aur_version);
+}
+
+test "installedStatus compares with pacman's version ordering" {
+    try testing.expectEqual(InstalledStatus.same, installedStatus("1.0-1", "1.0-1"));
+    try testing.expectEqual(InstalledStatus.newer, installedStatus("r419.f04f698-1", "r414.deafaaf-1"));
+    try testing.expectEqual(InstalledStatus.older, installedStatus("1.9-1", "1.10-1"));
+    try testing.expectEqual(InstalledStatus.newer, installedStatus("1:1.0-1", "2.0-1"));
 }
