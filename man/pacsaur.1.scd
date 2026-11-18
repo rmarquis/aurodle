@@ -34,8 +34,9 @@ packages do not.
 	others from the AUR.
 
 *-Ss* <term>...
-	Search the sync databases, then the AUR. Without _terms_, only pacman
-	lists its packages.
+	Search the sync databases, then the AUR. The local AUR repository is
+	left out of pacman's results; the AUR results show the installed
+	version instead. Without _terms_, only pacman lists its packages.
 
 *-Su* [target...]
 	Upgrade the system, then outdated AUR packages. Official _targets_ are
