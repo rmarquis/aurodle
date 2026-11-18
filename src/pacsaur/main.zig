@@ -183,7 +183,7 @@ fn runAur(allocator: Allocator, io: std.Io, step: route.AurStep, flags: commands
         .build => commands.build_cmd.build(&bctx, step.targets),
         .upgrade => commands.build_cmd.systemUpgrade(&bctx, step.targets, if (step.build_only) .build_only else .sync),
         .outdated => commands.query.outdated(&bctx, step.targets),
-        .clean => commands.build_cmd.clean(&bctx),
+        .clean => commands.clean_cmd.run(&bctx),
         .info, .search => unreachable,
     };
 }

@@ -7,6 +7,7 @@ const std = @import("std");
 pub const analysis = @import("analysis.zig");
 pub const build_cmd = @import("build_cmd.zig");
 pub const build_context = @import("build_context.zig");
+pub const clean_cmd = @import("clean.zig");
 pub const query = @import("query.zig");
 pub const query_context = @import("query_context.zig");
 pub const stack = @import("stack.zig");

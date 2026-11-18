@@ -328,7 +328,7 @@ fn runWithFullStack(
         .buildorder => try commands.analysis.buildorder(&bctx, parsed.targets),
         .outdated => try commands.query.outdated(&bctx, parsed.targets),
         .upgrade => try commands.build_cmd.upgrade(&bctx, parsed.targets),
-        .clean => try commands.build_cmd.clean(&bctx),
+        .clean => try commands.clean_cmd.run(&bctx),
         .clone => blk: {
             var qctx = query_context.QueryContext{
                 .allocator = bctx.allocator,
