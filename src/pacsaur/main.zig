@@ -13,6 +13,7 @@ const ExitCode = commands.types.ExitCode;
 const args = @import("args.zig");
 const classify = @import("classify.zig");
 const route = @import("route.zig");
+const search = @import("search.zig");
 
 const version_string = @import("build_options").version;
 
@@ -87,7 +88,10 @@ fn run(allocator: Allocator, io: std.Io, raw_args: std.process.Args) !u8 {
     var status: u8 = 0;
     for (plan.steps) |step| {
         status = switch (step) {
-            .pacman => |p| try runPacman(allocator, p, if (p.elevate) auth else null),
+            .pacman => |p| if (p.hide_local_repo)
+                try runPacmanSearch(allocator, p, plan.flags.quiet)
+            else
+                try runPacman(allocator, p, if (p.elevate) auth else null),
             .aur => |a| @backingInt(try runAur(allocator, io, a, plan.flags)),
         };
     }
@@ -146,6 +150,39 @@ fn runPacman(allocator: Allocator, step: route.PacmanStep, auth: ?core.auth.Auth
     @memcpy(argv[1..], step.argv);
     if (auth) |a| return a.runInteractive(argv, null);
     return utils.runInteractive(allocator, argv, null);
+}
+
+/// Run `pacman -Ss` with its output captured, and print it without the
+/// local AUR repository. pacman's colors are kept: it is asked for them
+/// when it would have colored a terminal itself.
+fn runPacmanSearch(allocator: Allocator, step: route.PacmanStep, quiet: bool) !u8 {
+    var classifier = classify.Classifier.init(allocator) catch return runPacman(allocator, step, null);
+    defer classifier.deinit();
+    if (classifier.repo_name.len == 0) return runPacman(allocator, step, null);
+
+    const add_color = classifier.pacman.color and std.c.isatty(std.posix.STDOUT_FILENO) != 0 and
+        !hasColorOption(step.argv);
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(allocator);
+    try argv.append(allocator, "pacman");
+    try argv.appendSlice(allocator, step.argv);
+    if (add_color) try argv.append(allocator, "--color=always");
+
+    const result = try utils.runCommand(allocator, argv.items);
+    defer result.deinit(allocator);
+    if (result.stderr.len > 0) std.debug.print("{s}", .{result.stderr});
+
+    const kept = try search.withoutLocalRepo(allocator, result.stdout, classifier.repo_name, quiet, &classifier);
+    defer allocator.free(kept);
+    output.getStdout().writeAll(kept);
+    return result.exit_code;
+}
+
+fn hasColorOption(argv: []const []const u8) bool {
+    for (argv) |arg| {
+        if (std.mem.startsWith(u8, arg, "--color")) return true;
+    }
+    return false;
 }
 
 fn runAur(allocator: Allocator, io: std.Io, step: route.AurStep, flags: commands.types.Flags) !ExitCode {
@@ -264,4 +301,5 @@ test {
     _ = args;
     _ = classify;
     _ = route;
+    _ = search;
 }

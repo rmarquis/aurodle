@@ -38,6 +38,9 @@ pub const PacmanStep = struct {
     argv: []const []const u8,
     /// Run through PACMAN_AUTH (or sudo, or su).
     elevate: bool,
+    /// Leave the local AUR repository out of pacman's output: the AUR step
+    /// lists the same packages, with the installed version.
+    hide_local_repo: bool = false,
 };
 
 pub const AurStep = struct {
@@ -162,11 +165,16 @@ pub fn build(allocator: Allocator, inv: *const args.Invocation, classifier: anyt
         },
         .broadcast => {
             const op = aurOpFor(inv.op).?;
-            try steps.append(a, .{ .pacman = .{ .argv = try pacmanArgv(a, inv, null), .elevate = elevate } });
             // A search without terms lists pacman's packages only; the AUR
             // cannot be listed. clean takes no targets.
             const targets = if (op == .clean) &.{} else try allTargets(a, inv);
-            if (!(op == .search and targets.len == 0)) {
+            const aur_step = !(op == .search and targets.len == 0);
+            try steps.append(a, .{ .pacman = .{
+                .argv = try pacmanArgv(a, inv, null),
+                .elevate = elevate,
+                .hide_local_repo = op == .search and aur_step,
+            } });
+            if (aur_step) {
                 try steps.append(a, .{ .aur = .{ .op = op, .targets = targets } });
             }
         },
@@ -442,6 +450,20 @@ test "-Ss searches both, and only pacman without terms" {
     var bare = try planOf(&.{ "p", "-Ss" });
     defer bare.deinit();
     try testing.expectEqual(@as(usize, 1), bare.steps.len);
+}
+
+test "-Ss hides the local repository from pacman only when the AUR is searched too" {
+    var plan = try planOf(&.{ "p", "-Ss", "editor" });
+    defer plan.deinit();
+    try testing.expect(plan.steps[0].pacman.hide_local_repo);
+
+    var bare = try planOf(&.{ "p", "-Ss" });
+    defer bare.deinit();
+    try testing.expect(!bare.steps[0].pacman.hide_local_repo);
+
+    var upgrades = try planOf(&.{ "p", "-Qu" });
+    defer upgrades.deinit();
+    try testing.expect(!upgrades.steps[0].pacman.hide_local_repo);
 }
 
 test "-Qu lists both without elevating" {
