@@ -356,18 +356,6 @@ pub fn parsePackageFilename(filename: []const u8) ?struct { name: []const u8, ve
     };
 }
 
-/// Check if [repo_name] is configured in a pacman.conf file.
-/// Check if [name] is configured in a pacman.conf file.
-/// Derive the local AUR repository name from pacman.conf by finding a section
-/// whose `Server = file://` URL matches the given PKGDEST path.
-///
-/// For example, if PKGDEST is `/var/lib/aurodle/mypkgs` and pacman.conf contains:
-///   [mypkgs]
-///   Server = file:///var/lib/aurodle/mypkgs
-///
-/// This returns "mypkgs".
-const dirExists = utils.dirExists;
-
 /// Copy the local AUR repo DB to pacman's sync cache so that subsequent
 /// makepkg -s calls (which spawn their own pacman) see just-built packages.
 /// Only touches the local AUR repo entry — official repo DBs are left untouched.
