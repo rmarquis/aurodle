@@ -18,6 +18,7 @@ pub const plan = @import("plan.zig");
 pub const provider = @import("provider.zig");
 pub const registry = @import("registry.zig");
 pub const repo = @import("repo.zig");
+pub const repo_clean = @import("repo/clean.zig");
 pub const repo_conf = @import("repo_conf.zig");
 pub const report = @import("report.zig");
 pub const solver = @import("solver.zig");

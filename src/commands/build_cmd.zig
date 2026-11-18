@@ -6,6 +6,7 @@ const git = @import("core").git;
 const devel = @import("core").devel;
 const solver_mod = @import("core").solver;
 const repo_mod = @import("core").repo;
+const repo_clean = @import("core").repo_clean;
 const pacman_mod = @import("core").pacman;
 const utils = @import("core").utils;
 const term = @import("ui").term;
@@ -516,7 +517,7 @@ pub fn clean(self: *BuildContext) !ExitCode {
     const repository = self.repository;
 
     const plan = if (self.flags.all) blk: {
-        break :blk try repository.cleanAll();
+        break :blk try repo_clean.findAll(repository);
     } else blk: {
         const uninstalled = self.pacman.uninstalledAurpkgs() catch |err| switch (err) {
             error.AurDbNotConfigured => {
@@ -527,9 +528,9 @@ pub fn clean(self: *BuildContext) !ExitCode {
         };
         defer self.allocator.free(uninstalled);
 
-        break :blk try repository.clean(uninstalled);
+        break :blk try repo_clean.findStale(repository, uninstalled);
     };
-    defer repository.freeCleanResult(plan);
+    defer repo_clean.freeResult(repository, plan);
 
     if (plan.removed_clones.len == 0 and plan.removed_packages.len == 0 and
         plan.unreferenced_packages.len == 0 and plan.dangling_entries.len == 0)
@@ -572,7 +573,7 @@ pub fn clean(self: *BuildContext) !ExitCode {
         if (!proceed) return .success;
     }
 
-    repository.cleanExecute(plan);
+    repo_clean.execute(repository, plan);
 
     if (plan.removed_packages.len > 0 or plan.dangling_entries.len > 0) {
         repo_mod.refreshAurpkgsSyncDb(self.allocator, repository, self.auth) catch |err| {

@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const repo = @import("../repo.zig");
+const repo_clean = @import("clean.zig");
 const repo_conf = @import("../repo_conf.zig");
 const utils = @import("../utils.zig");
 
@@ -318,8 +319,8 @@ test "clean identifies stale clones" {
     try std.Io.Dir.createDirPath(std.Io.Dir.cwd(), testing.io, paru_path);
 
     // "paru" is uninstalled — should be cleaned
-    const result = try r.clean(&.{"paru"});
-    defer r.freeCleanResult(result);
+    const result = try repo_clean.findStale(&r, &.{"paru"});
+    defer repo_clean.freeResult(&r, result);
 
     try testing.expectEqual(@as(usize, 1), result.removed_clones.len);
     try testing.expectEqualStrings("paru", result.removed_clones[0]);
@@ -338,8 +339,8 @@ test "clean skips repo directory" {
     try r.ensureExists();
 
     // Even if the repo name were passed as uninstalled, the directory should be skipped
-    const result = try r.clean(&.{DEFAULT_REPO_NAME});
-    defer r.freeCleanResult(result);
+    const result = try repo_clean.findStale(&r, &.{DEFAULT_REPO_NAME});
+    defer repo_clean.freeResult(&r, result);
 
     // repo dir should not appear as stale clones
     for (result.removed_clones) |name| {
@@ -367,8 +368,8 @@ test "clean identifies stale package files" {
     try std.Io.Dir.writeFile(repo_dir, testing.io, .{ .sub_path = "paru-2.0.3-1-x86_64.pkg.tar.zst", .data = "pkg" });
 
     // "paru" is uninstalled
-    const result = try r.clean(&.{"paru"});
-    defer r.freeCleanResult(result);
+    const result = try repo_clean.findStale(&r, &.{"paru"});
+    defer repo_clean.freeResult(&r, result);
 
     try testing.expectEqual(@as(usize, 1), result.removed_packages.len);
     try testing.expectEqualStrings("paru-2.0.3-1-x86_64.pkg.tar.zst", result.removed_packages[0]);
@@ -397,14 +398,14 @@ test "clean with no uninstalled packages finds nothing" {
     try std.Io.Dir.writeFile(repo_dir, testing.io, .{ .sub_path = "yay-12.3.5-1-x86_64.pkg.tar.zst", .data = "pkg" });
 
     // Empty uninstalled list — everything is still installed
-    const result = try r.clean(&.{});
-    defer r.freeCleanResult(result);
+    const result = try repo_clean.findStale(&r, &.{});
+    defer repo_clean.freeResult(&r, result);
 
     try testing.expectEqual(@as(usize, 0), result.removed_clones.len);
     try testing.expectEqual(@as(usize, 0), result.removed_packages.len);
 }
 
-test "cleanAll removes all clones and packages" {
+test "findAll removes all clones and packages" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -431,14 +432,14 @@ test "cleanAll removes all clones and packages" {
     try std.Io.Dir.writeFile(repo_dir, testing.io, .{ .sub_path = "yay-12.3.5-1-x86_64.pkg.tar.zst", .data = "pkg" });
     try std.Io.Dir.writeFile(repo_dir, testing.io, .{ .sub_path = "paru-2.0.3-1-x86_64.pkg.tar.zst", .data = "pkg" });
 
-    const result = try r.cleanAll();
-    defer r.freeCleanResult(result);
+    const result = try repo_clean.findAll(&r);
+    defer repo_clean.freeResult(&r, result);
 
     try testing.expectEqual(@as(usize, 2), result.removed_clones.len);
     try testing.expectEqual(@as(usize, 2), result.removed_packages.len);
 }
 
-test "cleanAll with empty repo finds nothing" {
+test "findAll with empty repo finds nothing" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -450,8 +451,8 @@ test "cleanAll with empty repo finds nothing" {
 
     try r.ensureExists();
 
-    const result = try r.cleanAll();
-    defer r.freeCleanResult(result);
+    const result = try repo_clean.findAll(&r);
+    defer repo_clean.freeResult(&r, result);
 
     try testing.expectEqual(@as(usize, 0), result.removed_clones.len);
     try testing.expectEqual(@as(usize, 0), result.removed_packages.len);
@@ -516,7 +517,7 @@ test "parseDbDescs reads consecutive entries" {
     const text =
         "%FILENAME%\nfoo-1-1-any.pkg.tar.zst\n\n%NAME%\nfoo\n\n%VERSION%\n1-1\n\n" ++
         "%FILENAME%\nbar-2-1-any.pkg.tar.zst\n\n%NAME%\nbar\n\n";
-    const entries = try repo.parseDbDescs(testing.allocator, text);
+    const entries = try repo_clean.parseDbDescs(testing.allocator, text);
     defer testing.allocator.free(entries);
 
     try testing.expectEqual(@as(usize, 2), entries.len);
@@ -528,7 +529,7 @@ test "parseDbDescs reads consecutive entries" {
 
 test "parseDbDescs ignores field names used as values" {
     const text = "%FILENAME%\nfoo-1-1-any.pkg.tar.zst\n\n%DESC%\n%FILENAME%\n\n%NAME%\nfoo\n\n";
-    const entries = try repo.parseDbDescs(testing.allocator, text);
+    const entries = try repo_clean.parseDbDescs(testing.allocator, text);
     defer testing.allocator.free(entries);
 
     try testing.expectEqual(@as(usize, 1), entries.len);
@@ -553,22 +554,22 @@ test "clean removes old version of installed package but keeps current one" {
 
     // Nothing is uninstalled. repo-remove must not run here: it would
     // drop the live foo-2.0-1 entry, which the second clean would expose.
-    const result = try r.clean(&.{});
-    defer r.freeCleanResult(result);
+    const result = try repo_clean.findStale(&r, &.{});
+    defer repo_clean.freeResult(&r, result);
 
     try testing.expectEqual(@as(usize, 0), result.removed_packages.len);
     try testing.expectEqual(@as(usize, 0), result.dangling_entries.len);
     try testing.expectEqual(@as(usize, 2), result.unreferenced_packages.len);
 
-    r.cleanExecute(result);
+    repo_clean.execute(&r, result);
 
     try testing.expect(!try testPackageExists(&r, "foo-1.0-1-any.pkg.tar.zst"));
     try testing.expect(!try testPackageExists(&r, "foo-1.0-1-any.pkg.tar.zst.sig"));
     try testing.expect(try testPackageExists(&r, "foo-2.0-1-any.pkg.tar.zst"));
     try testing.expect(try testPackageExists(&r, "foo-2.0-1-any.pkg.tar.zst.sig"));
 
-    const second = try r.clean(&.{"foo"});
-    defer r.freeCleanResult(second);
+    const second = try repo_clean.findStale(&r, &.{"foo"});
+    defer repo_clean.freeResult(&r, second);
     try testing.expectEqual(@as(usize, 2), second.removed_packages.len);
     try testing.expectEqual(@as(usize, 0), second.unreferenced_packages.len);
 }
@@ -586,8 +587,8 @@ test "clean finds files unreferenced by an empty database" {
     try writeTestDb(&r, tmp_path, &.{});
     try writeTestPackage(&r, "foo-1.0-1-any.pkg.tar.zst");
 
-    const result = try r.clean(&.{});
-    defer r.freeCleanResult(result);
+    const result = try repo_clean.findStale(&r, &.{});
+    defer repo_clean.freeResult(&r, result);
 
     try testing.expectEqual(@as(usize, 1), result.unreferenced_packages.len);
 }
@@ -604,8 +605,8 @@ test "clean keeps all files when the database can't be read" {
 
     try writeTestPackage(&r, "foo-1.0-1-any.pkg.tar.zst");
 
-    const result = try r.clean(&.{});
-    defer r.freeCleanResult(result);
+    const result = try repo_clean.findStale(&r, &.{});
+    defer repo_clean.freeResult(&r, result);
 
     try testing.expectEqual(@as(usize, 0), result.unreferenced_packages.len);
 }
@@ -625,14 +626,14 @@ test "clean flags missing files only for uninstalled packages" {
         .{ .name = "kept", .ver = "1.0-1" },
     });
 
-    const result = try r.clean(&.{"gone"});
-    defer r.freeCleanResult(result);
+    const result = try repo_clean.findStale(&r, &.{"gone"});
+    defer repo_clean.freeResult(&r, result);
 
     try testing.expectEqual(@as(usize, 1), result.dangling_entries.len);
     try testing.expectEqualStrings("gone", result.dangling_entries[0]);
 }
 
-test "cleanAll flags every missing file and removes its database entry" {
+test "findAll flags every missing file and removes its database entry" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const tmp_path = try getTmpPath(tmp);
@@ -645,14 +646,14 @@ test "cleanAll flags every missing file and removes its database entry" {
     try requireTool("repo-remove");
     try writeTestDb(&r, tmp_path, &.{.{ .name = "gone", .ver = "1.0-1" }});
 
-    const result = try r.cleanAll();
-    defer r.freeCleanResult(result);
+    const result = try repo_clean.findAll(&r);
+    defer repo_clean.freeResult(&r, result);
     try testing.expectEqual(@as(usize, 1), result.dangling_entries.len);
 
-    r.cleanExecute(result);
+    repo_clean.execute(&r, result);
 
-    const after = try r.cleanAll();
-    defer r.freeCleanResult(after);
+    const after = try repo_clean.findAll(&r);
+    defer repo_clean.freeResult(&r, after);
     try testing.expectEqual(@as(usize, 0), after.dangling_entries.len);
 }
 
